@@ -4,6 +4,9 @@
 #define _AMD64_
 
 #include <ntddk.h>
+
+#define KMDF_VERSION_MINOR 31
+#define KMDF_MINIMUM_VERSION_REQUIRED 31
 #include <wdf.h>
 
 // Workaround for https://github.com/rust-lang/rust-bindgen/issues/316
