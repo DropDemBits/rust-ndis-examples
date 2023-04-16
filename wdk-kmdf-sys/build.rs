@@ -70,9 +70,14 @@ pub fn get_kmdf_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
 // https://github.com/rust-lang/rust-bindgen/issues/753#issuecomment-459851952
 #[derive(Debug)]
 struct RenameTyped;
+
 impl bindgen::callbacks::ParseCallbacks for RenameTyped {
     fn item_name(&self, original_item_name: &str) -> Option<String> {
-         Some(original_item_name.trim_start_matches("__rename_typed_").to_owned())
+        Some(
+            original_item_name
+                .trim_start_matches("__rename_typed_")
+                .to_owned(),
+        )
     }
 }
 
@@ -101,6 +106,10 @@ fn generate() {
         .clang_arg(format!("-I{}", wdf_dir.to_str().unwrap()))
         .parse_callbacks(Box::new(RenameTyped))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        // Just so that we don't have to include typedefs for KIDTENTRY64 and KGDTENTRY64
+        .blocklist_type("_?P?KPCR.*")
+        .blocklist_type("_?P?KIDTENTRY64")
+        .blocklist_type("_?P?KGDTENTRY64")
         .generate()
         .unwrap()
         .write_to_file(out_path.join("bindings.rs"))
