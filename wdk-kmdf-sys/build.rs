@@ -57,13 +57,10 @@ pub fn get_km_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
 }
 
 pub fn get_kmdf_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
-    let dir = get_windows_kits_dir()?.join(match dir_type {
-        DirectoryType::Include => "Include",
-        DirectoryType::Library => todo!(),
-    });
-
-    // Only support 1.31 right now
-    Ok(dir.join("wdf").join("kmdf").join("1.31"))
+    Ok(get_windows_kits_dir()?.join(match dir_type {
+        DirectoryType::Include => PathBuf::from_iter(["Include", "wdf", "kmdf", "1.31"]),
+        DirectoryType::Library => PathBuf::from_iter(["Lib", "wdf", "kmdf", "x64", "1.31"]),
+    }))
 }
 
 // Other half of
@@ -88,6 +85,7 @@ fn generate() {
     // Find the include directory containing the kernel headers.
     let include_dir = get_km_dir(DirectoryType::Include).unwrap();
     let wdf_dir = get_kmdf_dir(DirectoryType::Include).unwrap();
+    let wdf_lib = get_kmdf_dir(DirectoryType::Library).unwrap();
 
     // Get the build directory.
     let out_path = PathBuf::from(
@@ -114,6 +112,15 @@ fn generate() {
         .unwrap()
         .write_to_file(out_path.join("bindings.rs"))
         .unwrap();
+
+    // Rerun if the wrapper stubs changed
+    println!("cargo:rerun-if-changed=src/wrapper.c");
+    cc::Build::new()
+        .flag("/kernel")
+        .include(include_dir)
+        .include(wdf_dir)
+        .object(wdf_lib.join("wdfldr.lib"))
+        .compile("wrapper_bindings");
 }
 
 fn main() {
