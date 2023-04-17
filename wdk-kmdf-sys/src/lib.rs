@@ -11,6 +11,37 @@ pub use core::ffi::*;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+#[macro_export]
+macro_rules! WDF_NO_OBJECT_ATTRIBUTES {
+    () => {
+        ::core::ptr::null_mut()
+    };
+}
+#[macro_export]
+macro_rules! WDF_NO_EVENT_CALLBACK {
+    () => {
+        ::core::ptr::null_mut()
+    };
+}
+#[macro_export]
+macro_rules! WDF_NO_HANDLE {
+    () => {
+        ::core::ptr::null_mut()
+    };
+}
+#[macro_export]
+macro_rules! WDF_NO_CONTEXT {
+    () => {
+        ::core::ptr::null_mut()
+    };
+}
+#[macro_export]
+macro_rules! WDF_NO_SEND_OPTIONS {
+    () => {
+        ::core::ptr::null_mut()
+    };
+}
+
 #[link(name = "wrapper_bindings")]
 extern "C" {
     pub fn wdf_driver_config_init(
