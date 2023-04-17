@@ -1,0 +1,21 @@
+[build]
+target = "x86_64-pc-windows-msvc"
+
+rustflags = [
+  # Pre-link Args
+  "-Z", "pre-link-arg=/NOLOGO",
+  "-Z", "pre-link-arg=/NXCOMPAT",
+  "-Z", "pre-link-arg=/NODEFAULTLIB",
+  "-Z", "pre-link-arg=/SUBSYSTEM:NATIVE",
+  "-Z", "pre-link-arg=/DRIVER",
+  "-Z", "pre-link-arg=/DYNAMICBASE",
+  "-Z", "pre-link-arg=/MANIFEST:NO",
+
+  # Post-link Args
+  "-C", "link-arg=/OPT:REF,ICF",
+  # See <https://github.com/SergiusTheBest/FindWDK/blob/c941028b26565f756a16ea815d51ac9781f00e79/cmake/FindWdk.cmake#L174>
+  "-C", "link-arg=/ENTRY:FxDriverEntry",
+  "-C", "link-arg=/MERGE:.edata=.rdata",
+  "-C", "link-arg=/MERGE:.rustc=.data",
+  "-C", "link-arg=/INTEGRITYCHECK",
+]

@@ -49,11 +49,23 @@ extern "C" {
         EvtDriverDeviceAdd: PFN_WDF_DRIVER_DEVICE_ADD,
     );
 
+    /// ## IRQL
+    /// PASSIVE_LEVEL
+    #[must_use]
     pub fn wdf_driver_create(
         DriverObject: PDRIVER_OBJECT,
         RegistryPath: PCUNICODE_STRING,
         DriverAttributes: PWDF_OBJECT_ATTRIBUTES,
         DriverConfig: PWDF_DRIVER_CONFIG,
         Driver: *mut WDFDRIVER,
+    ) -> NTSTATUS;
+
+    /// ## IRQL
+    /// PASSIVE_LEVEL
+    #[must_use]
+    pub fn wdf_device_create(
+        DeviceInit: *mut PWDFDEVICE_INIT,
+        DeviceAttributes: PWDF_OBJECT_ATTRIBUTES,
+        Device: *mut WDFDEVICE,
     ) -> NTSTATUS;
 }

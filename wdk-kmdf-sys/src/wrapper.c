@@ -16,3 +16,11 @@ NTSTATUS wdf_driver_create(
 ) {
  return WdfDriverCreate(DriverObject, RegistryPath, DriverAttributes, DriverConfig, Driver); 
 }
+
+NTSTATUS wdf_device_create(
+  PWDFDEVICE_INIT        *DeviceInit,
+  PWDF_OBJECT_ATTRIBUTES DeviceAttributes,
+  WDFDEVICE              *Device
+) {
+ return WdfDeviceCreate(DeviceInit, DeviceAttributes, Device);
+}

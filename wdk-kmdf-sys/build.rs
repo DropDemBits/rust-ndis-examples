@@ -56,6 +56,33 @@ pub fn get_km_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
     Ok(dir.join("km"))
 }
 
+/// Retrieves the path to the shared headers. The path may look something like:
+/// `C:\Program Files (x86)\Windows Kits\10\lib\10.0.18362.0\shared`.
+pub fn get_shared_dir() -> Result<PathBuf, Error> {
+    // We first append lib to the path and read the directory..
+    let dir = get_windows_kits_dir()?
+        .join("Include")
+        .read_dir()?;
+
+    // In the lib directory we may have one or more directories named after the version of Windows,
+    // we will be looking for the highest version number.
+    let dir = dir
+        .filter_map(|dir| dir.ok())
+        .map(|dir| dir.path())
+        .filter(|dir| {
+            dir.components()
+                .last()
+                .and_then(|c| c.as_os_str().to_str())
+                .map(|c| c.starts_with("10.") && dir.join("km").is_dir())
+                .unwrap_or(false)
+        })
+        .max()
+        .ok_or_else(|| Error::DirectoryNotFound)?;
+
+    // Finally append shared to the path to get the path to the shared headers.
+    Ok(dir.join("shared"))
+}
+
 pub fn get_kmdf_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
     Ok(get_windows_kits_dir()?.join(match dir_type {
         DirectoryType::Include => PathBuf::from_iter(["Include", "wdf", "kmdf", "1.31"]),
@@ -87,6 +114,10 @@ fn generate() {
     let wdf_dir = get_kmdf_dir(DirectoryType::Include).unwrap();
     let wdf_lib = get_kmdf_dir(DirectoryType::Library).unwrap();
 
+    // Supplimentary headers (presumably from ntddk)
+    let crt_dir = include_dir.join("crt");
+    let shared_dir = get_shared_dir().unwrap();
+
     // Get the build directory.
     let out_path = PathBuf::from(
         std::env::var_os("OUT_DIR").expect("the environment variable OUT_DIR is undefined"),
@@ -104,6 +135,8 @@ fn generate() {
         .clang_arg(format!("-I{}", wdf_dir.to_str().unwrap()))
         .parse_callbacks(Box::new(RenameTyped))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        // Declared in lib.rs
+        // .blocklist_item("WdfMinimumVersionRequired")
         // Just so that we don't have to include typedefs for KIDTENTRY64 and KGDTENTRY64
         .blocklist_type("_?P?KPCR.*")
         .blocklist_type("_?P?KIDTENTRY64")
@@ -119,7 +152,10 @@ fn generate() {
         .flag("/kernel")
         .include(include_dir)
         .include(wdf_dir)
+        .include(crt_dir)
+        .include(shared_dir)
         .object(wdf_lib.join("wdfldr.lib"))
+        .file("src/wrapper.c")
         .compile("wrapper_bindings");
 }
 

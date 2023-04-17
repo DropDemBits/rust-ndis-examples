@@ -3,6 +3,12 @@ name = "ndisprot-kmdf"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib"]
 
 [dependencies]
+wdk-kmdf-sys = { path = "../wdk-kmdf-sys" }
+
+[build-dependencies]
+thiserror = "1.0.40"
+winreg = "0.50.0"

@@ -1,5 +1,5 @@
 // Bindgen doesn't like feeding these in beforehand
-#define _WIN64
+// #define _WIN64
 #define AMD64
 #define _AMD64_
 
