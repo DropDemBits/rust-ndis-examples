@@ -1,0 +1,70 @@
+[env]
+VC_BUILD_DIR="C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat"
+
+DRIVER_NAME="ndisprot_kmdf"
+DRIVER_VERSION="*"
+CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
+
+[env.development]
+TARGET_PATH = "target\\x86_64-pc-windows-msvc\\debug"
+
+[env.production]
+TARGET_PATH = "target\\x86_64-pc-windows-msvc\\release"
+BUILD_RELEASE = "--release"
+
+[tasks.build-driver]
+script = '''
+cargo b %BUILD_FLAGS%
+'''
+
+[tasks.delete-old-driver]
+ignore_errors = true
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/${TARGET_PATH}"
+script='''
+del %DRIVER_NAME%.sys
+'''
+
+[tasks.rename]
+dependencies = ["delete-old-driver"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/${TARGET_PATH}"
+script = '''
+rename %DRIVER_NAME%.dll %DRIVER_NAME%.sys
+'''
+
+[tasks.sign]
+dependencies = ["build-driver", "rename"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+script = '''
+@rem Load VS DevEnv
+call "%VC_BUILD_DIR%"
+
+@rem Make a self-signed cert
+if not exist DriverCertificate.cer ( makecert -r -pe -ss PrivateCertStore -n CN=DriverCertificate DriverCertificate.cer ) else ( echo Certificate already exists. )
+
+@rem And sign the driver
+signtool sign /a /v /s PrivateCertStore /n DriverCertificate /fd sha1 /t http://timestamp.digicert.com %TARGET_PATH%/%DRIVER_NAME%.sys
+'''
+
+[tasks.make-dist]
+ignore_errors = true
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+script='mkdir dist'
+
+[tasks.stampinf]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+script='''
+@rem Load VS DevEnv
+call "%VC_BUILD_DIR%"
+
+copy ndisprot-kmdf\ndisprot.inf %TARGET_PATH%
+stampinf -f %TARGET_PATH%\ndisprot.inf -a amd64 -d * -v %DRIVER_VERSION% -k 1.31 
+'''
+
+[tasks.dist]
+dependencies = ["sign", "stampinf", "make-dist"]
+cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
+script='''
+copy %TARGET_PATH%\%DRIVER_NAME%.sys dist\
+copy %TARGET_PATH%\%DRIVER_NAME%.pdb dist\
+copy %TARGET_PATH%\ndisprot.inf dist\
+'''

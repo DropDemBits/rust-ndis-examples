@@ -1,0 +1,74 @@
+; NDISProt template INF file
+; Currently setup for just the KmdfHelloWorld example
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Sample ; TODO: edit Class
+ClassGuid={78A1C341-4539-11d3-B88D-00C04FAD5171} ; TODO: edit ClassGuid
+Provider=%ManufacturerName%
+CatalogFile=ndisprot_kmdf.cat
+DriverVer= ; TODO: set DriverVer in stampinf property pages
+; PnpLockDown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+; ================= Class section =====================
+
+[ClassInstall32]
+Addreg=SampleClassReg
+
+[SampleClassReg]
+HKR,,,0,%ClassName%
+HKR,,Icon,,-5
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+ndisprot_kmdf.sys  = 1,,
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%NdisProt.DeviceDesc%=NdisProt_Device, Root\NdisProt ; TODO: edit hw-id
+
+[NdisProt_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+ndisprot_kmdf.sys
+
+;-------------- Service installation
+[NdisProt_Device.NT.Services]
+AddService = NdisProt,%SPSVCINST_ASSOCSERVICE%, NdisProt_Service_Inst
+
+; -------------- NdisProt driver install sections
+[NdisProt_Service_Inst]
+DisplayName    = %NdisProt.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\ndisprot_kmdf.sys
+
+;
+;--- NdisProt_Device WDF Section ------
+;
+
+[NdisProt_Device.NT.Wdf]
+KmdfService =  NdisProt, NdisProt_wdfsect
+[NdisProt_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+ClassName="Samples" ; TODO: edit ClassName
+DiskName = "NdisProt Installation Disk"
+NdisProt.DeviceDesc = "NdisProt Device"
+NdisProt.SVCDESC = "NdisProt Service"
