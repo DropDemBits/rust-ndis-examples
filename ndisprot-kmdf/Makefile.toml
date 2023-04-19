@@ -1,5 +1,5 @@
 [env]
-VC_BUILD_DIR="C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat"
+VC_BUILD_DIR="C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat"
 
 DRIVER_NAME="ndisprot_kmdf"
 DRIVER_VERSION="*"
@@ -31,20 +31,6 @@ script = '''
 rename %DRIVER_NAME%.dll %DRIVER_NAME%.sys
 '''
 
-[tasks.sign]
-dependencies = ["build-driver", "rename"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
-script = '''
-@rem Load VS DevEnv
-call "%VC_BUILD_DIR%"
-
-@rem Make a self-signed cert
-if not exist DriverCertificate.cer ( makecert -r -pe -ss PrivateCertStore -n CN=DriverCertificate DriverCertificate.cer ) else ( echo Certificate already exists. )
-
-@rem And sign the driver
-signtool sign /a /v /s PrivateCertStore /n DriverCertificate /fd sha1 /t http://timestamp.digicert.com %TARGET_PATH%/%DRIVER_NAME%.sys
-'''
-
 [tasks.make-dist]
 ignore_errors = true
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
@@ -54,17 +40,30 @@ script='mkdir dist'
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
 @rem Load VS DevEnv
-call "%VC_BUILD_DIR%"
+call "%VC_BUILD_DIR%" x64
 
 copy ndisprot-kmdf\ndisprot.inf %TARGET_PATH%
-stampinf -f %TARGET_PATH%\ndisprot.inf -a amd64 -d * -v %DRIVER_VERSION% -k 1.31 
+stampinf -f %TARGET_PATH%\ndisprot.inf -a amd64 -d * -v %DRIVER_VERSION% -k 1.31
 '''
 
 [tasks.dist]
-dependencies = ["sign", "stampinf", "make-dist"]
+dependencies = ["build-driver", "rename", "stampinf", "make-dist"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
 copy %TARGET_PATH%\%DRIVER_NAME%.sys dist\
 copy %TARGET_PATH%\%DRIVER_NAME%.pdb dist\
 copy %TARGET_PATH%\ndisprot.inf dist\
+
+@rem for some reason, inf2cat is not in the x64 paths
+call "%VC_BUILD_DIR%" x86
+
+inf2cat /driver:dist\ /os:10_x64
+
+@rem Make a self-signed cert
+if not exist DriverCertificate.cer ( makecert -r -pe -ss PrivateCertStore -n CN=DriverCertificate DriverCertificate.cer ) else ( echo Certificate already exists. )
+
+@rem And sign the driver
+signtool sign /a /ph /v /s PrivateCertStore /n DriverCertificate /fd sha1 /t http://timestamp.digicert.com dist/%DRIVER_NAME%.sys dist/*.cat
+
+copy DriverCertificate.cer dist\
 '''
