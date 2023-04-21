@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wdf-kmdf-sys = { path = "../wdf-kmdf-sys" }
+wdf-kmdf = { path = "../wdf-kmdf" }
 
 [build-dependencies]
 thiserror = "1.0.40"

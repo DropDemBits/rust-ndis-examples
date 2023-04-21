@@ -4,6 +4,7 @@ resolver="2"
 members = [
   "ndisprot-kmdf",
   "wdf-kmdf-sys",
+  "wdf-kmdf",
 ]
 
 [profile.dev]
