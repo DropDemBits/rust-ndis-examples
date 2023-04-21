@@ -10,7 +10,7 @@ use wdk_kmdf_sys::{
 
 #[allow(non_snake_case)]
 #[no_mangle]
-pub extern "system" fn DriverEntry(
+unsafe extern "system" fn DriverEntry(
     driver_object: PDRIVER_OBJECT,
     registry_path: PUNICODE_STRING,
 ) -> NTSTATUS {
