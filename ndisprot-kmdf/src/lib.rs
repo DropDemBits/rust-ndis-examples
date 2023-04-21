@@ -20,11 +20,13 @@ pub extern "system" fn DriverEntry(
     let mut config: MaybeUninit<WDF_DRIVER_CONFIG> = MaybeUninit::uninit();
 
     // Print "Hello World" for DriverEntry
-    unsafe { DbgPrint(b"KmdfHewwoWowwd: DriverEntry\0".as_ptr().cast()) };
+    unsafe { DbgPrint(b"KmdfHewwoWowwd: DriverEntry\n\0".as_ptr().cast()) };
 
     // Initiaze the driver configuration object to register the
     // entry point for the EvtDeviceAdd callback, evt_device_add
     unsafe { wdf_driver_config_init(config.as_mut_ptr(), Some(evt_device_add)) };
+    // SAFETY: `wdf_driver_config_init` initializes it
+    let mut config = unsafe { config.assume_init() };
 
     // Finally, create the driver object
     status = unsafe {
@@ -32,7 +34,7 @@ pub extern "system" fn DriverEntry(
             driver_object,
             registry_path,
             WDF_NO_OBJECT_ATTRIBUTES!(),
-            config.as_mut_ptr(),
+            &mut config,
             WDF_NO_HANDLE!(),
         )
     };
@@ -50,7 +52,7 @@ unsafe extern "C" fn evt_device_add(
     let mut h_device: WDFDEVICE = core::ptr::null_mut();
 
     // Print "Hello World"
-    unsafe { DbgPrint(b"KmdfHewwoWowwd: evt_device_add\0".as_ptr().cast()) };
+    unsafe { DbgPrint(b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast()) };
 
     // Create the device object
     status =
