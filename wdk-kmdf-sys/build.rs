@@ -60,9 +60,7 @@ pub fn get_km_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
 /// `C:\Program Files (x86)\Windows Kits\10\lib\10.0.18362.0\shared`.
 pub fn get_shared_dir() -> Result<PathBuf, Error> {
     // We first append lib to the path and read the directory..
-    let dir = get_windows_kits_dir()?
-        .join("Include")
-        .read_dir()?;
+    let dir = get_windows_kits_dir()?.join("Include").read_dir()?;
 
     // In the lib directory we may have one or more directories named after the version of Windows,
     // we will be looking for the highest version number.
@@ -73,7 +71,7 @@ pub fn get_shared_dir() -> Result<PathBuf, Error> {
             dir.components()
                 .last()
                 .and_then(|c| c.as_os_str().to_str())
-                .map(|c| c.starts_with("10.") && dir.join("km").is_dir())
+                .map(|c| c.starts_with("10.") && dir.join("shared").is_dir())
                 .unwrap_or(false)
         })
         .max()
