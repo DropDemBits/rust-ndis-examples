@@ -3,10 +3,10 @@
 #define AMD64
 #define _AMD64_
 
-#include <sdkddkver.h>
-#define NTDDI_VERSION NTDDI_WIN10_VB
+#define NTDDI_VERSION (0x0A000008) // Win10 2004
 #define _WIN32_WINNT (0x0A00)
 #define WINVER (0x0A00)
+#define DEPRECATE_DDK_FUNCTIONS 1
 #include <ntddk.h>
 
 #define KMDF_VERSION_MINOR 31
