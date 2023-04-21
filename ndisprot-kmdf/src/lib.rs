@@ -14,8 +14,6 @@ unsafe extern "system" fn DriverEntry(
     driver_object: PDRIVER_OBJECT,
     registry_path: PUNICODE_STRING,
 ) -> NTSTATUS {
-    let status;
-
     // Allocate the driver configuration object
     let mut config: MaybeUninit<WDF_DRIVER_CONFIG> = MaybeUninit::uninit();
 
@@ -29,7 +27,7 @@ unsafe extern "system" fn DriverEntry(
     let mut config = unsafe { config.assume_init() };
 
     // Finally, create the driver object
-    status = unsafe {
+    unsafe {
         wdf_driver_create(
             driver_object,
             registry_path,
@@ -37,17 +35,13 @@ unsafe extern "system" fn DriverEntry(
             &mut config,
             WDF_NO_HANDLE!(),
         )
-    };
-
-    status
+    }
 }
 
 unsafe extern "C" fn evt_device_add(
     _driver: WDFDRIVER,
     mut device_init: PWDFDEVICE_INIT,
 ) -> NTSTATUS {
-    let status;
-
     // Allocate the device object
     let mut h_device: WDFDEVICE = core::ptr::null_mut();
 
@@ -55,12 +49,10 @@ unsafe extern "C" fn evt_device_add(
     unsafe { DbgPrint(b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast()) };
 
     // Create the device object
-    status =
-        unsafe { wdf_device_create(&mut device_init, WDF_NO_OBJECT_ATTRIBUTES!(), &mut h_device) };
-
-    status
+    unsafe { wdf_device_create(&mut device_init, WDF_NO_OBJECT_ATTRIBUTES!(), &mut h_device) }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
