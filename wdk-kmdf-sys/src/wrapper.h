@@ -3,6 +3,10 @@
 #define AMD64
 #define _AMD64_
 
+#include <sdkddkver.h>
+#define NTDDI_VERSION NTDDI_WIN10_VB
+#define _WIN32_WINNT (0x0A00)
+#define WINVER (0x0A00)
 #include <ntddk.h>
 
 #define KMDF_VERSION_MINOR 31
@@ -11,12 +15,9 @@
 
 // Workaround for https://github.com/rust-lang/rust-bindgen/issues/316
 // based on https://github.com/rust-lang/rust-bindgen/issues/753#issuecomment-459851952
-#define RENAME_TYPED(ty,c) static const ty __rename_typed_##c = c;
+#define RENAME_TYPED(ty, c) static const ty __rename_typed_##c = c;
 
-RENAME_TYPED(NTSTATUS,STATUS_SUCCESS);
-RENAME_TYPED(NTSTATUS,STATUS_UNSUCCESSFUL);
-RENAME_TYPED(NTSTATUS,STATUS_DRIVER_INTERNAL_ERROR);
-RENAME_TYPED(NTSTATUS,STATUS_INVALID_PARAMETER);
-
-
-
+RENAME_TYPED(NTSTATUS, STATUS_SUCCESS);
+RENAME_TYPED(NTSTATUS, STATUS_UNSUCCESSFUL);
+RENAME_TYPED(NTSTATUS, STATUS_DRIVER_INTERNAL_ERROR);
+RENAME_TYPED(NTSTATUS, STATUS_INVALID_PARAMETER);
