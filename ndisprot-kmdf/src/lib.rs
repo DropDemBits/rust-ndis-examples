@@ -2,7 +2,7 @@
 
 use core::mem::MaybeUninit;
 
-use wdk_kmdf_sys::{
+use wdf_kmdf_sys::{
     wdf_device_create, wdf_driver_config_init, wdf_driver_create, DbgPrint, NTSTATUS,
     PDRIVER_OBJECT, PUNICODE_STRING, PWDFDEVICE_INIT, WDFDEVICE, WDFDRIVER, WDF_DRIVER_CONFIG,
     WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,

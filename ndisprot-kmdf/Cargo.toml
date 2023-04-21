@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wdk-kmdf-sys = { path = "../wdk-kmdf-sys" }
+wdf-kmdf-sys = { path = "../wdf-kmdf-sys" }
 
 [build-dependencies]
 thiserror = "1.0.40"
