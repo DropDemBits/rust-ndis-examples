@@ -4,7 +4,7 @@ use core::mem::MaybeUninit;
 
 use wdf_kmdf_sys::{
     wdf_driver_config_init, DbgPrint, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING, PWDFDEVICE_INIT,
-    WDFDEVICE, WDFDRIVER, WDF_DRIVER_CONFIG, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
+    WDFDEVICE, WDFDRIVER, WDF_DRIVER_CONFIG,
 };
 
 #[allow(non_snake_case)]
@@ -26,15 +26,7 @@ unsafe extern "system" fn DriverEntry(
     let mut config = unsafe { config.assume_init() };
 
     // Finally, create the driver object
-    unsafe {
-        wdf_kmdf::dispatch_always!(WdfDriverCreate(
-            driver_object,
-            registry_path,
-            WDF_NO_OBJECT_ATTRIBUTES!(),
-            &mut config,
-            WDF_NO_HANDLE!(),
-        ))
-    }
+    unsafe { wdf_kmdf::raw::WdfDriverCreate(driver_object, registry_path, None, &mut config, None) }
 }
 
 unsafe extern "C" fn evt_device_add(
@@ -48,13 +40,7 @@ unsafe extern "C" fn evt_device_add(
     unsafe { DbgPrint(b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast()) };
 
     // Create the device object
-    unsafe {
-        wdf_kmdf::dispatch_always!(WdfDeviceCreate(
-            &mut device_init,
-            WDF_NO_OBJECT_ATTRIBUTES!(),
-            &mut h_device
-        ))
-    }
+    unsafe { wdf_kmdf::raw::WdfDeviceCreate(&mut device_init, None, &mut h_device) }
 }
 
 #[cfg(not(test))]
