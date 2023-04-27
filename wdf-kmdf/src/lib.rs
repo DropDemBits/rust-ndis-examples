@@ -1,5 +1,6 @@
 //! Rust KMDF Abstractions
 #![no_std]
+#![feature(const_cstr_methods, const_trait_impl)]
 
 pub mod raw {
     //! Raw bindings to KMDF functions
@@ -225,7 +226,7 @@ pub mod raw {
         ))
     }
 
-    /// Get's the framework driver object, or `None` if the driver hasn't been created yet.
+    /// Gets the framework driver object, or `None` if the driver hasn't been created yet.
     ///
     /// ## Safety
     ///
@@ -239,4 +240,164 @@ pub mod raw {
     }
 
     // endregion: driver
+}
+
+pub mod object {
+
+    use wdf_kmdf_sys::_WDF_OBJECT_CONTEXT_TYPE_INFO;
+
+    pub type ContextInfo = _WDF_OBJECT_CONTEXT_TYPE_INFO;
+
+    /// Converting a data struct into a context space
+    ///
+    /// ## Safety
+    ///
+    /// Type sizing must be accurate.
+    /// Use the [`impl_context_space`] macro to do it safely.
+    pub unsafe trait IntoContextSpace {
+        const CONTEXT_INFO: &'static ContextInfo;
+    }
+
+    #[macro_export]
+    macro_rules! impl_context_space {
+        ($ty:ty) => {
+            unsafe impl $crate::object::IntoContextSpace for $ty {
+                const CONTEXT_INFO: &'static $crate::object::ContextInfo =
+                    &$crate::object::ContextInfo {
+                        // Size is known to be small
+                        Size: ::core::mem::size_of::<$crate::object::ContextInfo>() as u32,
+                        ContextName: match ::core::ffi::CStr::from_bytes_until_nul(
+                            concat!(stringify!($ty), "\0").as_bytes(),
+                        ) {
+                            Ok(v) => v.as_ptr(),
+                            Err(_) => panic!("forgor nul byte 💀"),
+                        },
+                        ContextSize: ::core::mem::size_of::<$ty>(),
+                        UniqueType: ::core::ptr::null(),
+                        EvtDriverGetUniqueContextType: None,
+                    };
+            }
+        };
+    }
+
+    /// The maximum IRQL the object's event callback functions will be called at
+    ///
+    /// Execution levels can only be specified for:
+    ///
+    ///
+    /// - Driver objects
+    /// - Device objects
+    /// - File objects
+    /// - General objects
+    ///
+    /// And since WDF 1.9 and later:
+    ///
+    /// - Queue objects
+    /// - Timer objects
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    pub enum ExecutionLevel {
+        /// Use the default execution level for an object
+        ///
+        /// For [`Driver`](crate::driver::Driver) and [`MiniportDriver`](crate::driver::MiniportDriver):
+        /// - In KMDF, the default execution level is [`ExecutionLevel::Dispatch`]
+        /// - In UMDF, the default execution level is [`ExecutionLevel::Passive`]
+        ///
+        /// For all other objects, the default is [`ExecutionLevel::InheritFromParent`]
+        #[default]
+        ObjectDefault,
+        /// Use the execution level from the parent device object
+        InheritFromParent = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent,
+        /// Always execute event callbacks at IRQL == PASSIVE_LEVEL
+        Passive = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelPassive,
+        /// Execute event callbacks at IRQL <= DISPATCH_LEVEL (KMDF only)
+        Dispatch = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelDispatch,
+    }
+
+    /// What scope to sequentialize event callbacks at
+    ///
+    /// Synchronization scopes can only be specified for
+    ///
+    /// - Driver objects
+    /// - Device objects
+    /// - Queue objects
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+    #[repr(i32)]
+    pub enum SynchronizationScope {
+        /// Use the default synchronization level for an object
+        ///
+        /// For [`Driver`](crate::driver::Driver) and [`MiniportDriver`](crate::driver::MiniportDriver),
+        /// the default is [`SynchronizationScope::None`].
+        ///
+        /// For all other objects, the default is [`SynchronizationScope::InheritFromParent`]
+        #[default]
+        ObjectDefault,
+        /// Use the synchronization scope from the parent device object
+        InheritFromParent =
+            wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent,
+        /// Event callbacks for all of the device's descendant objects will be executed sequentially (i.e.
+        /// before executing an event callback, the device's synchronization lock is acquired).
+        ///
+        /// This applies to:
+        ///
+        /// - Queue objects
+        /// - File objects
+        ///
+        /// If the `AutomaticSerialization` flag is true in the object's config struct,
+        /// this also applies to the event callbacks of:
+        ///
+        /// - Interrupt objects
+        /// - DPC objects
+        /// - Work Item objects
+        /// - Timer objects
+        ///
+        /// Note that this is sequentialization does not happen between device object hierarchies,
+        /// which are free to independently execute event callbacks concurrently.
+        Device = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeDevice,
+        /// Event callbacks for a queue will be executed sequentially (i.e. before executing a queue
+        /// event callback, the queue's synchronization lock is acquired).
+        ///
+        /// If the `AutomaticSerialization` flag is true in the object's config struct,
+        /// this also applies to the event callbacks of:
+        ///
+        /// - Interrupt objects
+        /// - DPC objects
+        /// - Work Item objects
+        /// - Timer objects
+        ///
+        /// Note that this is sequentialization does not happen between queue object hierarchies,
+        /// which are free to independently execute event callbacks concurrently.
+        ///
+        /// Since WDF 1.9, `SynchronizationScope::Queue` should be specified on the queue objects
+        /// themselves.
+        /// For older WDF versions, the queue object should specify `SynchronizationScope::InheritFromParent`,
+        /// and the parent object should specify `SynchronizationScope::Queue`
+        Queue = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeQueue,
+        /// No synchronization is performed, so event callbacks may execute concurrently
+        None = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeNone,
+    }
+}
+
+pub mod driver {
+    use core::marker::PhantomData;
+
+    use wdf_kmdf_sys::WDFDRIVER;
+
+    use crate::object::IntoContextSpace;
+
+    pub struct Driver<T: IntoContextSpace> {
+        handle: WDFDRIVER,
+        _context: PhantomData<T>,
+    }
+
+    /// Opaque driver handle used during the initialization of the driver's context space
+    pub struct DriverHandle(WDFDRIVER);
+
+    pub struct MiniportDriver<T: IntoContextSpace> {
+        handle: WDFDRIVER,
+        _context: PhantomData<T>,
+    }
+
+    /// Opaque miniport driver handle used during the initialization of the miniport driver's context space
+    pub struct MiniportDriverHandle(WDFDRIVER);
 }
