@@ -103,6 +103,12 @@ impl bindgen::callbacks::ParseCallbacks for RenameTyped {
     }
 }
 
+fn build_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var_os("OUT_DIR").expect("the environment variable OUT_DIR is undefined"),
+    )
+}
+
 fn generate() {
     // Tell Cargo to re-run this if src/wrapper.h gets changed.
     println!("cargo:rerun-if-changed=src/wrapper.h");
@@ -115,9 +121,7 @@ fn generate() {
     let shared_dir = get_shared_dir().unwrap();
 
     // Get the build directory.
-    let out_path = PathBuf::from(
-        std::env::var_os("OUT_DIR").expect("the environment variable OUT_DIR is undefined"),
-    );
+    let out_path = build_dir();
 
     // Generate the bindings
     bindgen::Builder::default()
@@ -128,6 +132,7 @@ fn generate() {
         .ctypes_prefix("::core::ffi")
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
         .clang_arg(format!("-I{}", include_dir.to_str().unwrap()))
+        .clang_arg(format!("-I{}", out_path.to_str().unwrap()))
         .parse_callbacks(Box::new(RenameTyped))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         // Just so that we don't have to include typedefs for KIDTENTRY64 and KGDTENTRY64
@@ -146,10 +151,33 @@ fn generate() {
         .include(include_dir)
         .include(crt_dir)
         .include(shared_dir)
+        .include(out_path)
         .file("src/wrapper.c")
         .compile("wrapper_bindings");
 }
 
+fn header_hacks_dir() -> PathBuf {
+    build_dir().join("header_hacks")
+}
+
+fn header_hacks() {
+    println!("cargo:rerun-if-changed=build.rs");
+
+    let hacks = header_hacks_dir();
+    std::fs::create_dir_all(&hacks).unwrap();
+
+    let include_dir = get_km_dir(DirectoryType::Include).unwrap();
+
+    // ndis.h has a macro that depends on MSVC-specific expansion behaviour,
+    // so make a patched header that fixes it (i.e. defaults to true)
+    let ndis_header = include_dir.join("ndis.h");
+    let mut contents = std::fs::read_to_string(ndis_header).unwrap();
+    contents = contents.replacen("#define NDIS_API_VERSION_AVAILABLE(major,minor) ((((0x ## major) << 8) + (0x ## minor)) >= NDIS_MIN_API)", "#define NDIS_API_VERSION_AVAILABLE(major,minor) (1)", 1);
+
+    std::fs::write(hacks.join("ndis.h"), contents).unwrap();
+}
+
 fn main() {
+    header_hacks();
     generate();
 }
