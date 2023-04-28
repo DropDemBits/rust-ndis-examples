@@ -174,7 +174,13 @@ fn header_hacks() {
     let mut contents = std::fs::read_to_string(ndis_header).unwrap();
     contents = contents.replacen("#define NDIS_API_VERSION_AVAILABLE(major,minor) ((((0x ## major) << 8) + (0x ## minor)) >= NDIS_MIN_API)", "#define NDIS_API_VERSION_AVAILABLE(major,minor) (1)", 1);
 
-    std::fs::write(hacks.join("ndis.h"), contents).unwrap();
+    let path = hacks.join("ndis.h");
+
+    // check if no change happened (this is faster than just always doing it, and likely more reliable than checking mtime of the original header)
+    let old_contents = std::fs::read_to_string(&path).unwrap();
+    if contents != old_contents {
+        std::fs::write(&path, contents).unwrap();
+    }
 }
 
 fn main() {
