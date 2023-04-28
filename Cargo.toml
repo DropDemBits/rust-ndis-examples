@@ -6,6 +6,7 @@ members = [
   "wdf-kmdf-sys",
   "windows-kernel-sys",
   "wdf-kmdf",
+  "vtable"
 ]
 
 [profile.dev]
