@@ -54,7 +54,7 @@ pub mod raw {
     /// If `DriverAttributes` is specified, the `ParentObject` must be `NULL`.
     /// If any of [`EvtCleanupCallback`] and/or [`EvtDestroyCallback`] are specified, note that they will be called at IRQL = `PASSIVE_LEVEL`.
     ///
-    /// [`WDFDEVICE_INIT`]: wdk_kmdf_sys::WDFDEVICE_INIT
+    /// [`WDFDEVICE_INIT`]: wdf_kmdf_sys::WDFDEVICE_INIT
     /// [`EvtDriverDeviceAdd`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdriver/nc-wdfdriver-evt_wdf_driver_device_add
     /// [`EvtChildListCreateDevice`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfchildlist/nc-wdfchildlist-evt_wdf_child_list_create_device
     /// [`EvtCleanupCallback`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nc-wdfobject-evt_wdf_object_context_cleanup
@@ -66,7 +66,7 @@ pub mod raw {
     ///
     /// ## Return Value
     ///
-    /// The newly allocated device object ist stored in the place given by [`Device`].
+    /// The newly allocated device object is stored in the place given by `Device`.
     ///
     /// `STATUS_SUCCESS` is returned if the operation was successful, otherwise:
     ///
@@ -250,16 +250,6 @@ pub mod object {
 
     pub type ContextInfo = _WDF_OBJECT_CONTEXT_TYPE_INFO;
 
-    /// Converting a data struct into a context space
-    ///
-    /// ## Safety
-    ///
-    /// Type sizing must be accurate.
-    /// Use the [`impl_context_space`] macro to do it safely.
-    pub unsafe trait IntoContextSpace {
-        const CONTEXT_INFO: &'static ContextInfo;
-    }
-
     #[macro_export]
     macro_rules! impl_context_space {
         ($ty:ty) => {
@@ -280,6 +270,16 @@ pub mod object {
                     };
             }
         };
+    }
+
+    /// Converting a data struct into a context space
+    ///
+    /// ## Safety
+    ///
+    /// Type sizing must be accurate.
+    /// Use the [`impl_context_space`] macro to do it safely.
+    pub unsafe trait IntoContextSpace {
+        const CONTEXT_INFO: &'static ContextInfo;
     }
 
     /// The maximum IRQL the object's event callback functions will be called at
