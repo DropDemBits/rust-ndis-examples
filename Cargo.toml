@@ -4,6 +4,7 @@ resolver="2"
 members = [
   "ndisprot-kmdf",
   "wdf-kmdf-sys",
+  "windows-kernel-sys",
   "wdf-kmdf",
 ]
 

@@ -3,9 +3,9 @@
 use core::mem::MaybeUninit;
 
 use wdf_kmdf_sys::{
-    wdf_driver_config_init, DbgPrint, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING, PWDFDEVICE_INIT,
-    WDFDEVICE, WDFDRIVER, WDF_DRIVER_CONFIG,
+    wdf_driver_config_init, PWDFDEVICE_INIT, WDFDEVICE, WDFDRIVER, WDF_DRIVER_CONFIG,
 };
+use windows_kernel_sys::{DbgPrint, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING};
 
 #[allow(non_snake_case)]
 #[no_mangle]

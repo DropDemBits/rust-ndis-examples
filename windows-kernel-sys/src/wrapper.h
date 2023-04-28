@@ -7,11 +7,4 @@
 #define _WIN32_WINNT (0x0A00)
 #define WINVER (0x0A00)
 #define DEPRECATE_DDK_FUNCTIONS 1
-
-// Minimal WDF headers
-#include <wdm.h>
-#include <ntdef.h>
-
-#define KMDF_VERSION_MINOR 31
-#define KMDF_MINIMUM_VERSION_REQUIRED 31
-#include <wdf.h>
+#include <ntddk.h>

@@ -109,8 +109,6 @@ fn generate() {
 
     // Find the include directory containing the kernel headers.
     let include_dir = get_km_dir(DirectoryType::Include).unwrap();
-    let wdf_dir = get_kmdf_dir(DirectoryType::Include).unwrap();
-    let wdf_lib = get_kmdf_dir(DirectoryType::Library).unwrap();
 
     // Supplimentary headers (presumably from ntddk)
     let crt_dir = include_dir.join("crt");
@@ -130,18 +128,12 @@ fn generate() {
         .ctypes_prefix("::core::ffi")
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
         .clang_arg(format!("-I{}", include_dir.to_str().unwrap()))
-        .clang_arg(format!("-I{}", wdf_dir.to_str().unwrap()))
         .parse_callbacks(Box::new(RenameTyped))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-        // Declared in lib.rs
-        // .blocklist_item("WdfMinimumVersionRequired")
         // Just so that we don't have to include typedefs for KIDTENTRY64 and KGDTENTRY64
         .blocklist_type("_?P?KPCR.*")
         .blocklist_type("_?P?KIDTENTRY64")
         .blocklist_type("_?P?KGDTENTRY64")
-        // Depends on windows-kernel-sys for these definitions
-        .blocklist_file(".*wdm.h")
-        .blocklist_file(".*ntdef.h")
         .generate()
         .unwrap()
         .write_to_file(out_path.join("bindings.rs"))
@@ -152,10 +144,8 @@ fn generate() {
     cc::Build::new()
         .flag("/kernel")
         .include(include_dir)
-        .include(wdf_dir)
         .include(crt_dir)
         .include(shared_dir)
-        .object(wdf_lib.join("wdfldr.lib"))
         .file("src/wrapper.c")
         .compile("wrapper_bindings");
 }

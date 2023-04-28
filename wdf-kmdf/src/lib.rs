@@ -7,9 +7,10 @@ pub mod raw {
     #![allow(non_snake_case)] // Preserving the names of the original WDF functions
 
     use wdf_kmdf_sys::{
-        NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
-        PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
+        PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
+        WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
     };
+    use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT};
 
     /// Which function table to use
     macro_rules! function_table {
@@ -230,11 +231,12 @@ pub mod raw {
     ///
     /// ## Safety
     ///
-    /// Must not be called during [`WdfDriverCreate`]
+    /// Must not be called while [`WdfDriverCreate`] is executing
     #[must_use]
     pub unsafe fn WdfGetDriver() -> Option<WDFDRIVER> {
-        // SAFETY: Caller handles racing accesses
-        let driver = unsafe { *wdf_kmdf_sys::WdfDriverGlobals }.Driver;
+        // SAFETY: Caller handles racing accesses, and is effectively initialized & immutable after WdfDriverCreate
+        let globals = unsafe { &*wdf_kmdf_sys::WdfDriverGlobals };
+        let driver = globals.Driver;
 
         Some(driver).filter(|drv| drv.is_null())
     }
