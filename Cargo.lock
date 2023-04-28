@@ -269,6 +269,7 @@ dependencies = [
  "static_assertions",
  "wdf-kmdf-sys",
  "windows-kernel-sys",
+ "windows-sys",
 ]
 
 [[package]]
