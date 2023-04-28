@@ -7,8 +7,4 @@
     clippy::missing_safety_doc,
 )]
 
-pub use core::ffi::*;
-
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
-

@@ -7,7 +7,6 @@
     clippy::missing_safety_doc,
 )]
 
-pub use core::ffi::*;
 use windows_kernel_sys::*;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
