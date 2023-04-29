@@ -10,7 +10,7 @@ pub mod raw {
         PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
         WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
     };
-    use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT};
+    use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
     /// Which function table to use
     macro_rules! function_table {
@@ -241,7 +241,25 @@ pub mod raw {
         Some(driver).filter(|drv| drv.is_null())
     }
 
-    // endregion: driver
+    // endregion: wdfdriver
+
+    // region: wdfobject
+
+    /// If `TypeInfo` has a context space associated with the object, returns a pointer to the context space.
+    /// Otherwise, returns `NULL`
+    ///
+    /// ## Safety
+    ///
+    /// - `Handle` must point to a valid WDFOBJECT
+    /// - `TypeInfo` must point to a vaid context space info
+    pub unsafe fn WdfObjectGetTypedContextWorker(
+        Handle: WDFOBJECT,
+        TypeInfo: PCWDF_OBJECT_CONTEXT_TYPE_INFO,
+    ) -> PVOID {
+        dispatch!(WdfObjectGetTypedContextWorker(Handle, TypeInfo))
+    }
+
+    // endregion: wdfobject
 }
 
 pub mod object {
