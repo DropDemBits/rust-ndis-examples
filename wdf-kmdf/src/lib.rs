@@ -7,8 +7,9 @@ pub mod raw {
     #![allow(non_snake_case)] // Preserving the names of the original WDF functions
 
     use wdf_kmdf_sys::{
-        PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
-        WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
+        PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
+        PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER, WDFOBJECT, WDF_NO_HANDLE,
+        WDF_NO_OBJECT_ATTRIBUTES,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
@@ -264,7 +265,10 @@ pub mod raw {
 
 pub mod object {
 
-    use wdf_kmdf_sys::_WDF_OBJECT_CONTEXT_TYPE_INFO;
+    use wdf_kmdf_sys::{
+        WDFOBJECT, _WDF_EXECUTION_LEVEL, _WDF_OBJECT_ATTRIBUTES, _WDF_OBJECT_CONTEXT_TYPE_INFO,
+        _WDF_SYNCHRONIZATION_SCOPE,
+    };
 
     #[doc(hidden)]
     pub mod __macro_internals {
@@ -404,28 +408,235 @@ pub mod object {
         /// No synchronization is performed, so event callbacks may execute concurrently
         None = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeNone,
     }
+
+    pub(crate) fn default_object_attributes<T: IntoContextSpace>() -> _WDF_OBJECT_ATTRIBUTES {
+        // SAFETY: All-zeros pattern is valid for _WDF_OBJECT_ATTRIBUTES
+        let mut object_attrs: _WDF_OBJECT_ATTRIBUTES = unsafe { core::mem::zeroed() };
+
+        // Constant size, known to be small
+        object_attrs.Size = core::mem::size_of::<_WDF_OBJECT_ATTRIBUTES>() as u32;
+        object_attrs.SynchronizationScope =
+            _WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent;
+        object_attrs.ExecutionLevel = _WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent;
+
+        // Always set the context info
+        object_attrs.ContextTypeInfo = T::CONTEXT_INFO as *const _;
+
+        object_attrs
+    }
+
+    /// Converts the typed handle into the generic version
+    pub trait AsObjectHandle {
+        fn as_handle(&self) -> WDFOBJECT;
+        fn as_handle_mut(&mut self) -> WDFOBJECT;
+    }
+
+    /// Gets a mut ref to the associated context space, or `None` if not found
+    pub(crate) fn get_context<'space, T: IntoContextSpace>(
+        handle: &'space impl AsObjectHandle,
+    ) -> Option<&'space T> {
+        let handle = handle.as_handle();
+
+        // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
+        let context_space =
+            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
+        let context_space = context_space.cast::<T>();
+
+        // SAFETY:
+        // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
+        //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
+        // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
+        // - It's our responsibility to ensure that the context space is initialized
+        unsafe { context_space.as_ref() }
+    }
+
+    /// Gets a mut ref to the associated context space, or `None` if not found
+    pub(crate) fn get_context_mut<'space, T: IntoContextSpace>(
+        handle: &'space mut impl AsObjectHandle,
+    ) -> Option<&'space mut T> {
+        let handle = handle.as_handle_mut();
+
+        // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
+        let context_space =
+            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
+        let context_space = context_space.cast::<T>();
+
+        // SAFETY:
+        // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
+        //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
+        // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
+        // - It's our responsibility to ensure that the context space is initialized
+        // - &mut on the original handle guarantees exclusivity
+        unsafe { context_space.as_mut() }
+    }
 }
 
 pub mod driver {
     use core::marker::PhantomData;
 
-    use wdf_kmdf_sys::WDFDRIVER;
+    use vtable::vtable;
+    use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, _WDF_DRIVER_INIT_FLAGS};
+    use windows_kernel_sys::{
+        sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
+        Error, PCUNICODE_STRING, PDRIVER_OBJECT,
+    };
 
-    use crate::object::IntoContextSpace;
+    use crate::{
+        object::{self, default_object_attributes, IntoContextSpace},
+        raw,
+    };
 
-    pub struct Driver<T: IntoContextSpace> {
-        handle: WDFDRIVER,
+    pub struct Driver<T: DriverCallbacks> {
         _context: PhantomData<T>,
     }
 
     /// Opaque driver handle used during the initialization of the driver's context space
     pub struct DriverHandle(WDFDRIVER);
 
-    pub struct MiniportDriver<T: IntoContextSpace> {
-        handle: WDFDRIVER,
-        _context: PhantomData<T>,
+    impl DriverHandle {
+        /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
+        pub fn raw_handle(&mut self) -> WDFDRIVER {
+            self.0
+        }
     }
 
-    /// Opaque miniport driver handle used during the initialization of the miniport driver's context space
-    pub struct MiniportDriverHandle(WDFDRIVER);
+    impl object::AsObjectHandle for DriverHandle {
+        fn as_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.0.cast()
+        }
+
+        fn as_handle_mut(&mut self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.0.cast()
+        }
+    }
+
+    #[derive(Default)]
+    pub struct DriverConfig {
+        /// If the driver is a PnP driver, and thus requires an `EvtDriverDeviceAdd` callback.
+        pnp_mode: PnpMode,
+        /// Tag to mark allocations made by WDF
+        pool_tag: Option<u32>,
+    }
+
+    #[derive(Default, Clone, Copy, PartialEq, Eq)]
+    pub enum PnpMode {
+        /// This is a pnp driver, and if there isn't already an `device_add` callback,
+        /// the default one is used.
+        #[default]
+        Pnp,
+        /// This is a non-pnp driver, and the `device_add` callback shouldn't be present
+        NonPnp,
+    }
+
+    /// Event callbacks for a driver
+    #[vtable]
+    pub trait DriverCallbacks: IntoContextSpace {
+        // FIXME: Just a stub, not really the real thing
+        #[allow(unused)]
+        fn device_add(&self, device_init: PWDFDEVICE_INIT) -> Result<(), Error> {
+            Ok(())
+        }
+        // FIXME: Document
+        fn unload(&mut self) {}
+    }
+
+    impl<T: DriverCallbacks> Driver<T> {
+        /// Creates a new WDF Driver Object
+        ///
+        /// ## IRQL: Passive
+        ///
+        /// ## Returns
+        ///
+        /// Driver object wrapper, or:
+        ///
+        /// - `STATUS_INVALID_PARAMETER` if non-pnp mode is specified, but `device_add` is also specified
+        /// - `STATUS_DRIVER_INTERNAL_ERROR` if called more than once
+        ///
+        /// ## Safety
+        ///
+        /// - This must only be called from the `DriverEntry` entry point
+        /// - `driver_object` and `registry_path` should be valid
+        pub unsafe fn create(
+            driver_object: PDRIVER_OBJECT,
+            registry_path: PCUNICODE_STRING,
+            config: DriverConfig,
+            // Debating on whether to use the `pinned_init` crate :O
+            // init_context: impl FnOnce(DriverHandle) -> Result<T, Error>,
+        ) -> Result<(), Error> {
+            if matches!(config.pnp_mode, PnpMode::NonPnp) && T::HAS_DEVICE_ADD {
+                // Non-pnp drivers shouldn't specify the `device_add` callback
+                return Err(Error(STATUS_INVALID_PARAMETER));
+            }
+
+            // NOTE: Since we can't `WdfObjectDelete` a driver, the framework handles
+            // uninitializing the driver via EvtDriverUnload, so we don't need to set
+            // EvtCleanupCallback and EvtDestroyCallback
+            let mut object_attrs = default_object_attributes::<T>();
+
+            // SAFETY: All-zeros pattern is valid for _WDF_DRIVER_CONFIG
+            let mut driver_config: wdf_kmdf_sys::_WDF_DRIVER_CONFIG =
+                unsafe { core::mem::zeroed() };
+            driver_config.Size = core::mem::size_of::<wdf_kmdf_sys::_WDF_DRIVER_CONFIG>() as u32;
+
+            driver_config.EvtDriverDeviceAdd =
+                T::HAS_DEVICE_ADD.then_some(Self::__dispatch_driver_device_add);
+            driver_config.EvtDriverUnload = T::HAS_UNLOAD.then_some(Self::__dispatch_driver_unload);
+
+            if matches!(config.pnp_mode, PnpMode::NonPnp) {
+                driver_config.DriverInitFlags |=
+                    _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver as u32;
+            }
+
+            // NOTE: This is always available since we're targeting KMDF versions after 1.5
+            if let Some(tag) = config.pool_tag {
+                driver_config.DriverPoolTag = tag
+            }
+
+            // Make it!
+            let mut handle = DriverHandle(core::ptr::null_mut());
+            // SAFETY: Caller ensures that we're in DriverEntry
+            unsafe {
+                Error::to_err(raw::WdfDriverCreate(
+                    driver_object,
+                    registry_path,
+                    Some(&mut object_attrs),
+                    &mut driver_config,
+                    Some(&mut handle.0),
+                ))?
+            }
+
+            // TODO: Initialize context
+            Ok(())
+        }
+
+        unsafe extern "C" fn __dispatch_driver_device_add(
+            driver: WDFDRIVER,
+            device_init: PWDFDEVICE_INIT,
+        ) -> NTSTATUS {
+            // NOTE: Unsure if this can be called concurrently, so for safe
+            let handle = DriverHandle(driver);
+            let Some(context_space) = object::get_context(&handle) else {
+                return windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS;
+            };
+
+            match T::device_add(context_space, device_init) {
+                Ok(()) => windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS,
+                Err(err) => err.0,
+            }
+        }
+
+        unsafe extern "C" fn __dispatch_driver_unload(driver: WDFDRIVER) {
+            // NOTE: Driver unload only gets called once, and after ...
+            let mut handle = DriverHandle(driver);
+            let Some(context_space) = object::get_context_mut(&mut handle) else {
+                // Nothing to do
+                return;
+            };
+
+            // Do the unload callback...
+            T::unload(context_space);
+            // And drop it!
+            core::ptr::drop_in_place(context_space);
+        }
+    }
 }

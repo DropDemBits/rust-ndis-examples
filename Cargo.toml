@@ -9,6 +9,9 @@ members = [
   "vtable"
 ]
 
+[workspace.dependencies]
+vtable = {path = "vtable"}
+
 [profile.dev]
 panic = "abort"
 

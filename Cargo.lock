@@ -135,6 +135,7 @@ name = "ndisprot-kmdf"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+ "vtable",
  "wdf-kmdf",
  "wdf-kmdf-sys",
  "windows-kernel-sys",
@@ -282,9 +283,9 @@ version = "0.1.0"
 dependencies = [
  "paste",
  "static_assertions",
+ "vtable",
  "wdf-kmdf-sys",
  "windows-kernel-sys",
- "windows-sys",
 ]
 
 [[package]]
@@ -338,6 +339,7 @@ dependencies = [
  "bindgen",
  "cc",
  "thiserror",
+ "windows-sys",
  "winreg",
 ]
 

@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 wdf-kmdf-sys = { path = "../wdf-kmdf-sys" }
 wdf-kmdf = { path = "../wdf-kmdf" }
 windows-kernel-sys = { path = "../windows-kernel-sys" }
+vtable.workspace = true
 
 [build-dependencies]
 thiserror = "1.0.40"

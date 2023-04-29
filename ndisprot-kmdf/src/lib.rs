@@ -13,34 +13,62 @@ unsafe extern "system" fn DriverEntry(
     driver_object: PDRIVER_OBJECT,
     registry_path: PUNICODE_STRING,
 ) -> NTSTATUS {
-    // Allocate the driver configuration object
-    let mut config: MaybeUninit<WDF_DRIVER_CONFIG> = MaybeUninit::uninit();
-
     // Print "Hello World" for DriverEntry
     unsafe { DbgPrint(b"KmdfHewwoWowwd: DriverEntry\n\0".as_ptr().cast()) };
 
-    // Initiaze the driver configuration object to register the
-    // entry point for the EvtDeviceAdd callback, evt_device_add
-    unsafe { wdf_driver_config_init(config.as_mut_ptr(), Some(evt_device_add)) };
-    // SAFETY: `wdf_driver_config_init` initializes it
-    let mut config = unsafe { config.assume_init() };
-
-    // Finally, create the driver object
-    unsafe { wdf_kmdf::raw::WdfDriverCreate(driver_object, registry_path, None, &mut config, None) }
+    match wdf_kmdf::driver::Driver::<KernelModule>::create(
+        driver_object,
+        registry_path,
+        wdf_kmdf::driver::DriverConfig::default(),
+    ) {
+        Ok(()) => windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS,
+        Err(err) => err.0,
+    }
 }
 
-unsafe extern "C" fn evt_device_add(
-    _driver: WDFDRIVER,
-    mut device_init: PWDFDEVICE_INIT,
-) -> NTSTATUS {
-    // Allocate the device object
-    let mut h_device: WDFDEVICE = core::ptr::null_mut();
+struct KernelModule {}
 
-    // Print "Hello World"
-    unsafe { DbgPrint(b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast()) };
+wdf_kmdf::impl_context_space!(KernelModule);
 
-    // Create the device object
-    unsafe { wdf_kmdf::raw::WdfDeviceCreate(&mut device_init, None, &mut h_device) }
+#[vtable::vtable]
+impl wdf_kmdf::driver::DriverCallbacks for KernelModule {
+    fn device_add(
+        &self,
+        mut device_init: PWDFDEVICE_INIT,
+    ) -> Result<(), windows_kernel_sys::Error> {
+        // Allocate the device object
+        let mut h_device: WDFDEVICE = core::ptr::null_mut();
+
+        // Print "Hello World"
+        unsafe { DbgPrint(b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast()) };
+
+        // Create the device object
+        let status =
+            unsafe { wdf_kmdf::raw::WdfDeviceCreate(&mut device_init, None, &mut h_device) };
+
+        windows_kernel_sys::Error::to_err(status)
+    }
+}
+
+// unfortunately we need to declare these two (__CxxFrameHandler3 & _fltused)
+//
+// `_fltused` is particularly problematic, since it implies that we have
+// floating point operations somewhere, and on x86 kernel mode drivers
+// should wrap floating point operations with state saving.
+// (see https://github.com/Trantect/win_driver_example/issues/4)
+//
+// Since we don't plan to support the x86 arch, this isn't *too* bad,
+// but still sorta bad.
+//
+// This maybe comes from llvm being unable to determine that panicking
+// never happens, but might require having to use a crate using linker
+// tricks to guarantee it
+#[used]
+#[no_mangle]
+pub static _fltused: i32 = 0;
+#[no_mangle]
+pub extern "system" fn __CxxFrameHandler3() -> i32 {
+    0
 }
 
 #[cfg(not(test))]
