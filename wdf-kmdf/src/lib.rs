@@ -197,7 +197,7 @@ pub mod raw {
     ///
     /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
     /// - ([ChangeQueueState]) Must not be called concurrently with other state-changing functions
-    /// - ([DriverAttributeChanged]) The existing execution level or syncronization scope must not be modified(?)
+    /// - ([DriverAttributeChanged]) The existing execution level or synchronization scope must not be modified(?)
     /// - ([DriverCreate]) Must only be called from the `DriverEntry` point
     /// - ([MiniportOnlyWdmDevice]) ???
     ///
@@ -248,6 +248,12 @@ pub mod object {
 
     use wdf_kmdf_sys::_WDF_OBJECT_CONTEXT_TYPE_INFO;
 
+    #[doc(hidden)]
+    pub mod __macro_internals {
+        pub use static_assertions::const_assert;
+        pub use windows_kernel_sys::MEMORY_ALLOCATION_ALIGNMENT;
+    }
+
     pub type ContextInfo = _WDF_OBJECT_CONTEXT_TYPE_INFO;
 
     #[macro_export]
@@ -269,6 +275,12 @@ pub mod object {
                         EvtDriverGetUniqueContextType: None,
                     };
             }
+
+            // Alignment of context type should be smaller than or equal to the arch's defined alignment
+            $crate::object::__macro_internals::const_assert!(
+                ::core::mem::align_of::<$ty>()
+                    <= $crate::object::__macro_internals::MEMORY_ALLOCATION_ALIGNMENT as usize
+            );
         };
     }
 
@@ -276,7 +288,10 @@ pub mod object {
     ///
     /// ## Safety
     ///
-    /// Type sizing must be accurate.
+    /// - Type sizing must be accurate.
+    /// - Alignment must be smaller than or equal to the architecture defined alignment
+    ///   (16 on 64-bit systems, 8 on 32-bit systems)
+    ///
     /// Use the [`impl_context_space`] macro to do it safely.
     pub unsafe trait IntoContextSpace {
         const CONTEXT_INFO: &'static ContextInfo;
