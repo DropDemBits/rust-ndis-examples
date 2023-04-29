@@ -311,19 +311,16 @@ pub mod object {
     ///
     /// - Queue objects
     /// - Timer objects
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+    #[derive(Copy, Clone, PartialEq, Eq, Default)]
     #[repr(i32)]
     pub enum ExecutionLevel {
-        /// Use the default execution level for an object
+        /// Use the execution level from the parent device object.
         ///
-        /// For [`Driver`](crate::driver::Driver) and [`MiniportDriver`](crate::driver::MiniportDriver):
+        /// This is also used as the default execution level for [`Driver`](crate::driver::Driver),
+        /// where:
         /// - In KMDF, the default execution level is [`ExecutionLevel::Dispatch`]
         /// - In UMDF, the default execution level is [`ExecutionLevel::Passive`]
-        ///
-        /// For all other objects, the default is [`ExecutionLevel::InheritFromParent`]
         #[default]
-        ObjectDefault,
-        /// Use the execution level from the parent device object
         InheritFromParent = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent,
         /// Always execute event callbacks at IRQL == PASSIVE_LEVEL
         Passive = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelPassive,
@@ -338,18 +335,14 @@ pub mod object {
     /// - Driver objects
     /// - Device objects
     /// - Queue objects
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+    #[derive(Copy, Clone, PartialEq, Eq, Default)]
     #[repr(i32)]
     pub enum SynchronizationScope {
-        /// Use the default synchronization level for an object
+        /// Use the synchronization scope from the parent device object.
         ///
-        /// For [`Driver`](crate::driver::Driver) and [`MiniportDriver`](crate::driver::MiniportDriver),
-        /// the default is [`SynchronizationScope::None`].
-        ///
-        /// For all other objects, the default is [`SynchronizationScope::InheritFromParent`]
+        /// This is also used as the default synchronization level for [`Driver`](crate::driver::Driver),
+        /// where it is [`SynchronizationScope::None`].
         #[default]
-        ObjectDefault,
-        /// Use the synchronization scope from the parent device object
         InheritFromParent =
             wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent,
         /// Event callbacks for all of the device's descendant objects will be executed sequentially (i.e.
