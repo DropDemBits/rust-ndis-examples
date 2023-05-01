@@ -580,7 +580,10 @@ pub mod driver {
 
             driver_config.EvtDriverDeviceAdd =
                 T::HAS_DEVICE_ADD.then_some(Self::__dispatch_driver_device_add);
-            driver_config.EvtDriverUnload = T::HAS_UNLOAD.then_some(Self::__dispatch_driver_unload);
+
+            // NOTE: We always specify an unload function since that's what calls
+            // T's drop code
+            driver_config.EvtDriverUnload = Some(Self::__dispatch_driver_unload);
 
             if matches!(config.pnp_mode, PnpMode::NonPnp) {
                 driver_config.DriverInitFlags |=
@@ -633,8 +636,11 @@ pub mod driver {
                 return;
             };
 
-            // Do the unload callback...
-            T::unload(context_space);
+            if T::HAS_UNLOAD {
+                // Do the unload callback...
+                T::unload(context_space);
+            }
+
             // And drop it!
             core::ptr::drop_in_place(context_space);
         }
