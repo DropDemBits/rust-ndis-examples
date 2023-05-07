@@ -475,7 +475,7 @@ pub mod driver {
     use core::marker::PhantomData;
 
     use vtable::vtable;
-    use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, _WDF_DRIVER_INIT_FLAGS};
+    use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDFOBJECT, _WDF_DRIVER_INIT_FLAGS};
     use windows_kernel_sys::{
         sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
         Error, PCUNICODE_STRING, PDRIVER_OBJECT,
@@ -582,6 +582,8 @@ pub mod driver {
             // uninitializing the driver via EvtDriverUnload, so we don't need to set
             // EvtCleanupCallback and EvtDestroyCallback
             let mut object_attrs = default_object_attributes::<T>();
+            object_attrs.EvtCleanupCallback = Some(Self::__dispatch_cleanup);
+            object_attrs.EvtDestroyCallback = Some(Self::__dispatch_destroy);
 
             // SAFETY: All-zeros pattern is valid for _WDF_DRIVER_CONFIG
             let mut driver_config: wdf_kmdf_sys::_WDF_DRIVER_CONFIG =
@@ -658,6 +660,46 @@ pub mod driver {
 
             // And drop it!
             core::ptr::drop_in_place(context_space);
+        }
+
+        // Why specify cleanup & destroy?
+        // figure out when they're called in relation to unload
+        // since WPP tracing says to de-init it in the cleanup stage for some reason
+
+        unsafe extern "C" fn __dispatch_cleanup(driver: WDFOBJECT) {
+            // SAFETY: Can only construct an immutable handle since cleanup can
+            // happen from multiple places
+            let handle = unsafe { DriverHandle::wrap(driver.cast()) };
+
+            let Some(context_space) = object::get_context::<T>(&handle) else {
+                return;
+            };
+
+            unsafe {
+                windows_kernel_sys::DbgPrintEx(
+                    windows_kernel_sys::_DPFLTR_TYPE::DPFLTR_IHVDRIVER_ID as u32,
+                    windows_kernel_sys::DPFLTR_INFO_LEVEL,
+                    b"KmdfHewwoWowwd: EvtCleanup\n\0".as_ptr().cast(),
+                )
+            };
+        }
+
+        unsafe extern "C" fn __dispatch_destroy(driver: WDFOBJECT) {
+            // SAFETY: Can construct mutable handle since destroy is only
+            // called once and exclusively
+            let mut handle = unsafe { DriverHandle::wrap(driver.cast()) };
+
+            let Some(context_space) = object::get_context::<T>(&mut handle) else {
+                return;
+            };
+
+            unsafe {
+                windows_kernel_sys::DbgPrintEx(
+                    windows_kernel_sys::_DPFLTR_TYPE::DPFLTR_IHVDRIVER_ID as u32,
+                    windows_kernel_sys::DPFLTR_INFO_LEVEL,
+                    b"KmdfHewwoWowwd: EvtDestroy\n\0".as_ptr().cast(),
+                )
+            };
         }
     }
 }
