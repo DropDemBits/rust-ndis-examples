@@ -494,6 +494,16 @@ pub mod driver {
     pub struct DriverHandle(WDFDRIVER);
 
     impl DriverHandle {
+        /// Wraps the handle in a raw driver object
+        ///
+        /// SAFETY:
+        ///
+        /// Respect aliasing rules, since this can be used to
+        /// generate aliasing mutable references to the context space
+        unsafe fn wrap(handle: WDFDRIVER) -> Self {
+            Self(handle)
+        }
+
         /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
         pub fn raw_handle(&mut self) -> WDFDRIVER {
             self.0
@@ -616,8 +626,12 @@ pub mod driver {
             driver: WDFDRIVER,
             device_init: PWDFDEVICE_INIT,
         ) -> NTSTATUS {
-            // NOTE: Unsure if this can be called concurrently, so for safe
-            let handle = DriverHandle(driver);
+            // NOTE: Unsure if this can be called concurrently, so for safety
+            // we only use an immutable handle.
+            // SAFETY: Only used behind an immutable reference, so we prevent
+            // concurrent immutable mutations
+            let handle = unsafe { DriverHandle::wrap(driver) };
+
             let Some(context_space) = object::get_context(&handle) else {
                 return windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS;
             };
@@ -629,8 +643,9 @@ pub mod driver {
         }
 
         unsafe extern "C" fn __dispatch_driver_unload(driver: WDFDRIVER) {
-            // NOTE: Driver unload only gets called once, and after ...
-            let mut handle = DriverHandle(driver);
+            // SAFETY: Driver unload only gets called once, and after everything?
+            let mut handle = unsafe { DriverHandle::wrap(driver) };
+
             let Some(context_space) = object::get_context_mut(&mut handle) else {
                 // Nothing to do
                 return;
