@@ -1,11 +1,9 @@
 #![no_std]
 
-use core::mem::MaybeUninit;
-
-use wdf_kmdf_sys::{
-    wdf_driver_config_init, PWDFDEVICE_INIT, WDFDEVICE, WDFDRIVER, WDF_DRIVER_CONFIG,
+use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDEVICE, _DPFLTR_TYPE::DPFLTR_IHVDRIVER_ID};
+use windows_kernel_sys::{
+    DbgPrintEx, DPFLTR_INFO_LEVEL, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING,
 };
-use windows_kernel_sys::{DbgPrint, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING};
 
 #[allow(non_snake_case)]
 #[no_mangle]
@@ -14,7 +12,13 @@ unsafe extern "system" fn DriverEntry(
     registry_path: PUNICODE_STRING,
 ) -> NTSTATUS {
     // Print "Hello World" for DriverEntry
-    unsafe { DbgPrint(b"KmdfHewwoWowwd: DriverEntry\n\0".as_ptr().cast()) };
+    unsafe {
+        DbgPrintEx(
+            DPFLTR_IHVDRIVER_ID as u32,
+            DPFLTR_INFO_LEVEL,
+            b"KmdfHewwoWowwd: DriverEntry\n\0".as_ptr().cast(),
+        )
+    };
 
     match wdf_kmdf::driver::Driver::<KernelModule>::create(
         driver_object,
@@ -40,7 +44,13 @@ impl wdf_kmdf::driver::DriverCallbacks for KernelModule {
         let mut h_device: WDFDEVICE = core::ptr::null_mut();
 
         // Print "Hello World"
-        unsafe { DbgPrint(b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast()) };
+        unsafe {
+            DbgPrintEx(
+                DPFLTR_IHVDRIVER_ID as u32,
+                DPFLTR_INFO_LEVEL,
+                b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast(),
+            )
+        };
 
         // Create the device object
         let status =
