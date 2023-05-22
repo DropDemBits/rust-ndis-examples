@@ -5,6 +5,7 @@ members = [
   "ndisprot-kmdf",
   "wdf-kmdf-sys",
   "windows-kernel-sys",
+  "windows-kernel-rs",
   "wdf-kmdf",
   "vtable"
 ]
