@@ -1,5 +1,31 @@
 #![no_std]
 
+pub mod alloc {
+    //! Global kernel allocators
+    //! Modified from <https://github.com/not-matthias/kernel-alloc-rs/blob/19b2b992c0f0dacf60ba60e758929809f85b5790/src/lib.rs>
+    use core::alloc::{GlobalAlloc, Layout};
+
+    use windows_kernel_sys::{ExAllocatePool2, ExFreePool, POOL_FLAG_NON_PAGED};
+
+    extern crate alloc;
+
+    const POOL_TAG: u32 = u32::from_ne_bytes(*b"tsuR");
+
+    /// The global kernel allocator structure.
+    pub struct KernelAlloc;
+
+    unsafe impl GlobalAlloc for KernelAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // Defer error handling to clients
+            ExAllocatePool2(POOL_FLAG_NON_PAGED, layout.size() as u64, POOL_TAG) as _
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+            ExFreePool(ptr as _);
+        }
+    }
+}
+
 pub mod string {
     //! Helpers for working with Unicode Strings
 

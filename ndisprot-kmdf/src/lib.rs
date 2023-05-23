@@ -1,8 +1,9 @@
 #![no_std]
+#![feature(allocator_api)]
 
 use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDEVICE, _DPFLTR_TYPE::DPFLTR_IHVDRIVER_ID};
 use windows_kernel_sys::{
-    DbgPrintEx, DPFLTR_INFO_LEVEL, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING,
+    DbgPrintEx, Error, DPFLTR_INFO_LEVEL, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING,
 };
 
 #[allow(non_snake_case)]
@@ -11,6 +12,9 @@ unsafe extern "system" fn DriverEntry(
     driver_object: PDRIVER_OBJECT,
     registry_path: PUNICODE_STRING,
 ) -> NTSTATUS {
+    #[global_allocator]
+    static ALLOCATOR: windows_kernel_rs::alloc::KernelAlloc = windows_kernel_rs::alloc::KernelAlloc;
+
     // Print "Hello World" for DriverEntry
     unsafe {
         DbgPrintEx(
@@ -24,6 +28,7 @@ unsafe extern "system" fn DriverEntry(
         driver_object,
         registry_path,
         wdf_kmdf::driver::DriverConfig::default(),
+        |_| pinned_init::try_init!(KernelModule {}? Error),
     ) {
         Ok(()) => windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS,
         Err(err) => err.0,

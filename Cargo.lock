@@ -134,10 +134,12 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 name = "ndisprot-kmdf"
 version = "0.1.0"
 dependencies = [
+ "pinned-init",
  "thiserror",
  "vtable",
  "wdf-kmdf",
  "wdf-kmdf-sys",
+ "windows-kernel-rs",
  "windows-kernel-sys",
  "winreg",
 ]
@@ -169,6 +171,25 @@ name = "peeking_take_while"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
+
+[[package]]
+name = "pinned-init"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8144196aff61e9c5f3dc1155153cb329e6467ad9d9922d617d630222a34a099d"
+dependencies = [
+ "pinned-init-macro",
+]
+
+[[package]]
+name = "pinned-init-macro"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d2762d09faae44ff77001ac347c1727b9bbcc24ad5a9a792e858b8a2acbbf11"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
 
 [[package]]
 name = "prettyplease"
@@ -282,6 +303,7 @@ name = "wdf-kmdf"
 version = "0.1.0"
 dependencies = [
  "paste",
+ "pinned-init",
  "static_assertions",
  "vtable",
  "wdf-kmdf-sys",

@@ -1,6 +1,5 @@
 //! Rust KMDF Abstractions
 #![no_std]
-#![feature(const_cstr_methods, const_trait_impl)]
 
 pub mod raw {
     //! Raw bindings to KMDF functions
@@ -432,7 +431,11 @@ pub mod object {
     }
 
     /// Gets a mut ref to the associated context space, or `None` if not found
-    pub(crate) fn get_context<'space, T: IntoContextSpace>(
+    ///
+    /// ## Safety
+    ///
+    /// The object's context space must be initialized
+    pub(crate) unsafe fn get_context<'space, T: IntoContextSpace>(
         handle: &'space impl AsObjectHandle,
     ) -> Option<&'space T> {
         let handle = handle.as_handle();
@@ -446,12 +449,16 @@ pub mod object {
         // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
         //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
         // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
-        // - It's our responsibility to ensure that the context space is initialized
+        // - It's the caller's responsibility to ensure that the context space is initialized
         unsafe { context_space.as_ref() }
     }
 
     /// Gets a mut ref to the associated context space, or `None` if not found
-    pub(crate) fn get_context_mut<'space, T: IntoContextSpace>(
+    ///
+    /// ## Safety
+    ///
+    /// The object's context space must be initialized
+    pub(crate) unsafe fn get_context_mut<'space, T: IntoContextSpace>(
         handle: &'space mut impl AsObjectHandle,
     ) -> Option<&'space mut T> {
         let handle = handle.as_handle_mut();
@@ -465,15 +472,43 @@ pub mod object {
         // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
         //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
         // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
-        // - It's our responsibility to ensure that the context space is initialized
+        // - It's the caller's responsibility to ensure that the context space is initialized
         // - &mut on the original handle guarantees exclusivity
         unsafe { context_space.as_mut() }
+    }
+
+    /// Initializes the object's context area
+    ///
+    /// ## Safety
+    ///
+    /// - Must not reinitialize an object's context space
+    /// - Object must actually have the context space
+    pub(crate) unsafe fn context_pin_init<'space, T: IntoContextSpace, E>(
+        handle: &'space mut impl AsObjectHandle,
+        pin_init: impl pinned_init::PinInit<T, E>,
+    ) -> Result<(), E> {
+        let handle = handle.as_handle_mut();
+
+        // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
+        let context_space =
+            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
+        let context_space = context_space.cast::<T>();
+
+        // SAFETY:
+        // - The following ensures that the context space is valid pinned uninitialized memory:
+        //   - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
+        //     (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
+        //   - WDF does not move the allocation for the original object context
+        //   - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
+        // - We directly return the produced error
+        unsafe { pin_init.__pinned_init(context_space) }
     }
 }
 
 pub mod driver {
     use core::marker::PhantomData;
 
+    use pinned_init::PinInit;
     use vtable::vtable;
     use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDFOBJECT, _WDF_DRIVER_INIT_FLAGS};
     use windows_kernel_sys::{
@@ -566,13 +601,16 @@ pub mod driver {
         ///
         /// - This must only be called from the `DriverEntry` entry point
         /// - `driver_object` and `registry_path` should be valid
-        pub unsafe fn create(
+        pub unsafe fn create<F, R>(
             driver_object: PDRIVER_OBJECT,
             registry_path: PCUNICODE_STRING,
             config: DriverConfig,
-            // Debating on whether to use the `pinned_init` crate :O
-            // init_context: impl FnOnce(DriverHandle) -> Result<T, Error>,
-        ) -> Result<(), Error> {
+            init_context: F,
+        ) -> Result<(), Error>
+        where
+            F: FnOnce(&DriverHandle) -> R,
+            R: PinInit<T, Error>,
+        {
             if matches!(config.pnp_mode, PnpMode::NonPnp) && T::HAS_DEVICE_ADD {
                 // Non-pnp drivers shouldn't specify the `device_add` callback
                 return Err(Error(STATUS_INVALID_PARAMETER));
@@ -608,7 +646,8 @@ pub mod driver {
             }
 
             // Make it!
-            let mut handle = DriverHandle(core::ptr::null_mut());
+            // SAFETY: Replaced with the real driver pointer next
+            let mut handle = unsafe { DriverHandle::wrap(core::ptr::null_mut()) };
             // SAFETY: Caller ensures that we're in DriverEntry
             unsafe {
                 Error::to_err(raw::WdfDriverCreate(
@@ -620,8 +659,14 @@ pub mod driver {
                 ))?
             }
 
-            // TODO: Initialize context
-            Ok(())
+            // Initialize context
+            let pin_init = init_context(&handle);
+
+            // SAFETY:
+            // - It's WDF's responsibility to insert the context area, since we create
+            //   the default object attributes with T's context area
+            // - The driver object was just created
+            unsafe { object::context_pin_init::<T, Error>(&mut handle, pin_init) }
         }
 
         unsafe extern "C" fn __dispatch_driver_device_add(
@@ -689,7 +734,7 @@ pub mod driver {
             // called once and exclusively
             let mut handle = unsafe { DriverHandle::wrap(driver.cast()) };
 
-            let Some(context_space) = object::get_context::<T>(&mut handle) else {
+            let Some(context_space) = object::get_context_mut::<T>(&mut handle) else {
                 return;
             };
 

@@ -11,7 +11,8 @@ members = [
 ]
 
 [workspace.dependencies]
-vtable = {path = "vtable"}
+vtable = { path = "vtable" }
+pinned-init = { version = "0.0.6", default-features = false, features = ["alloc"] }
 
 [profile.dev]
 panic = "abort"
