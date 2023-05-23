@@ -1,5 +1,6 @@
 //! Rust KMDF Abstractions
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod raw {
     //! Raw bindings to KMDF functions
@@ -28,16 +29,18 @@ pub mod raw {
                 // Must be in the always-available function category
                 static_assertions::const_assert!(FN_INDEX < wdf_kmdf_sys::WDF_ALWAYS_AVAILABLE_FUNCTION_COUNT as usize);
 
-                let fn_handle = function_table!()
+                // SAFETY: Read-only, initialized by the time we use it, and checked to be in bounds
+                let fn_handle = unsafe { function_table!()
                     .add(FN_INDEX)
-                    .cast::<wdf_kmdf_sys::[<PFN_ $name:upper>]>();
+                    .cast::<wdf_kmdf_sys::[<PFN_ $name:upper>]>()
+                };
 
                 // SAFETY: Ensured that this is present by the static assert
                 unsafe { fn_handle.read().unwrap_unchecked() }
             }};
 
             // SAFETY: It is up to the caller to pass unsafety
-            fn_handle(wdf_kmdf_sys::WdfDriverGlobals, $($args),*)
+            unsafe { fn_handle(wdf_kmdf_sys::WdfDriverGlobals, $($args),*) }
         }};
     }
 
@@ -618,9 +621,11 @@ pub mod driver {
 
             // NOTE: Since we can't `WdfObjectDelete` a driver, the framework handles
             // uninitializing the driver via EvtDriverUnload, so we don't need to set
-            // EvtCleanupCallback and EvtDestroyCallback
+            // EvtCleanupCallback and EvtDestroyCallback.
+            //
+            // We do set EvtDestroyCallback however, since it's always guaranteed to
+            // be present (we use it for dropping the driver context area)
             let mut object_attrs = default_object_attributes::<T>();
-            object_attrs.EvtCleanupCallback = Some(Self::__dispatch_cleanup);
             object_attrs.EvtDestroyCallback = Some(Self::__dispatch_destroy);
 
             // SAFETY: All-zeros pattern is valid for _WDF_DRIVER_CONFIG
@@ -679,7 +684,9 @@ pub mod driver {
             // concurrent immutable mutations
             let handle = unsafe { DriverHandle::wrap(driver) };
 
-            let Some(context_space) = object::get_context(&handle) else {
+            // SAFETY: Initialized by this point
+            let context_space = unsafe { object::get_context(&handle) };
+            let Some(context_space) = context_space else {
                 return windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS;
             };
 
@@ -693,7 +700,9 @@ pub mod driver {
             // SAFETY: Driver unload only gets called once, and after everything?
             let mut handle = unsafe { DriverHandle::wrap(driver) };
 
-            let Some(context_space) = object::get_context_mut(&mut handle) else {
+            // SAFETY: Initialized by this point
+            let context_space = unsafe { object::get_context_mut(&mut handle) };
+            let Some(context_space) = context_space else {
                 // Nothing to do
                 return;
             };
@@ -702,31 +711,6 @@ pub mod driver {
                 // Do the unload callback...
                 T::unload(context_space);
             }
-
-            // And drop it!
-            core::ptr::drop_in_place(context_space);
-        }
-
-        // Why specify cleanup & destroy?
-        // figure out when they're called in relation to unload
-        // since WPP tracing says to de-init it in the cleanup stage for some reason
-
-        unsafe extern "C" fn __dispatch_cleanup(driver: WDFOBJECT) {
-            // SAFETY: Can only construct an immutable handle since cleanup can
-            // happen from multiple places
-            let handle = unsafe { DriverHandle::wrap(driver.cast()) };
-
-            let Some(context_space) = object::get_context::<T>(&handle) else {
-                return;
-            };
-
-            unsafe {
-                windows_kernel_sys::DbgPrintEx(
-                    windows_kernel_sys::_DPFLTR_TYPE::DPFLTR_IHVDRIVER_ID as u32,
-                    windows_kernel_sys::DPFLTR_INFO_LEVEL,
-                    b"KmdfHewwoWowwd: EvtCleanup\n\0".as_ptr().cast(),
-                )
-            };
         }
 
         unsafe extern "C" fn __dispatch_destroy(driver: WDFOBJECT) {
@@ -734,7 +718,9 @@ pub mod driver {
             // called once and exclusively
             let mut handle = unsafe { DriverHandle::wrap(driver.cast()) };
 
-            let Some(context_space) = object::get_context_mut::<T>(&mut handle) else {
+            // SAFETY: Initialized by this point
+            let context_space = unsafe { object::get_context_mut::<T>(&mut handle) };
+            let Some(context_space) = context_space else {
                 return;
             };
 
@@ -745,6 +731,13 @@ pub mod driver {
                     b"KmdfHewwoWowwd: EvtDestroy\n\0".as_ptr().cast(),
                 )
             };
+
+            // Drop it!
+            // SAFETY:
+            // Guaranteed to be unused by this point, since the destroy callback is the last one
+            // called.
+            // Object initialization guarantees that this was valid initialized memory
+            unsafe { core::ptr::drop_in_place(context_space) };
         }
     }
 }
