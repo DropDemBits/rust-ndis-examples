@@ -7,7 +7,6 @@
 #define _WIN32_WINNT (0x0A00)
 #define WINVER (0x0A00)
 #define DEPRECATE_DDK_FUNCTIONS 1
-#include <ntddk.h>
 
 // NDIS
 #define NDIS_WDM
@@ -16,6 +15,10 @@
 // Only support NDIS 6.82 right now
 #define NDIS682_MINIPORT 1
 #define NDIS682 1
+
+//   Headers   //
+
+#include <ntddk.h>
 // #include <ndis.h>
 // see build.rs file for more details
 #include <header_hacks/ndis.h>

@@ -63,6 +63,16 @@ impl wdf_kmdf::driver::DriverCallbacks for KernelModule {
 
         windows_kernel_sys::Error::to_err(status)
     }
+
+    fn unload(&mut self) {
+        unsafe {
+            DbgPrintEx(
+                DPFLTR_IHVDRIVER_ID as u32,
+                DPFLTR_INFO_LEVEL,
+                b"KmdfHewwoWowwd: EvtUnload\n\0".as_ptr().cast(),
+            )
+        };
+    }
 }
 
 // unfortunately we need to declare these two (__CxxFrameHandler3 & _fltused)
