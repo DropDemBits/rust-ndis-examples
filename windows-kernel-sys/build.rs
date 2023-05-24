@@ -177,9 +177,11 @@ fn header_hacks() {
     let path = hacks.join("ndis.h");
 
     // check if no change happened (this is faster than just always doing it, and likely more reliable than checking mtime of the original header)
-    let old_contents = std::fs::read_to_string(&path).unwrap();
-    if contents != old_contents {
-        std::fs::write(&path, contents).unwrap();
+    match std::fs::read_to_string(&path) {
+        Ok(old_contents) if contents == old_contents => return,
+        _ => {
+            std::fs::write(&path, contents).unwrap();
+        }
     }
 }
 
