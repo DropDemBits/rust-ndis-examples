@@ -47,13 +47,12 @@ fn driver_entry(
         },
         |_| {
             {
-                //
-                pinned_init::try_init!(NdisProt {
+                Ok(pinned_init::try_init!(NdisProt {
                     eth_type: NPROT_ETH_TYPE,
                     partial_cancel_id: 0,
                     local_cancel_id: 0,
                     binds_complete: (),
-                }? Error)
+                }? Error))
             }
         },
     )

@@ -44,6 +44,95 @@ pub mod raw {
         }};
     }
 
+    // region: wdfcontrol
+
+    /// Allocates a [`WDFDEVICE_INIT`] struct for creating a new control device object (CDO)
+    ///
+    /// The yielded [`WDFDEVICE_INIT`] eventually gets passed to [`WdfDeviceCreate`], which actually creates the control device object.
+    ///
+    /// `SDDLString` specifies the security descriptor for the new device object, using SDDL syntax
+    /// (see [Securing Device Objects] for more information). The `SDDL_DEVOBJ_Xxx` constants can be used to conveniently specify common
+    /// security descriptor sets. This can be overriden by a later call to [`WdfDeviceInitAssignSDDLString`].
+    ///
+    /// On successful creation, returns a pointer to a framework-allocated [`WDFDEVICE_INIT`] struct,
+    /// otherwise returns `NULL`.
+    ///
+    /// [`WDFDEVICE_INIT`]: wdf_kmdf_sys::WDFDEVICE_INIT
+    /// [Securing Device Objects]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/securing-device-objects
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
+    /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
+    /// - ([CtlDeviceFinishInitDeviceAdd]) If a PnP driver creates a control device object in [`EvtDriverDeviceAdd`], [`WdfControlFinishInitializing`]
+    ///   must be called after [`WdfDeviceCreate`] but before the end of [`EvtDriverDeviceAdd`]
+    /// - ([CtlDeviceFinishInitDrEntry]) If a PnP driver creates a control device object in [`DriverEntry`], [`WdfControlFinishInitializing`]
+    ///   must be called after [`WdfDeviceCreate`] but before the end of [`DriverEntry`]
+    /// - ([DriverCreate]) Must only be called from the `DriverEntry` point
+    /// - ([InitFreeDeviceCallback]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs while initializing
+    ///   a new framework device object, [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
+    /// - ([InitFreeDeviceCreate]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs during one of the device object
+    ///   initialization methods, [`WdfDeviceInitFree`] must be called instead of [`WdfDeviceCreate`]
+    /// - ([InitFreeDeviceCreateType2]) Must not call [`WdfDeviceCreate`] after [`WdfDeviceInitFree`]
+    /// - ([InitFreeDeviceCreateType4]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs during [`WdfDeviceCreate`],
+    ///   [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [ControlDeviceInitAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ControlDeviceInitAPI
+    /// [CtlDeviceFinishInitDeviceAdd]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDeviceAdd
+    /// [CtlDeviceFinishInitDrEntry]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDrEntry
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [InitFreeDeviceCallback]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCallback
+    /// [InitFreeDeviceCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCreate
+    /// [InitFreeDeviceCreateType2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCreateType2
+    /// [InitFreeDeviceCreateType4]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCreateType4
+    ///
+    // TODO: As proper intra-doc links
+    /// [`WdfDeviceInitAssignSDDLString`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitassignsddlstring
+    ///
+    #[must_use]
+    pub unsafe fn WdfControlDeviceInitAllocate(
+        Driver: WDFDRIVER,            // in
+        SDDLString: PCUNICODE_STRING, // in
+    ) -> PWDFDEVICE_INIT {
+        dispatch!(WdfControlDeviceInitAllocate(Driver, SDDLString))
+    }
+
+    // FIXME: WdfControlDeviceInitSetShutdownNotification
+
+    /// Informs the framework that initialization of the control device object has finished
+    ///
+    /// Until [`WdfControlFinishInitializing`] is called, the system will not send I/O requests
+    /// or Windows Management Instrumentation (WMI) requests to the given control device object.
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
+    /// - ([CtlDeviceFinishInitDeviceAdd]) If a PnP driver creates a control device object in [`EvtDriverDeviceAdd`], [`WdfControlFinishInitializing`]
+    ///   must be called after [`WdfDeviceCreate`] but before the end of [`EvtDriverDeviceAdd`]
+    /// - ([CtlDeviceFinishInitDrEntry]) If a PnP driver creates a control device object in [`DriverEntry`], [`WdfControlFinishInitializing`]
+    ///   must be called after [`WdfDeviceCreate`] but before the end of [`DriverEntry`]
+    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [CtlDeviceFinishInitDeviceAdd]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDeviceAdd
+    /// [CtlDeviceFinishInitDrEntry]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDrEntry
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    ///
+    pub unsafe fn WdfControlFinishInitializing(Device: WDFDEVICE /* in */) {
+        dispatch!(WdfControlFinishInitializing(Device))
+    }
+
+    // endregion: wdfcontrol
+
     // region: wdfdevice
 
     /// Creates a framework device object
@@ -51,6 +140,7 @@ pub mod raw {
     /// The device object created could be either:
     /// - a function device object (FDO) if the [`WDFDEVICE_INIT`] structure was originally from a [`EvtDriverDeviceAdd`] callback, or
     /// - a physical device object (PDO) if the [`WDFDEVICE_INIT`] structure was originally from a [`EvtChildListCreateDevice`] or [`WdfPdoInitAllocate`]
+    /// - a control device object (CDO) if the [`WDFDEVICE_INIT`] structure was originally from [`WdfControlDeviceInitAllocate`]
     ///
     /// On successful creation, the place passed in `DeviceInit` is set to `NULL` (i.e. it steals ownership of the [`WDFDEVICE_INIT`] structure).
     ///
@@ -146,11 +236,8 @@ pub mod raw {
     /// [PdoInitFreeDeviceCreateType4]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoInitFreeDeviceCreateType4
     ///
     // TODO: As proper intra-doc links
-    /// [`WdfControlDeviceInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfcontrol/nf-wdfcontrol-wdfcontroldeviceinitallocate
-    /// [`WdfControlFinishInitializing`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfcontrol/nf-wdfcontrol-wdfcontrolfinishinitializing
     /// [`WdfDeviceInitAssignSDDLString`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitassignsddlstring
     /// [`WdfDeviceInitAssignName`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitassignname
-    /// [`WdfDeviceInitFree`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitfree
     /// [`WdfDeviceInitSetDeviceClass`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitsetdeviceclass
     /// [`WdfDeviceMiniportCreate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfminiport/nf-wdfminiport-wdfdeviceminiportcreate
     /// [`WdfFdoAddStaticChild`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdffdo/nf-wdffdo-wdffdoaddstaticchild
@@ -169,6 +256,55 @@ pub mod raw {
             DeviceAttributes.unwrap_or(WDF_NO_OBJECT_ATTRIBUTES!()),
             Device
         ))
+    }
+
+    /// Deallocates a [`WDFDEVICE_INIT`] struct
+    ///
+    /// If an error occurs from calling a device object initialization method or [`WdfDeviceCreate`],
+    /// and the [`WDFDEVICE_INIT`] struct came from [`WdfPdoInitAllocate`] or [`WdfControlDeviceInitAllocate`],
+    /// [`WdfDeviceInitFree`] must be called.
+    ///
+    /// If the [`WDFDEVICE_INIT`] came from a [`DriverCallbacks::device_add`](crate::driver::DriverCallbacks::device_add) callback,
+    /// the framework handles the lifetime of the struct, so this does not need to be called in that case.
+    ///
+    /// [`WDFDEVICE_INIT`]: wdf_kmdf_sys::WDFDEVICE_INIT
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= DISPATCH_LEVEL
+    /// - ([DoubleDeviceInitFree]) Should not be called twice on the same [`WDFDEVICE_INIT`] struct
+    /// - ([InitFreeDeviceCallback]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs while initializing
+    ///   a new framework device object, [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
+    /// - ([InitFreeDeviceCreate]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs during one of the device object
+    ///   initialization methods, [`WdfDeviceInitFree`] must be called instead of [`WdfDeviceCreate`]
+    /// - ([InitFreeDeviceCreateType2]) Must not call [`WdfDeviceCreate`] after [`WdfDeviceInitFree`]
+    /// - ([InitFreeDeviceCreateType4]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs during [`WdfDeviceCreate`],
+    ///   [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
+    /// - ([PdoInitFreeDeviceCallback]) If a [`WDFDEVICE_INIT`] is from a [`WdfPdoInitAllocate`] and an error occurs while initializing
+    ///   a new framework device object, [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
+    /// - ([PdoInitFreeDeviceCreate]) If a [`WDFDEVICE_INIT`] is from a [`WdfPdoInitAllocate`] and an error occurs during one of the device object
+    ///   initialization methods, [`WdfDeviceInitFree`] must be called instead of [`WdfDeviceCreate`]
+    /// - ([PdoInitFreeDeviceCreateType2]) Must not call [`WdfDeviceCreate`] after [`WdfDeviceInitFree`]
+    /// - ([PdoInitFreeDeviceCreateType4]) If a [`WDFDEVICE_INIT`] is from a [`WdfPdoInitAllocate`] and an error occurs during [`WdfDeviceCreate`],
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [DoubleDeviceInitFree]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DoubleDeviceInitFree
+    /// [InitFreeDeviceCallback]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCallback
+    /// [InitFreeDeviceCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCreate
+    /// [InitFreeDeviceCreateType2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCreateType2
+    /// [InitFreeDeviceCreateType4]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InitFreeDeviceCreateType4
+    /// [PdoInitFreeDeviceCallback]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoInitFreeDeviceCallback
+    /// [PdoInitFreeDeviceCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoInitFreeDeviceCreate
+    /// [PdoInitFreeDeviceCreateType2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoInitFreeDeviceCreateType2
+    /// [PdoInitFreeDeviceCreateType4]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoInitFreeDeviceCreateType4
+    ///
+    // TODO: As proper intra-doc links
+    /// [`WdfPdoInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfpdo/nf-wdfpdo-wdfpdoinitallocate
+    pub unsafe fn WdfDeviceInitFree(DeviceInit: PWDFDEVICE_INIT) {
+        dispatch!(WdfDeviceInitFree(DeviceInit))
     }
 
     // endregion: wdfdevice
@@ -201,14 +337,15 @@ pub mod raw {
     /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
     /// - ([ChangeQueueState]) Must not be called concurrently with other state-changing functions
     /// - ([DriverAttributeChanged]) The existing execution level or synchronization scope must not be modified(?)
-    /// - ([DriverCreate]) Must only be called from the `DriverEntry` point
-    /// - ([MiniportOnlyWdmDevice]) ???
+    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([MiniportOnlyWdmDevice]) FIXME: ???
     ///
     /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
     /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
     /// [ChangeQueueState]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ChangeQueueState
     /// [DriverAttributeChanged]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverAttributeChanged
     /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
     /// [MiniportOnlyWdmDevice]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MiniportOnlyWdmDevice
     ///
     #[must_use]
@@ -614,15 +751,15 @@ pub mod driver {
         ///
         /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
         /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
-        pub fn create<F, R>(
+        pub fn create<F, I>(
             driver_object: DriverObject,
             registry_path: UnicodeString,
             config: DriverConfig,
             init_context: F,
         ) -> Result<(), Error>
         where
-            F: FnOnce(&DriverHandle) -> R,
-            R: PinInit<T, Error>,
+            F: FnOnce(&mut DriverHandle) -> Result<I, Error>,
+            I: PinInit<T, Error>,
         {
             if matches!(config.pnp_mode, PnpMode::NonPnp) && T::HAS_DEVICE_ADD {
                 // Non-pnp drivers shouldn't specify the `device_add` callback
@@ -686,7 +823,7 @@ pub mod driver {
             };
 
             // Initialize context
-            let pin_init = init_context(&handle);
+            let pin_init = init_context(&mut handle)?;
 
             // SAFETY:
             // - It's WDF's responsibility to insert the context area, since we create
