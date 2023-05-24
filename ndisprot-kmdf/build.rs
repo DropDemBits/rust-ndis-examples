@@ -84,6 +84,7 @@ fn main() {
     println!("cargo:rustc-link-lib=ntoskrnl");
     // for __security_cookie
     println!("cargo:rustc-link-lib=bufferoverflowk");
+    println!("cargo:rustc-link-lib=wdmsec");
 
     println!("cargo:rustc-link-lib=wdfldr");
     println!("cargo:rustc-link-lib=wdfdriverentry");

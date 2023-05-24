@@ -45,8 +45,24 @@ fn driver_entry(
             pnp_mode: wdf_kmdf::driver::PnpMode::NonPnp,
             pool_tag: None,
         },
-        |_| {
+        |driver| {
             {
+                let p_init = unsafe {
+                    wdf_kmdf::raw::WdfControlDeviceInitAllocate(
+                        driver.raw_handle(),
+                        // TODO: Have to declare it ourselves
+                        core::ptr::addr_of!(
+                            wdf_kmdf_sys::SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_RW_RES_R
+                        ),
+                    )
+                };
+                if p_init.is_null() {
+                    return Err(Error(
+                        windows_kernel_sys::sys::Win32::Foundation::STATUS_INSUFFICIENT_RESOURCES,
+                    ));
+                }
+                unsafe { wdf_kmdf::raw::WdfDeviceInitFree(p_init) };
+
                 Ok(pinned_init::try_init!(NdisProt {
                     eth_type: NPROT_ETH_TYPE,
                     partial_cancel_id: 0,
