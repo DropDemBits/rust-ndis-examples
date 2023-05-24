@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 wdf-kmdf-sys = { path = "../wdf-kmdf-sys" }
 windows-kernel-sys = { path = "../windows-kernel-sys" }
+windows-kernel-rs = { path = "../windows-kernel-rs" }
 paste = "1.0.12"
 static_assertions = "1.1.0"
 vtable.workspace = true

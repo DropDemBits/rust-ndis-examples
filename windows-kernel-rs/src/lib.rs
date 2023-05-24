@@ -132,7 +132,7 @@ pub mod string {
 
     use core::marker::PhantomData;
 
-    use windows_kernel_sys::UNICODE_STRING;
+    use windows_kernel_sys::{PCUNICODE_STRING, UNICODE_STRING};
 
     pub use widestring::*;
 
@@ -150,9 +150,31 @@ pub mod string {
         ///
         /// - The yielded [`UNICODE_STRING`] must not outlive the original
         ///   `UnicodeString` that it was yielded from.
-        /// - Also, the original backing memory in should not be modified
+        /// - The original backing memory in should not be modified
         pub unsafe fn into_raw(&self) -> UNICODE_STRING {
             self.0
+        }
+
+        /// Creates a wrapper around a raw [`UNICODE_STRING`]
+        ///
+        /// ## Safety
+        ///
+        /// - The yielded `UnicodeString` must not outlive the original
+        ///   [`UNICODE_STRING`] that it was yielded from.
+        /// - The original backing memory in should not be modified
+        pub unsafe fn from_raw(raw: UNICODE_STRING) -> Self {
+            Self(raw, PhantomData)
+        }
+
+        /// Yields the underlying raw [`UNICODE_STRING`] as a pointer
+        ///
+        /// ## Safety
+        ///
+        /// - The yielded [`PCUNICODE_STRING`] must not outlive the original
+        ///   `UnicodeString` that it was yielded from.
+        /// - The original backing memory in should not be modified
+        pub unsafe fn as_raw_ptr(&self) -> PCUNICODE_STRING {
+            &self.0
         }
     }
 
@@ -285,6 +307,24 @@ pub mod string {
                 PhantomData,
             ))
         }
+    }
+}
+
+pub struct DriverObject(windows_kernel_sys::PDRIVER_OBJECT);
+
+impl DriverObject {
+    /// Creates a new `DriverObject` wrapper
+    ///
+    /// ## Safety
+    ///
+    /// Must only be called from the `DriverEntry` method
+    pub unsafe fn new(driver_object: windows_kernel_sys::PDRIVER_OBJECT) -> Self {
+        Self(driver_object)
+    }
+
+    /// Unwraps the driver object, yielding the original raw pointer
+    pub fn into_raw(self) -> windows_kernel_sys::PDRIVER_OBJECT {
+        self.0
     }
 }
 

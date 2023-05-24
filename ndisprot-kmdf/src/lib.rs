@@ -1,8 +1,11 @@
 #![no_std]
-#![feature(allocator_api)]
+#![feature(allocator_api, result_option_inspect)]
 
-use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDEVICE};
-use windows_kernel_rs::log::{self, info};
+use windows_kernel_rs::{
+    log::{self, debug, error, info, trace},
+    string::UnicodeString,
+    DriverObject,
+};
 use windows_kernel_sys::{Error, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING};
 
 #[allow(non_snake_case)]
@@ -17,45 +20,73 @@ unsafe extern "system" fn DriverEntry(
 
     windows_kernel_rs::init_kernel_logger!(log::COMPONENT_IHVDRIVER, log::LevelFilter::Info);
 
-    // Print "Hello World" for DriverEntry
-    info!("KmdfHewwoWowwd: DriverEntry");
+    // SAFETY: This is the driver entry point
+    let driver_object = unsafe { DriverObject::new(driver_object) };
+    // SAFETY: Is a copy of the original PCUNICODE_STRING, but never modified,
+    // and lifetime is tied to this variable (which is bound to `DriverEntry`)
+    let registry_path = unsafe { UnicodeString::from_raw(*registry_path) };
 
-    match wdf_kmdf::driver::Driver::<KernelModule>::create(
-        driver_object,
-        registry_path,
-        wdf_kmdf::driver::DriverConfig::default(),
-        |_| pinned_init::try_init!(KernelModule {}? Error),
-    ) {
+    match driver_entry(driver_object, registry_path) {
         Ok(()) => windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS,
         Err(err) => err.0,
     }
 }
 
-struct KernelModule {}
+fn driver_entry(
+    driver_object: DriverObject,
+    registry_path: UnicodeString<'_>,
+) -> Result<(), Error> {
+    debug!("DriverEntry");
 
-wdf_kmdf::impl_context_space!(KernelModule);
+    wdf_kmdf::driver::Driver::<NdisProt>::create(
+        driver_object,
+        registry_path,
+        wdf_kmdf::driver::DriverConfig {
+            pnp_mode: wdf_kmdf::driver::PnpMode::NonPnp,
+            pool_tag: None,
+        },
+        |_| {
+            {
+                //
+                pinned_init::try_init!(NdisProt {
+                    eth_type: NPROT_ETH_TYPE,
+                    partial_cancel_id: 0,
+                    local_cancel_id: 0,
+                    binds_complete: (),
+                }? Error)
+            }
+        },
+    )
+    .inspect_err(|err| error!("WdfDriverCreate failed with status {:#x}", err.0))?;
+
+    Ok(())
+}
+
+// Following two are arranged in the way a little-endian processor would read 2 bytes from the wire
+const NPROT_ETH_TYPE: u16 = 0x8e88;
+const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
+
+struct NdisProt {
+    /// frame type of interest
+    eth_type: u16,
+    /// for cancelling sends
+    partial_cancel_id: u8,
+    local_cancel_id: u32,
+    // todo: open_list: Lock<ListEntry>
+    /// have we seen `NetEventBindsComplete`?
+    // Note: is a RKEVENT, Initialized via KeInitializeEvent
+    binds_complete: (),
+}
+
+wdf_kmdf::impl_context_space!(NdisProt);
 
 #[vtable::vtable]
-impl wdf_kmdf::driver::DriverCallbacks for KernelModule {
-    fn device_add(
-        &self,
-        mut device_init: PWDFDEVICE_INIT,
-    ) -> Result<(), windows_kernel_sys::Error> {
-        // Allocate the device object
-        let mut h_device: WDFDEVICE = core::ptr::null_mut();
-
-        // Print "Hello World"
-        info!("KmdfHewwoWowwd: evt_device_add");
-
-        // Create the device object
-        let status =
-            unsafe { wdf_kmdf::raw::WdfDeviceCreate(&mut device_init, None, &mut h_device) };
-
-        windows_kernel_sys::Error::to_err(status)
-    }
-
+impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
     fn unload(&mut self) {
-        info!("KmdfHewwoWowwd: EvtUnload");
+        debug!("Unload Enter");
+        // UnregisterExCallback
+        // DoProtocolUnload
+        debug!("Unload Exit");
     }
 }
 

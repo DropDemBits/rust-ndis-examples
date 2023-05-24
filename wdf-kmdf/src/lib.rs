@@ -514,6 +514,7 @@ pub mod driver {
     use pinned_init::PinInit;
     use vtable::vtable;
     use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDFOBJECT, _WDF_DRIVER_INIT_FLAGS};
+    use windows_kernel_rs::{string::UnicodeString, DriverObject};
     use windows_kernel_sys::{
         sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
         Error, PCUNICODE_STRING, PDRIVER_OBJECT,
@@ -561,9 +562,9 @@ pub mod driver {
     #[derive(Default)]
     pub struct DriverConfig {
         /// If the driver is a PnP driver, and thus requires an `EvtDriverDeviceAdd` callback.
-        pnp_mode: PnpMode,
+        pub pnp_mode: PnpMode,
         /// Tag to mark allocations made by WDF
-        pool_tag: Option<u32>,
+        pub pool_tag: Option<u32>,
     }
 
     #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -584,7 +585,18 @@ pub mod driver {
         fn device_add(&self, device_init: PWDFDEVICE_INIT) -> Result<(), Error> {
             Ok(())
         }
-        // FIXME: Document
+
+        /// Performs operations that must take place before unloading the driver.
+        ///
+        /// Must deallocate any non-device-specific system resources allocated during
+        /// the driver entry function.
+        ///
+        /// ## IRQL: Passive
+        ///
+        /// ## Note
+        ///
+        /// Most ownership-related unload tasks should instead be done via the fields
+        /// implementing `Drop`, rather than being manually deallocated here.
         fn unload(&mut self) {}
     }
 
@@ -598,15 +610,13 @@ pub mod driver {
         /// Driver object wrapper, or:
         ///
         /// - `STATUS_INVALID_PARAMETER` if non-pnp mode is specified, but `device_add` is also specified
-        /// - `STATUS_DRIVER_INTERNAL_ERROR` if called more than once
+        /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
         ///
-        /// ## Safety
-        ///
-        /// - This must only be called from the `DriverEntry` entry point
-        /// - `driver_object` and `registry_path` should be valid
-        pub unsafe fn create<F, R>(
-            driver_object: PDRIVER_OBJECT,
-            registry_path: PCUNICODE_STRING,
+        /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+        /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+        pub fn create<F, R>(
+            driver_object: DriverObject,
+            registry_path: UnicodeString,
             config: DriverConfig,
             init_context: F,
         ) -> Result<(), Error>
@@ -651,18 +661,29 @@ pub mod driver {
             }
 
             // Make it!
-            // SAFETY: Replaced with the real driver pointer next
-            let mut handle = unsafe { DriverHandle::wrap(core::ptr::null_mut()) };
-            // SAFETY: Caller ensures that we're in DriverEntry
-            unsafe {
-                Error::to_err(raw::WdfDriverCreate(
-                    driver_object,
-                    registry_path,
-                    Some(&mut object_attrs),
-                    &mut driver_config,
-                    Some(&mut handle.0),
-                ))?
-            }
+            let mut handle = {
+                let driver_object = driver_object.into_raw();
+
+                // SAFETY: contained entirely within this block, will never outlive original
+                // WDF also copies the contents anyways
+                let registry_path = unsafe { registry_path.as_raw_ptr() };
+
+                // SAFETY: Replaced with the real driver pointer next
+                let mut handle = unsafe { DriverHandle::wrap(core::ptr::null_mut()) };
+
+                // SAFETY: Owned `DriverObject` means that it only gets called once
+                unsafe {
+                    Error::to_err(raw::WdfDriverCreate(
+                        driver_object,
+                        registry_path,
+                        Some(&mut object_attrs),
+                        &mut driver_config,
+                        Some(&mut handle.0),
+                    ))?
+                }
+
+                handle
+            };
 
             // Initialize context
             let pin_init = init_context(&handle);

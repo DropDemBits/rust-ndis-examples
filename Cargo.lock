@@ -402,6 +402,7 @@ dependencies = [
  "static_assertions",
  "vtable",
  "wdf-kmdf-sys",
+ "windows-kernel-rs",
  "windows-kernel-sys",
 ]
 
