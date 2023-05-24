@@ -1,10 +1,9 @@
 #![no_std]
 #![feature(allocator_api)]
 
-use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDEVICE, _DPFLTR_TYPE::DPFLTR_IHVDRIVER_ID};
-use windows_kernel_sys::{
-    DbgPrintEx, Error, DPFLTR_INFO_LEVEL, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING,
-};
+use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDEVICE};
+use windows_kernel_rs::log::{self, info};
+use windows_kernel_sys::{Error, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING};
 
 #[allow(non_snake_case)]
 #[no_mangle]
@@ -13,16 +12,13 @@ unsafe extern "system" fn DriverEntry(
     registry_path: PUNICODE_STRING,
 ) -> NTSTATUS {
     #[global_allocator]
-    static ALLOCATOR: windows_kernel_rs::alloc::KernelAlloc = windows_kernel_rs::alloc::KernelAlloc;
+    static ALLOCATOR: windows_kernel_rs::allocator::KernelAlloc =
+        windows_kernel_rs::allocator::KernelAlloc;
+
+    windows_kernel_rs::init_kernel_logger!(log::COMPONENT_IHVDRIVER, log::LevelFilter::Info);
 
     // Print "Hello World" for DriverEntry
-    unsafe {
-        DbgPrintEx(
-            DPFLTR_IHVDRIVER_ID as u32,
-            DPFLTR_INFO_LEVEL,
-            b"KmdfHewwoWowwd: DriverEntry\n\0".as_ptr().cast(),
-        )
-    };
+    info!("KmdfHewwoWowwd: DriverEntry");
 
     match wdf_kmdf::driver::Driver::<KernelModule>::create(
         driver_object,
@@ -49,13 +45,7 @@ impl wdf_kmdf::driver::DriverCallbacks for KernelModule {
         let mut h_device: WDFDEVICE = core::ptr::null_mut();
 
         // Print "Hello World"
-        unsafe {
-            DbgPrintEx(
-                DPFLTR_IHVDRIVER_ID as u32,
-                DPFLTR_INFO_LEVEL,
-                b"KmdfHewwoWowwd: evt_device_add\n\0".as_ptr().cast(),
-            )
-        };
+        info!("KmdfHewwoWowwd: evt_device_add");
 
         // Create the device object
         let status =
@@ -65,13 +55,7 @@ impl wdf_kmdf::driver::DriverCallbacks for KernelModule {
     }
 
     fn unload(&mut self) {
-        unsafe {
-            DbgPrintEx(
-                DPFLTR_IHVDRIVER_ID as u32,
-                DPFLTR_INFO_LEVEL,
-                b"KmdfHewwoWowwd: EvtUnload\n\0".as_ptr().cast(),
-            )
-        };
+        info!("KmdfHewwoWowwd: EvtUnload");
     }
 }
 
@@ -98,6 +82,6 @@ pub extern "system" fn __CxxFrameHandler3() -> i32 {
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    windows_kernel_rs::__handle_panic(info);
 }
