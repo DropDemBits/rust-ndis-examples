@@ -1,9 +1,10 @@
 #![no_std]
-#![feature(allocator_api, result_option_inspect)]
+#![feature(allocator_api, const_option, result_option_inspect)]
 
+use wdf_kmdf_sys::{WDFDEVICE, WDFFILEOBJECT, WDFREQUEST, WDF_FILEOBJECT_CONFIG};
 use windows_kernel_rs::{
     log::{self, debug, error, info, trace},
-    string::UnicodeString,
+    string::{U16Str, UnicodeString},
     DriverObject,
 };
 use windows_kernel_sys::{Error, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING};
@@ -61,7 +62,12 @@ fn driver_entry(
                         windows_kernel_sys::sys::Win32::Foundation::STATUS_INSUFFICIENT_RESOURCES,
                     ));
                 }
-                unsafe { wdf_kmdf::raw::WdfDeviceInitFree(p_init) };
+
+                // call `create_control_device` to create the WDFDEVICE
+                // representing our software device
+                create_control_device(driver, p_init).inspect_err(|err| {
+                    error!("create_control_device failed with status {:#x}", err.0)
+                })?;
 
                 Ok(pinned_init::try_init!(NdisProt {
                     eth_type: NPROT_ETH_TYPE,
@@ -76,6 +82,77 @@ fn driver_entry(
 
     Ok(())
 }
+
+fn create_control_device(
+    _driver: &mut wdf_kmdf::driver::DriverHandle,
+    mut device_init: wdf_kmdf_sys::PWDFDEVICE_INIT,
+) -> Result<(), Error> {
+    let mut status;
+    // io_queue_config
+    // queue
+    // control_device
+
+    // Default I/O type is Buffered
+    // We want direct I/O for reads and writes so set it explicitly
+
+    unsafe {
+        wdf_kmdf::raw::WdfDeviceInitSetIoType(
+            device_init,
+            wdf_kmdf_sys::_WDF_DEVICE_IO_TYPE::WdfDeviceIoDirect,
+        )
+    };
+
+    // no goto?
+    'error: {
+        status = Error::to_err(unsafe {
+            wdf_kmdf::raw::WdfDeviceInitAssignName(device_init, Some(NT_DEVICE_NAME.as_raw_ptr()))
+        });
+        if status.is_err() {
+            break 'error;
+        }
+
+        // Initialize WDF_FILEOBJECT_CONFIG_INIT struct to tell the framework
+        // whether you're interested in handling Create, Close, and Cleanup
+        // requests that get generated when an application or another kernel
+        // component opens a handle to the device.
+        //
+        // If you don't register, the framework's default behaviour would be
+        // to complete these requests with STATUS_SUCCESS. A driver might be
+        // Interested in registering these events if it wants to do security
+        // validation and also wants to maintain per handle (fileobject)
+        // state.
+        let file_config = WDF_FILEOBJECT_CONFIG::init(
+            Some(ndisprot_evt_device_file_create),
+            Some(ndisprot_evt_file_close),
+            Some(ndisprot_evt_file_cleanup),
+        );
+
+        return status;
+    }
+
+    if (!device_init.is_null()) {
+        // Free the WDFDEVICE_INIT structure only if device creation fails
+        // Otherwise, the framework has ownership of the memory and so frees
+        // it itself.
+        unsafe { wdf_kmdf::raw::WdfDeviceInitFree(device_init) };
+    }
+
+    status
+}
+
+unsafe extern "C" fn ndisprot_evt_device_file_create(
+    Device: WDFDEVICE,
+    Request: WDFREQUEST,
+    FileObject: WDFFILEOBJECT,
+) {
+}
+unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {}
+unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {}
+
+const NT_DEVICE_NAME: UnicodeString<'static> =
+    UnicodeString::new_const(windows_kernel_rs::string::utf16str!(r"\Device\Ndisprot"));
+const DOS_DEVICE_NAME: UnicodeString<'static> =
+    UnicodeString::new_const(windows_kernel_rs::string::utf16str!(r"\Global??\Ndisprot"));
 
 // Following two are arranged in the way a little-endian processor would read 2 bytes from the wire
 const NPROT_ETH_TYPE: u16 = 0x8e88;
