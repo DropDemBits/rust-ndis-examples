@@ -144,6 +144,30 @@ pub mod string {
     unsafe impl<'a> Sync for UnicodeString<'a> {}
 
     impl UnicodeString<'_> {
+        /// For use in const contexts, while waiting for const trait impls
+        pub const fn new_const(val: &'static Utf16Str) -> UnicodeString<'static> {
+            // Length is expected to be in bytes
+            let Some(len) = val
+                    .len()
+                    .checked_mul(2)
+                else { panic!("too big") };
+            let len = if len > (u16::MAX as usize) {
+                panic!("too big")
+            } else {
+                len as u16
+            };
+            // Note: There is no trailing nul terminator to exclude
+
+            UnicodeString(
+                UNICODE_STRING {
+                    Length: len,
+                    MaximumLength: len,
+                    Buffer: val.as_ptr().cast_mut(),
+                },
+                PhantomData,
+            )
+        }
+
         /// Yields the underlying raw [`UNICODE_STRING`]
         ///
         /// ## Safety
