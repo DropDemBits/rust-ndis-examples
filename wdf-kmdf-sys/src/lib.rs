@@ -42,14 +42,6 @@ macro_rules! WDF_NO_SEND_OPTIONS {
     };
 }
 
-#[link(name = "wrapper_bindings")]
-extern "C" {
-    pub fn wdf_driver_config_init(
-        Config: PWDF_DRIVER_CONFIG,
-        EvtDriverDeviceAdd: PFN_WDF_DRIVER_DEVICE_ADD,
-    );
-}
-
 // Right now, we don't handle struct versioning, so it's just the struct's size.
 // Should probably be a `Result<u32, Error>`
 fn WDF_STRUCTURE_SIZE<T: Sized>() -> u32 {
