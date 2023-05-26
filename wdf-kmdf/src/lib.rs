@@ -935,7 +935,7 @@ pub mod driver {
 
             if matches!(config.pnp_mode, PnpMode::NonPnp) {
                 driver_config.DriverInitFlags |=
-                    _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver as u32;
+                    _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver.0 as u32;
             }
 
             // NOTE: This is always available since we're targeting KMDF versions after 1.5
