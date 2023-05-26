@@ -131,7 +131,10 @@ fn generate() {
         .derive_debug(false)
         .layout_tests(false)
         .ctypes_prefix("::core::ffi")
-        .default_enum_style(bindgen::EnumVariation::ModuleConsts)
+        .default_enum_style(bindgen::EnumVariation::NewType {
+            is_bitfield: false,
+            is_global: false,
+        })
         .clang_arg(format!("-I{}", include_dir.to_str().unwrap()))
         .clang_arg(format!("-I{}", out_path.to_str().unwrap()))
         .parse_callbacks(Box::new(RenameTyped))

@@ -12,8 +12,8 @@ pub mod raw {
 
     use wdf_kmdf_sys::{
         PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
-        PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER, WDFOBJECT, WDF_NO_HANDLE,
-        WDF_NO_OBJECT_ATTRIBUTES, _WDF_DEVICE_IO_TYPE,
+        PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER, WDFOBJECT, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE,
+        WDF_NO_OBJECT_ATTRIBUTES,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
@@ -33,7 +33,7 @@ pub mod raw {
     macro_rules! dispatch {
         ($name:ident ( $($args:expr),* $(,)? )) => {{
             let fn_handle = {paste::paste! {
-                const FN_INDEX: usize = wdf_kmdf_sys::_WDFFUNCENUM::[<$name TableIndex>] as usize;
+                const FN_INDEX: usize = wdf_kmdf_sys::WDFFUNCENUM::[<$name TableIndex>].0 as usize;
 
                 // Must be in the always-available function category
                 static_assertions::const_assert!(FN_INDEX < wdf_kmdf_sys::WDF_ALWAYS_AVAILABLE_FUNCTION_COUNT as usize);
@@ -445,8 +445,8 @@ pub mod raw {
     /// [`WdfDeviceInitSetIoTypeEx`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitsetiotypeex
     /// [`WdfPdoInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfpdo/nf-wdfpdo-wdfpdoinitallocate
     pub unsafe fn WdfDeviceInitSetIoType(
-        DeviceInit: PWDFDEVICE_INIT,       // in
-        IoType: _WDF_DEVICE_IO_TYPE::Type, // in
+        DeviceInit: PWDFDEVICE_INIT, // in
+        IoType: WDF_DEVICE_IO_TYPE,  // in
     ) {
         dispatch!(WdfDeviceInitSetIoType(DeviceInit, IoType));
     }
@@ -563,7 +563,10 @@ pub mod raw {
 
 pub mod object {
 
-    use wdf_kmdf_sys::{WDFOBJECT, WDF_OBJECT_ATTRIBUTES, _WDF_OBJECT_CONTEXT_TYPE_INFO};
+    use wdf_kmdf_sys::{
+        WDFOBJECT, WDF_EXECUTION_LEVEL, WDF_OBJECT_ATTRIBUTES, WDF_OBJECT_CONTEXT_TYPE_INFO,
+        WDF_SYNCHRONIZATION_SCOPE,
+    };
 
     #[doc(hidden)]
     pub mod __macro_internals {
@@ -571,7 +574,7 @@ pub mod object {
         pub use windows_kernel_sys::MEMORY_ALLOCATION_ALIGNMENT;
     }
 
-    pub type ContextInfo = _WDF_OBJECT_CONTEXT_TYPE_INFO;
+    pub type ContextInfo = WDF_OBJECT_CONTEXT_TYPE_INFO;
 
     #[macro_export]
     macro_rules! impl_context_space {
@@ -638,11 +641,11 @@ pub mod object {
         /// - In KMDF, the default execution level is [`ExecutionLevel::Dispatch`]
         /// - In UMDF, the default execution level is [`ExecutionLevel::Passive`]
         #[default]
-        InheritFromParent = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent,
+        InheritFromParent = WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent.0,
         /// Always execute event callbacks at IRQL == PASSIVE_LEVEL
-        Passive = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelPassive,
+        Passive = WDF_EXECUTION_LEVEL::WdfExecutionLevelPassive.0,
         /// Execute event callbacks at IRQL <= DISPATCH_LEVEL (KMDF only)
-        Dispatch = wdf_kmdf_sys::_WDF_EXECUTION_LEVEL::WdfExecutionLevelDispatch,
+        Dispatch = WDF_EXECUTION_LEVEL::WdfExecutionLevelDispatch.0,
     }
 
     /// What scope to sequentialize event callbacks at
@@ -660,8 +663,7 @@ pub mod object {
         /// This is also used as the default synchronization level for [`Driver`](crate::driver::Driver),
         /// where it is [`SynchronizationScope::None`].
         #[default]
-        InheritFromParent =
-            wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent,
+        InheritFromParent = WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent.0,
         /// Event callbacks for all of the device's descendant objects will be executed sequentially (i.e.
         /// before executing an event callback, the device's synchronization lock is acquired).
         ///
@@ -680,7 +682,7 @@ pub mod object {
         ///
         /// Note that this is sequentialization does not happen between device object hierarchies,
         /// which are free to independently execute event callbacks concurrently.
-        Device = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeDevice,
+        Device = WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeDevice.0,
         /// Event callbacks for a queue will be executed sequentially (i.e. before executing a queue
         /// event callback, the queue's synchronization lock is acquired).
         ///
@@ -699,9 +701,9 @@ pub mod object {
         /// themselves.
         /// For older WDF versions, the queue object should specify `SynchronizationScope::InheritFromParent`,
         /// and the parent object should specify `SynchronizationScope::Queue`
-        Queue = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeQueue,
+        Queue = WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeQueue.0,
         /// No synchronization is performed, so event callbacks may execute concurrently
-        None = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeNone,
+        None = WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeNone.0,
     }
 
     pub(crate) fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES {
@@ -805,7 +807,7 @@ pub mod driver {
 
     use pinned_init::PinInit;
     use vtable::vtable;
-    use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDFOBJECT, _WDF_DRIVER_INIT_FLAGS};
+    use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDFOBJECT, WDF_DRIVER_INIT_FLAGS};
     use windows_kernel_rs::{string::UnicodeString, DriverObject};
     use windows_kernel_sys::{
         sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
@@ -935,7 +937,7 @@ pub mod driver {
 
             if matches!(config.pnp_mode, PnpMode::NonPnp) {
                 driver_config.DriverInitFlags |=
-                    _WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver.0 as u32;
+                    WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver.0 as u32;
             }
 
             // NOTE: This is always available since we're targeting KMDF versions after 1.5

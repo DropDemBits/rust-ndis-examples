@@ -129,7 +129,10 @@ fn generate() {
         .derive_debug(false)
         .layout_tests(false)
         .ctypes_prefix("::core::ffi")
-        .default_enum_style(bindgen::EnumVariation::ModuleConsts)
+        .default_enum_style(bindgen::EnumVariation::NewType {
+            is_bitfield: false,
+            is_global: false,
+        })
         .bitfield_enum("_WDF_DEVICE_SHUTDOWN_FLAGS")
         .bitfield_enum("_WDF_DISPATCH_IRP_TO_IO_QUEUE_FLAGS")
         .bitfield_enum("_WDF_DEVICE_STATE_FLAGS")
