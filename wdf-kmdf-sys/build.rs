@@ -140,9 +140,9 @@ fn generate() {
         .blocklist_type("_?P?KPCR.*")
         .blocklist_type("_?P?KIDTENTRY64")
         .blocklist_type("_?P?KGDTENTRY64")
-        // Depends on windows-kernel-sys for these definitions
-        .blocklist_file(".*wdm.h")
-        .blocklist_file(".*ntdef.h")
+        // Depends on windows-kernel-sys for the rest of the definitions
+        .allowlist_recursively(false)
+        .allowlist_file(".*wdf.*h")
         .generate()
         .unwrap()
         .write_to_file(out_path.join("bindings.rs"))
