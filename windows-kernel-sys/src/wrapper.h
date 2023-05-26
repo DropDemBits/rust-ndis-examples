@@ -22,3 +22,4 @@
 // #include <ndis.h>
 // see build.rs file for more details
 #include <header_hacks/ndis.h>
+#include <wdmsec.h>

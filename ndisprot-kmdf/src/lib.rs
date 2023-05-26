@@ -53,7 +53,7 @@ fn driver_entry(
                         driver.raw_handle(),
                         // TODO: Have to declare it ourselves
                         core::ptr::addr_of!(
-                            wdf_kmdf_sys::SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_RW_RES_R
+                            windows_kernel_sys::SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_RW_RES_R
                         ),
                     )
                 };
