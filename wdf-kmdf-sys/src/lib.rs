@@ -61,7 +61,44 @@ fn WDF_STRUCTURE_SIZE<T: Sized>() -> u32 {
     core::mem::size_of::<T>() as u32
 }
 
+impl WDF_OBJECT_ATTRIBUTES {
+    /// Initializes the [`WDF_OBJECT_ATTRIBUTES`] structure
+    ///
+    /// Sets
+    /// - `ExecutionLevel` to `WdfSynchronizationScopeInheritFromParent`
+    /// - `SynchronizationScope` to `WdfSynchronizationScopeInheritFromParent`
+    #[must_use]
+    pub fn init() -> Self {
+        // SAFETY: All fields are zero-able
+        let mut attributes: Self = unsafe { core::mem::zeroed() };
+
+        attributes.Size = WDF_STRUCTURE_SIZE::<WDF_OBJECT_ATTRIBUTES>();
+        attributes.SynchronizationScope =
+            _WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent;
+        attributes.ExecutionLevel = _WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent;
+
+        attributes
+    }
+}
+
+impl WDF_DRIVER_CONFIG {
+    /// Initializes the [`WDF_DRIVER_CONFIG`] structure
+    #[must_use]
+    pub fn init(EvtDriverDeviceAdd: PFN_WDF_DRIVER_DEVICE_ADD) -> Self {
+        // SAFETY: All fields are zero-able
+        let mut config: Self = unsafe { core::mem::zeroed() };
+
+        config.Size = WDF_STRUCTURE_SIZE::<Self>();
+
+        config.EvtDriverDeviceAdd = EvtDriverDeviceAdd;
+
+        config
+    }
+}
+
 impl WDF_FILEOBJECT_CONFIG {
+    /// Initializes the [`WDF_FILEOBJECT_CONFIG`] structure
+    ///
     /// Sets:
     /// - Size
     /// - Specified callback function pointers
@@ -73,7 +110,7 @@ impl WDF_FILEOBJECT_CONFIG {
         EvtFileClose: PFN_WDF_FILE_CLOSE,                // in, optional
         EvtFileCleanup: PFN_WDF_FILE_CLEANUP,            // in, optional
     ) -> Self {
-        // SAFETY: All are zero-able
+        // SAFETY: All fields are zero-able
         let mut config: Self = unsafe { core::mem::zeroed() };
 
         config.Size = WDF_STRUCTURE_SIZE::<Self>();

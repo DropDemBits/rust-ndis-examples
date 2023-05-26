@@ -536,10 +536,7 @@ pub mod raw {
 
 pub mod object {
 
-    use wdf_kmdf_sys::{
-        WDFOBJECT, _WDF_EXECUTION_LEVEL, _WDF_OBJECT_ATTRIBUTES, _WDF_OBJECT_CONTEXT_TYPE_INFO,
-        _WDF_SYNCHRONIZATION_SCOPE,
-    };
+    use wdf_kmdf_sys::{WDFOBJECT, WDF_OBJECT_ATTRIBUTES, _WDF_OBJECT_CONTEXT_TYPE_INFO};
 
     #[doc(hidden)]
     pub mod __macro_internals {
@@ -680,15 +677,8 @@ pub mod object {
         None = wdf_kmdf_sys::_WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeNone,
     }
 
-    pub(crate) fn default_object_attributes<T: IntoContextSpace>() -> _WDF_OBJECT_ATTRIBUTES {
-        // SAFETY: All-zeros pattern is valid for _WDF_OBJECT_ATTRIBUTES
-        let mut object_attrs: _WDF_OBJECT_ATTRIBUTES = unsafe { core::mem::zeroed() };
-
-        // Constant size, known to be small
-        object_attrs.Size = core::mem::size_of::<_WDF_OBJECT_ATTRIBUTES>() as u32;
-        object_attrs.SynchronizationScope =
-            _WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent;
-        object_attrs.ExecutionLevel = _WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent;
+    pub(crate) fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES {
+        let mut object_attrs = WDF_OBJECT_ATTRIBUTES::init();
 
         // Always set the context info
         object_attrs.ContextTypeInfo = T::CONTEXT_INFO as *const _;
@@ -907,17 +897,10 @@ pub mod driver {
             let mut object_attrs = default_object_attributes::<T>();
             object_attrs.EvtDestroyCallback = Some(Self::__dispatch_destroy);
 
-            // SAFETY: All-zeros pattern is valid for _WDF_DRIVER_CONFIG
-            let mut driver_config: wdf_kmdf_sys::_WDF_DRIVER_CONFIG =
-                unsafe { core::mem::zeroed() };
-            driver_config.Size = core::mem::size_of::<wdf_kmdf_sys::_WDF_DRIVER_CONFIG>() as u32;
-
-            driver_config.EvtDriverDeviceAdd =
-                T::HAS_DEVICE_ADD.then_some(Self::__dispatch_driver_device_add);
-
-            // NOTE: We always specify an unload function since that's what calls
-            // T's drop code
-            driver_config.EvtDriverUnload = Some(Self::__dispatch_driver_unload);
+            let mut driver_config = wdf_kmdf_sys::WDF_DRIVER_CONFIG::init(
+                T::HAS_DEVICE_ADD.then_some(Self::__dispatch_driver_device_add),
+            );
+            driver_config.EvtDriverUnload = T::HAS_UNLOAD.then_some(Self::__dispatch_driver_unload);
 
             if matches!(config.pnp_mode, PnpMode::NonPnp) {
                 driver_config.DriverInitFlags |=
