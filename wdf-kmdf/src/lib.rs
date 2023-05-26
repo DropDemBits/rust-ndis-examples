@@ -1,6 +1,10 @@
 //! Rust KMDF Abstractions
 #![no_std]
-#![deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
+#![deny(
+    unsafe_op_in_unsafe_fn,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::undocumented_unsafe_blocks
+)]
 
 pub mod raw {
     //! Raw bindings to KMDF functions
@@ -34,18 +38,29 @@ pub mod raw {
                 // Must be in the always-available function category
                 static_assertions::const_assert!(FN_INDEX < wdf_kmdf_sys::WDF_ALWAYS_AVAILABLE_FUNCTION_COUNT as usize);
 
+                // SAFETY: Immutable by the time we're loaded
+                let fn_table = unsafe { function_table!() };
+
                 // SAFETY: Read-only, initialized by the time we use it, and checked to be in bounds
-                let fn_handle = unsafe { function_table!()
+                let fn_handle = unsafe {
+                    fn_table
                     .add(FN_INDEX)
                     .cast::<wdf_kmdf_sys::[<PFN_ $name:upper>]>()
                 };
 
                 // SAFETY: Ensured that this is present by the static assert
-                unsafe { fn_handle.read().unwrap_unchecked() }
+                let fn_handle = unsafe { fn_handle.read()};
+                // SAFETY: All available function handles are not null
+                let fn_handle = unsafe { fn_handle.unwrap_unchecked() };
+
+                fn_handle
             }};
 
+            // SAFETY: Pointer to globals is immutable by the time we're loaded
+            let globals = unsafe {wdf_kmdf_sys::WdfDriverGlobals};
+
             // SAFETY: It is up to the caller to pass unsafety
-            unsafe { fn_handle(wdf_kmdf_sys::WdfDriverGlobals, $($args),*) }
+            unsafe { fn_handle(globals, $($args),*) }
         }};
     }
 
@@ -506,8 +521,12 @@ pub mod raw {
     /// Must not be called while [`WdfDriverCreate`] is executing
     #[must_use]
     pub unsafe fn WdfGetDriver() -> Option<WDFDRIVER> {
+        // SAFETY: Location to globals is immutable by the time we're loaded
+        let globals = unsafe { wdf_kmdf_sys::WdfDriverGlobals };
+
         // SAFETY: Caller handles racing accesses, and is effectively initialized & immutable after WdfDriverCreate
-        let globals = unsafe { &*wdf_kmdf_sys::WdfDriverGlobals };
+        let globals = unsafe { &*globals };
+
         let driver = globals.Driver;
 
         Some(driver).filter(|drv| drv.is_null())
