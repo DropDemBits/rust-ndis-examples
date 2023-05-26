@@ -45,7 +45,7 @@ macro_rules! WDF_NO_SEND_OPTIONS {
 // Right now, we don't handle struct versioning, so it's just the struct's size.
 // Should probably be a `Result<u32, Error>`
 fn WDF_STRUCTURE_SIZE<T: Sized>() -> u32 {
-    core::mem::size_of::<T> as u32
+    core::mem::size_of::<T>() as u32
 }
 
 impl WDF_FILEOBJECT_CONFIG {
