@@ -1,6 +1,6 @@
 //! Rust KMDF Abstractions
 #![no_std]
-#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks)]
 
 pub mod raw {
     //! Raw bindings to KMDF functions
@@ -703,8 +703,10 @@ pub mod object {
         let handle = handle.as_handle();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
-        let context_space =
-            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
+        let context_space = unsafe {
+            // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
+            crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
+        };
         let context_space = context_space.cast::<T>();
 
         // SAFETY:
@@ -726,8 +728,10 @@ pub mod object {
         let handle = handle.as_handle_mut();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
-        let context_space =
-            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
+        let context_space = unsafe {
+            // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
+            crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
+        };
         let context_space = context_space.cast::<T>();
 
         // SAFETY:
@@ -752,8 +756,10 @@ pub mod object {
         let handle = handle.as_handle_mut();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
-        let context_space =
-            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
+        let context_space = unsafe {
+            // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
+            crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
+        };
         let context_space = context_space.cast::<T>();
 
         // SAFETY:
@@ -794,7 +800,7 @@ pub mod driver {
     impl DriverHandle {
         /// Wraps the handle in a raw driver object
         ///
-        /// SAFETY:
+        /// ## Safety
         ///
         /// Respect aliasing rules, since this can be used to
         /// generate aliasing mutable references to the context space
@@ -997,13 +1003,9 @@ pub mod driver {
                 return;
             };
 
-            unsafe {
-                windows_kernel_sys::DbgPrintEx(
-                    windows_kernel_sys::_DPFLTR_TYPE::DPFLTR_IHVDRIVER_ID as u32,
-                    windows_kernel_sys::DPFLTR_INFO_LEVEL,
-                    b"KmdfHewwoWowwd: EvtDestroy\n\0".as_ptr().cast(),
-                )
-            };
+            // Don't really need it here, but just as a demonstration of how we can add logging
+            // for lib crates
+            windows_kernel_rs::log::debug!("KmdfHewwoWowwd: EvtDestroy");
 
             // Drop it!
             // SAFETY:
