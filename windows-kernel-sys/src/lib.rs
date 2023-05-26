@@ -7,6 +7,12 @@
     clippy::missing_safety_doc,
 )]
 
+#[allow(
+    clippy::useless_transmute,
+    clippy::too_many_arguments,
+    clippy::unnecessary_cast,
+    clippy::pedantic
+)]
 mod bindings;
 
 pub use bindings::*;

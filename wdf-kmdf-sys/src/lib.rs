@@ -7,9 +7,21 @@
     clippy::missing_safety_doc,
 )]
 
-use windows_kernel_sys::*;
+#[allow(
+    clippy::fn_to_numeric_cast_with_truncation,
+    clippy::useless_transmute,
+    clippy::upper_case_acronyms,
+    clippy::too_many_arguments,
+    clippy::pedantic
+)]
+mod bindings {
+    #![allow(dead_code)]
+    use windows_kernel_sys::*;
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+
+pub use bindings::*;
 
 #[macro_export]
 macro_rules! WDF_NO_OBJECT_ATTRIBUTES {
@@ -44,6 +56,7 @@ macro_rules! WDF_NO_SEND_OPTIONS {
 
 // Right now, we don't handle struct versioning, so it's just the struct's size.
 // Should probably be a `Result<u32, Error>`
+#[allow(clippy::cast_possible_truncation)] // all sizes are less than u32::MAX
 fn WDF_STRUCTURE_SIZE<T: Sized>() -> u32 {
     core::mem::size_of::<T>() as u32
 }
@@ -52,8 +65,9 @@ impl WDF_FILEOBJECT_CONFIG {
     /// Sets:
     /// - Size
     /// - Specified callback function pointers
-    /// - FileObjectClass to [`_WDF_FILEOBJECT_CLASS::WdfFileObjectWdfCannotUseFsContexts`]
-    /// - AutoForwardCleanupClose to [`_WDF_TRI_STATE::WdfUseDefault`]
+    /// - `FileObjectClass` to [`_WDF_FILEOBJECT_CLASS::WdfFileObjectWdfCannotUseFsContexts`]
+    /// - `AutoForwardCleanupClose` to [`_WDF_TRI_STATE::WdfUseDefault`]
+    #[must_use]
     pub fn init(
         EvtDeviceFileCreate: PFN_WDF_DEVICE_FILE_CREATE, // in, optional
         EvtFileClose: PFN_WDF_FILE_CLOSE,                // in, optional

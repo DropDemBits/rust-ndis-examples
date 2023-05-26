@@ -178,7 +178,7 @@ fn header_hacks() {
 
     // check if no change happened (this is faster than just always doing it, and likely more reliable than checking mtime of the original header)
     match std::fs::read_to_string(&path) {
-        Ok(old_contents) if contents == old_contents => return,
+        Ok(old_contents) if contents == old_contents => (),
         _ => {
             std::fs::write(&path, contents).unwrap();
         }
