@@ -149,7 +149,7 @@ pub mod raw {
     /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
     ///
     pub unsafe fn WdfControlFinishInitializing(Device: WDFDEVICE /* in */) {
-        dispatch!(WdfControlFinishInitializing(Device))
+        dispatch!(WdfControlFinishInitializing(Device));
     }
 
     // endregion: wdfcontrol
@@ -389,7 +389,7 @@ pub mod raw {
     // TODO: As proper intra-doc links
     /// [`WdfPdoInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfpdo/nf-wdfpdo-wdfpdoinitallocate
     pub unsafe fn WdfDeviceInitFree(DeviceInit: PWDFDEVICE_INIT) {
-        dispatch!(WdfDeviceInitFree(DeviceInit))
+        dispatch!(WdfDeviceInitFree(DeviceInit));
     }
 
     // FIXME: WdfDeviceInitRegisterPnpStateChangeCallback
@@ -440,7 +440,7 @@ pub mod raw {
         DeviceInit: PWDFDEVICE_INIT,       // in
         IoType: _WDF_DEVICE_IO_TYPE::Type, // in
     ) {
-        dispatch!(WdfDeviceInitSetIoType(DeviceInit, IoType))
+        dispatch!(WdfDeviceInitSetIoType(DeviceInit, IoType));
     }
 
     // FIXME: WdfDeviceInitSetIoTypeEx

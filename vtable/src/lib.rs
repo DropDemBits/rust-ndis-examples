@@ -18,8 +18,8 @@ fn vtable_macro(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as syn::Item);
 
     let res: Result<TokenStream, syn::Error> = match item {
-        syn::Item::Trait(item) => vtable_trait(item),
-        syn::Item::Impl(item) => vtable_impl(item),
+        syn::Item::Trait(item) => Ok(vtable_trait(item)),
+        syn::Item::Impl(item) => Ok(vtable_impl(item)),
         _ => Err(syn::Error::new(
             item.span(),
             "vtable can only be applied to traits and trait impls",
@@ -32,11 +32,11 @@ fn vtable_macro(item: TokenStream) -> TokenStream {
     }
 }
 
-fn vtable_trait(mut item: syn::ItemTrait) -> syn::Result<TokenStream> {
+fn vtable_trait(mut item: syn::ItemTrait) -> TokenStream {
     let optional_methods_markers = item
         .items
         .iter()
-        .flat_map(|trait_item| {
+        .filter_map(|trait_item| {
             let syn::TraitItem::Fn(trait_fn) = trait_item else { return None; };
 
             let has_default_impl = trait_fn.default.is_none();
@@ -59,14 +59,14 @@ fn vtable_trait(mut item: syn::ItemTrait) -> syn::Result<TokenStream> {
         .collect::<Vec<_>>();
     item.items.extend(optional_methods_markers);
 
-    Ok(quote::quote! { #item }.into())
+    quote::quote! { #item }.into()
 }
 
-fn vtable_impl(mut item: syn::ItemImpl) -> syn::Result<TokenStream> {
+fn vtable_impl(mut item: syn::ItemImpl) -> TokenStream {
     let implemented_methods = item
         .items
         .iter()
-        .flat_map(|item| {
+        .filter_map(|item| {
             let syn::ImplItem::Fn(impl_fn) = item else { return None };
 
             let original_name = &impl_fn.sig.ident;
@@ -80,5 +80,5 @@ fn vtable_impl(mut item: syn::ItemImpl) -> syn::Result<TokenStream> {
         .collect::<Vec<_>>();
     item.items.extend(implemented_methods);
 
-    Ok(quote::quote! { #item }.into())
+    quote::quote! { #item }.into()
 }

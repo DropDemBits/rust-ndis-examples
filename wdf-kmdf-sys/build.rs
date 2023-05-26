@@ -21,6 +21,7 @@ pub fn get_windows_kits_dir() -> Result<PathBuf, Error> {
     Ok(dir.into())
 }
 
+#[derive(Clone, Copy)]
 pub enum DirectoryType {
     Include,
     Library,
@@ -40,14 +41,13 @@ pub fn get_km_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
     // In the lib directory we may have one or more directories named after the version of Windows,
     // we will be looking for the highest version number.
     let dir = dir
-        .filter_map(|dir| dir.ok())
+        .filter_map(Result::ok)
         .map(|dir| dir.path())
         .filter(|dir| {
             dir.components()
                 .last()
                 .and_then(|c| c.as_os_str().to_str())
-                .map(|c| c.starts_with("10.") && dir.join("km").is_dir())
-                .unwrap_or(false)
+                .map_or(false, |c| c.starts_with("10.") && dir.join("km").is_dir())
         })
         .max()
         .ok_or_else(|| Error::DirectoryNotFound)?;
@@ -65,14 +65,15 @@ pub fn get_shared_dir() -> Result<PathBuf, Error> {
     // In the lib directory we may have one or more directories named after the version of Windows,
     // we will be looking for the highest version number.
     let dir = dir
-        .filter_map(|dir| dir.ok())
+        .filter_map(Result::ok)
         .map(|dir| dir.path())
         .filter(|dir| {
             dir.components()
                 .last()
                 .and_then(|c| c.as_os_str().to_str())
-                .map(|c| c.starts_with("10.") && dir.join("shared").is_dir())
-                .unwrap_or(false)
+                .map_or(false, |c| {
+                    c.starts_with("10.") && dir.join("shared").is_dir()
+                })
         })
         .max()
         .ok_or_else(|| Error::DirectoryNotFound)?;

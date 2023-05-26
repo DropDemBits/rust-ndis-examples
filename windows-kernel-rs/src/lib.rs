@@ -17,11 +17,11 @@ pub mod allocator {
     unsafe impl GlobalAlloc for KernelAlloc {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             // Defer error handling to clients
-            ExAllocatePool2(POOL_FLAG_NON_PAGED, layout.size() as u64, POOL_TAG) as _
+            ExAllocatePool2(POOL_FLAG_NON_PAGED, layout.size() as u64, POOL_TAG).cast()
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-            ExFreePool(ptr as _);
+            ExFreePool(ptr.cast());
         }
     }
 }
@@ -56,7 +56,7 @@ pub mod log {
             DbgPrintEx(
                 COMPONENT_ID,
                 DPFLTR_ERROR_LEVEL,
-                b"Failed to initialize kernel logger\0".as_ptr() as _,
+                b"Failed to initialize kernel logger\0".as_ptr().cast(),
             )
         };
     }
@@ -99,26 +99,23 @@ pub mod log {
                     Level::Error => DPFLTR_ERROR_LEVEL,
                     Level::Warn => DPFLTR_WARNING_LEVEL,
                     Level::Info => DPFLTR_INFO_LEVEL,
-                    Level::Debug => DPFLTR_TRACE_LEVEL,
-                    Level::Trace => DPFLTR_TRACE_LEVEL,
+                    // There isn't a debug level, so these get to share
+                    Level::Debug | Level::Trace => DPFLTR_TRACE_LEVEL,
                 };
 
-                match status {
-                    Ok(_) => {
-                        unsafe { DbgPrintEx(COMPONENT_ID, real_level, message_buf.as_ptr() as _) };
-                    }
-                    Err(_) => {
-                        unsafe {
-                            DbgPrintEx(
-                                COMPONENT_ID,
-                                DPFLTR_ERROR_LEVEL,
-                                b"ERROR [windows_kernel_rs] overflow while formatting message buffer\n\0".as_ptr() as _,
-                            )
-                        };
+                if status.is_ok() {
+                    unsafe { DbgPrintEx(COMPONENT_ID, real_level, message_buf.as_ptr().cast()) };
+                } else {
+                    unsafe {
+                        DbgPrintEx(
+                            COMPONENT_ID,
+                            DPFLTR_ERROR_LEVEL,
+                            b"ERROR [windows_kernel_rs] overflow while formatting message buffer\n\0".as_ptr().cast(),
+                        )
+                    };
 
-                        // Do a breakpoint so that we can still log some information
-                        unsafe { windows_kernel_sys::DbgBreakPointWithStatus(0) };
-                    }
+                    // Do a breakpoint so that we can still log some information
+                    unsafe { windows_kernel_sys::DbgBreakPointWithStatus(0) };
                 }
             }
         }
@@ -164,6 +161,7 @@ pub mod string {
         ///
         /// Will panic if the length in bytes is too big to fit into a `u16`
         #[allow(clippy::cast_possible_truncation)] // const_num_from_num isn't stably const yet
+        #[must_use]
         pub const fn new_const(val: &'static Utf16Str) -> UnicodeString<'static> {
             // Length is expected to be in bytes
             let Some(len) = val
