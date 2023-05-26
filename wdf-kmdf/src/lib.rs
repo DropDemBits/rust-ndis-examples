@@ -697,9 +697,9 @@ pub mod object {
     /// ## Safety
     ///
     /// The object's context space must be initialized
-    pub(crate) unsafe fn get_context<'space, T: IntoContextSpace>(
-        handle: &'space impl AsObjectHandle,
-    ) -> Option<&'space T> {
+    pub(crate) unsafe fn get_context<T: IntoContextSpace>(
+        handle: &impl AsObjectHandle,
+    ) -> Option<&T> {
         let handle = handle.as_handle();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
@@ -720,9 +720,9 @@ pub mod object {
     /// ## Safety
     ///
     /// The object's context space must be initialized
-    pub(crate) unsafe fn get_context_mut<'space, T: IntoContextSpace>(
-        handle: &'space mut impl AsObjectHandle,
-    ) -> Option<&'space mut T> {
+    pub(crate) unsafe fn get_context_mut<T: IntoContextSpace>(
+        handle: &mut impl AsObjectHandle,
+    ) -> Option<&mut T> {
         let handle = handle.as_handle_mut();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
@@ -745,8 +745,8 @@ pub mod object {
     ///
     /// - Must not reinitialize an object's context space
     /// - Object must actually have the context space
-    pub(crate) unsafe fn context_pin_init<'space, T: IntoContextSpace, E>(
-        handle: &'space mut impl AsObjectHandle,
+    pub(crate) unsafe fn context_pin_init<T: IntoContextSpace, E>(
+        handle: &mut impl AsObjectHandle,
         pin_init: impl pinned_init::PinInit<T, E>,
     ) -> Result<(), E> {
         let handle = handle.as_handle_mut();
@@ -776,7 +776,7 @@ pub mod driver {
     use windows_kernel_rs::{string::UnicodeString, DriverObject};
     use windows_kernel_sys::{
         sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
-        Error, PCUNICODE_STRING, PDRIVER_OBJECT,
+        Error,
     };
 
     use crate::{
