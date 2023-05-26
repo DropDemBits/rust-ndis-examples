@@ -4,7 +4,7 @@
 use wdf_kmdf_sys::{WDFDEVICE, WDFFILEOBJECT, WDFREQUEST, WDF_FILEOBJECT_CONFIG};
 use windows_kernel_rs::{
     log::{self, debug, error, info, trace},
-    string::{U16Str, UnicodeString},
+    string::{utf16str, UnicodeString},
     DriverObject,
 };
 use windows_kernel_sys::{Error, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING};
@@ -130,7 +130,7 @@ fn create_control_device(
         return status;
     }
 
-    if (!device_init.is_null()) {
+    if !device_init.is_null() {
         // Free the WDFDEVICE_INIT structure only if device creation fails
         // Otherwise, the framework has ownership of the memory and so frees
         // it itself.
@@ -150,9 +150,9 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {}
 unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {}
 
 const NT_DEVICE_NAME: UnicodeString<'static> =
-    UnicodeString::new_const(windows_kernel_rs::string::utf16str!(r"\Device\Ndisprot"));
+    UnicodeString::new_const(utf16str!(r"\Device\Ndisprot"));
 const DOS_DEVICE_NAME: UnicodeString<'static> =
-    UnicodeString::new_const(windows_kernel_rs::string::utf16str!(r"\Global??\Ndisprot"));
+    UnicodeString::new_const(utf16str!(r"\Global??\Ndisprot"));
 
 // Following two are arranged in the way a little-endian processor would read 2 bytes from the wire
 const NPROT_ETH_TYPE: u16 = 0x8e88;

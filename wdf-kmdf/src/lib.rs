@@ -83,7 +83,7 @@ pub mod raw {
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
     /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([CtlDeviceFinishInitDeviceAdd]) If a PnP driver creates a control device object in [`EvtDriverDeviceAdd`], [`WdfControlFinishInitializing`]
     ///   must be called after [`WdfDeviceCreate`] but before the end of [`EvtDriverDeviceAdd`]
@@ -133,7 +133,7 @@ pub mod raw {
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
     /// - ([CtlDeviceFinishInitDeviceAdd]) If a PnP driver creates a control device object in [`EvtDriverDeviceAdd`], [`WdfControlFinishInitializing`]
     ///   must be called after [`WdfDeviceCreate`] but before the end of [`EvtDriverDeviceAdd`]
     /// - ([CtlDeviceFinishInitDrEntry]) If a PnP driver creates a control device object in [`DriverEntry`], [`WdfControlFinishInitializing`]
@@ -198,7 +198,7 @@ pub mod raw {
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
     /// - ([AccessHardwareKey]) Must not access the hardware-specific registry key from [`EvtChildListCreateDevice`]
     /// - ([AddPdotoStaticChildlist]) For a PDO device, after calling [`WdfPdoInitAllocate`] and [`WdfDeviceCreate`], [`WdfFdoAddStaticChild`] must be called too
     /// - ([ChangeQueueState]) Must not be called concurrently with other state-changing functions
@@ -288,8 +288,8 @@ pub mod raw {
     /// If a name is required (e.g. because it represents a PDO or a control device), a name will be assigned
     /// by the operating system.
     ///
-    /// For more information about naming device objects, see [Controlling Device Access in Framework-Based Drivers].
-    /// [Controlling Device Access in Framework-Based Drivers]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/controlling-device-access-in-kmdf-drivers
+    /// For more information about naming device objects, see Controlling Device Access in Framework-Based Drivers at
+    /// <https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/controlling-device-access-in-kmdf-drivers>.
     ///
     /// ## Return Value
     ///
@@ -300,7 +300,7 @@ pub mod raw {
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
     /// - ([ChildDeviceInitApi]) The child device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([DeviceInitAPI]) The device object initialization methods must be called before [`WdfDeviceCreate`]
@@ -358,7 +358,7 @@ pub mod raw {
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= DISPATCH_LEVEL
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
     /// - ([DoubleDeviceInitFree]) Should not be called twice on the same [`WDFDEVICE_INIT`] struct
     /// - ([InitFreeDeviceCallback]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs while initializing
     ///   a new framework device object, [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
@@ -418,7 +418,7 @@ pub mod raw {
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= DISPATCH_LEVEL
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
     /// - ([ChildDeviceInitApi]) The child device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([DeviceInitAPI]) The device object initialization methods must be called before [`WdfDeviceCreate`]
@@ -481,7 +481,7 @@ pub mod raw {
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: PASSIVE_LEVEL
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
     /// - ([ChangeQueueState]) Must not be called concurrently with other state-changing functions
     /// - ([DriverAttributeChanged]) The existing execution level or synchronization scope must not be modified(?)
     /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
@@ -843,7 +843,7 @@ pub mod driver {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Default, Clone, Copy)]
     pub struct DriverConfig {
         /// If the driver is a PnP driver, and thus requires an `EvtDriverDeviceAdd` callback.
         pub pnp_mode: PnpMode,
@@ -889,9 +889,7 @@ pub mod driver {
         ///
         /// ## IRQL: Passive
         ///
-        /// ## Returns
-        ///
-        /// Driver object wrapper, or:
+        /// ## Errors
         ///
         /// - `STATUS_INVALID_PARAMETER` if non-pnp mode is specified, but `device_add` is also specified
         /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
@@ -934,7 +932,7 @@ pub mod driver {
 
             // NOTE: This is always available since we're targeting KMDF versions after 1.5
             if let Some(tag) = config.pool_tag {
-                driver_config.DriverPoolTag = tag
+                driver_config.DriverPoolTag = tag;
             }
 
             // Make it!
@@ -956,7 +954,7 @@ pub mod driver {
                         Some(&mut object_attrs),
                         &mut driver_config,
                         Some(&mut handle.0),
-                    ))?
+                    ))?;
                 }
 
                 handle

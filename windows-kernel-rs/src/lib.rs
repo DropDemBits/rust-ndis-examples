@@ -61,7 +61,7 @@ pub mod log {
         };
     }
 
-    /// Initializes the kernel logging infrastructure, based off of DbgPrintEx
+    /// Initializes the kernel logging infrastructure, based off of `DbgPrintEx`
     #[macro_export(local_inner_macros)]
     macro_rules! init_kernel_logger {
         ($component_id:expr, $level:expr) => {{
@@ -129,14 +129,28 @@ pub mod log {
 
 pub mod string {
     //! Helpers for working with Unicode Strings
+    //!
+    //! Re-exports [`widestring`] for making it easier to work with UTF-16 strings.
+    //!
+    //! ## `UnicodeString` and `UnicodeStringMut`
+    //!
+    //! [`UNICODE_STRING`] is essentially a slice reference (i.e. it does not own the memory),
+    //! but since it doesn't have a lifetime attached, it's very easy to accidentally make a
+    //! [`UNICODE_STRING`] refer to recently freed memory.
+    //!
+    //! However, [`UNICODE_STRING`] also acts as both as a shared and/or exclusive reference
+    //! to the backing memory, so [`UnicodeString`] and [`UnicodeStringMut`] help clarify
+    //! when something is read-only, or potentially read-write.
 
     use core::marker::PhantomData;
 
     use windows_kernel_sys::{PCUNICODE_STRING, UNICODE_STRING};
 
-    pub use widestring::*;
+    pub use widestring::{u16cstr, utf16str, U16CStr, U16CString, Utf16Str, Utf16String};
 
     /// An **immutable** Win32-compatible unicode string, with a lifetime attached
+    ///
+    /// See the [module-level documentation](crate::string) for the motivation of this wrapper type.
     #[derive(Clone, Copy)]
     pub struct UnicodeString<'a>(UNICODE_STRING, PhantomData<&'a [u16]>);
 
@@ -145,6 +159,11 @@ pub mod string {
 
     impl UnicodeString<'_> {
         /// For use in const contexts, while waiting for const trait impls
+        ///
+        /// ## Panics
+        ///
+        /// Will panic if the length in bytes is too big to fit into a `u16`
+        #[allow(clippy::cast_possible_truncation)] // const_num_from_num isn't stably const yet
         pub const fn new_const(val: &'static Utf16Str) -> UnicodeString<'static> {
             // Length is expected to be in bytes
             let Some(len) = val
@@ -175,6 +194,7 @@ pub mod string {
         /// - The yielded [`UNICODE_STRING`] must not outlive the original
         ///   `UnicodeString` that it was yielded from.
         /// - The original backing memory in should not be modified
+        #[must_use]
         pub unsafe fn into_raw(&self) -> UNICODE_STRING {
             self.0
         }
@@ -186,6 +206,7 @@ pub mod string {
         /// - The yielded `UnicodeString` must not outlive the original
         ///   [`UNICODE_STRING`] that it was yielded from.
         /// - The original backing memory in should not be modified
+        #[must_use]
         pub unsafe fn from_raw(raw: UNICODE_STRING) -> Self {
             Self(raw, PhantomData)
         }
@@ -197,12 +218,15 @@ pub mod string {
         /// - The yielded [`PCUNICODE_STRING`] must not outlive the original
         ///   `UnicodeString` that it was yielded from.
         /// - The original backing memory in should not be modified
+        #[must_use]
         pub unsafe fn as_raw_ptr(&self) -> PCUNICODE_STRING {
             &self.0
         }
     }
 
     /// A **mutable** Win32-compatible unicode string, with a lifetime attached
+    ///
+    /// See the [module-level documentation](crate::string) for the motivation of this wrapper type.
     #[derive(Clone, Copy)]
     pub struct UnicodeStringMut<'a>(UNICODE_STRING, PhantomData<&'a mut [u16]>);
 
@@ -210,6 +234,7 @@ pub mod string {
 
     impl UnicodeStringMut<'_> {
         /// Creates an immutable version of a unicode string
+        #[must_use]
         pub fn as_ref(&self) -> UnicodeString<'_> {
             UnicodeString(self.0, PhantomData)
         }
@@ -220,6 +245,7 @@ pub mod string {
         ///
         /// - The yielded [`UNICODE_STRING`] must not outlive the original
         ///   `UnicodeString` that it was yielded from.
+        #[must_use]
         pub unsafe fn into_raw(&mut self) -> UNICODE_STRING {
             self.0
         }
@@ -227,13 +253,14 @@ pub mod string {
 
     /// Helper extension trait for converting `U16CStr{ing}` and `U16Str{ing}`
     /// into the Win32-compatible [`UnicodeString`]
-    pub trait IntoUnicodeString {
+    pub trait AsUnicodeString {
         /// Tries to convert into a [`UnicodeString`], or None if it wasn't successful
-        fn into_unicode_string(&self) -> Option<UnicodeString<'_>>;
+        #[must_use]
+        fn as_unicode_string(&self) -> Option<UnicodeString<'_>>;
     }
 
-    impl IntoUnicodeString for U16CStr {
-        fn into_unicode_string(&self) -> Option<UnicodeString<'_>> {
+    impl AsUnicodeString for U16CStr {
+        fn as_unicode_string(&self) -> Option<UnicodeString<'_>> {
             // Length is expected to be in bytes
             let len = self
                 .len()
@@ -253,14 +280,14 @@ pub mod string {
         }
     }
 
-    impl IntoUnicodeString for U16CString {
-        fn into_unicode_string(&self) -> Option<UnicodeString<'_>> {
-            self.as_ucstr().into_unicode_string()
+    impl AsUnicodeString for U16CString {
+        fn as_unicode_string(&self) -> Option<UnicodeString<'_>> {
+            self.as_ucstr().as_unicode_string()
         }
     }
 
-    impl IntoUnicodeString for Utf16Str {
-        fn into_unicode_string(&self) -> Option<UnicodeString<'_>> {
+    impl AsUnicodeString for Utf16Str {
+        fn as_unicode_string(&self) -> Option<UnicodeString<'_>> {
             // Length is expected to be in bytes
             let len = self
                 .len()
@@ -279,21 +306,22 @@ pub mod string {
         }
     }
 
-    impl IntoUnicodeString for Utf16String {
-        fn into_unicode_string(&self) -> Option<UnicodeString<'_>> {
-            self.as_utfstr().into_unicode_string()
+    impl AsUnicodeString for Utf16String {
+        fn as_unicode_string(&self) -> Option<UnicodeString<'_>> {
+            self.as_utfstr().as_unicode_string()
         }
     }
 
     /// Helper extension trait for converting `U16CString` and `U16String`
     /// into the Win32-compatible [`UnicodeStringMut`]
-    pub trait IntoUnicodeStringMut {
+    pub trait AsUnicodeStringMut {
         /// Tries to convert into a [`UnicodeStringMut`], or None if it wasn't successful
-        fn into_unicode_string_mut(&mut self) -> Option<UnicodeStringMut<'_>>;
+        #[must_use]
+        fn as_unicode_string_mut(&mut self) -> Option<UnicodeStringMut<'_>>;
     }
 
-    impl IntoUnicodeStringMut for U16CString {
-        fn into_unicode_string_mut(&mut self) -> Option<UnicodeStringMut<'_>> {
+    impl AsUnicodeStringMut for U16CString {
+        fn as_unicode_string_mut(&mut self) -> Option<UnicodeStringMut<'_>> {
             // Length is expected to be in bytes
             let len = self
                 .len()
@@ -313,8 +341,8 @@ pub mod string {
         }
     }
 
-    impl IntoUnicodeStringMut for Utf16String {
-        fn into_unicode_string_mut(&mut self) -> Option<UnicodeStringMut<'_>> {
+    impl AsUnicodeStringMut for Utf16String {
+        fn as_unicode_string_mut(&mut self) -> Option<UnicodeStringMut<'_>> {
             // Length is expected to be in bytes
             let len = self
                 .len()
@@ -342,17 +370,22 @@ impl DriverObject {
     /// ## Safety
     ///
     /// Must only be called from the `DriverEntry` method
+    #[must_use]
     pub unsafe fn new(driver_object: windows_kernel_sys::PDRIVER_OBJECT) -> Self {
         Self(driver_object)
     }
 
     /// Unwraps the driver object, yielding the original raw pointer
+    #[must_use]
     pub fn into_raw(self) -> windows_kernel_sys::PDRIVER_OBJECT {
         self.0
     }
 }
 
 pub fn __handle_panic(info: &core::panic::PanicInfo) -> ! {
+    // Closest bugcheck we can get that doesn't have any parameters
+    const FATAL_UNHANDLED_HARD_ERROR: u32 = 0x4C;
+
     // Show panic message
     log::error!("{info}");
 
@@ -360,8 +393,6 @@ pub fn __handle_panic(info: &core::panic::PanicInfo) -> ! {
     unsafe { windows_kernel_sys::DbgBreakPointWithStatus(0) };
     // Before causing a bugcheck
 
-    // Closest bugcheck we can get that doesn't have any parameters
-    const FATAL_UNHANDLED_HARD_ERROR: u32 = 0x4C;
     // SAFETY: Just a matching FFI signature
     unsafe { windows_kernel_sys::KeBugCheck(FATAL_UNHANDLED_HARD_ERROR) }
 }
