@@ -1085,15 +1085,15 @@ pub mod driver {
             // uninitializing the driver via EvtDriverUnload, so we don't need to set
             // EvtCleanupCallback and EvtDestroyCallback.
             //
-            // We do set EvtDestroyCallback however, since it's always guaranteed to
-            // be present (we use it for dropping the driver context area)
+            // In fact, the framework destroys itself after the EvtUnloadCallback,
+            // so it's best to always drop the driver context area in our unload
+            // trampoline.
             let mut object_attrs = default_object_attributes::<T>();
-            object_attrs.EvtDestroyCallback = Some(Self::__dispatch_destroy);
 
             let mut driver_config = wdf_kmdf_sys::WDF_DRIVER_CONFIG::init(
                 T::HAS_DEVICE_ADD.then_some(Self::__dispatch_driver_device_add),
             );
-            driver_config.EvtDriverUnload = T::HAS_UNLOAD.then_some(Self::__dispatch_driver_unload);
+            driver_config.EvtDriverUnload = Some(Self::__dispatch_driver_unload);
 
             if matches!(config.pnp_mode, PnpMode::NonPnp) {
                 driver_config.DriverInitFlags |=
@@ -1177,24 +1177,8 @@ pub mod driver {
                 // Do the unload callback...
                 T::unload(context_space);
             }
-        }
 
-        unsafe extern "C" fn __dispatch_destroy(driver: WDFOBJECT) {
-            // SAFETY: Can construct mutable handle since destroy is only
-            // called once and exclusively
-            let mut handle = unsafe { DriverHandle::wrap(driver.cast()) };
-
-            // SAFETY: Initialized by this point
-            let context_space = unsafe { object::get_context_mut::<T>(&mut handle) };
-            let Some(context_space) = context_space else {
-                return;
-            };
-
-            // Don't really need it here, but just as a demonstration of how we can add logging
-            // for lib crates
-            windows_kernel_rs::log::debug!("KmdfHewwoWowwd: EvtDestroy");
-
-            // Drop it!
+            // And then drop it!
             // SAFETY:
             // Guaranteed to be unused by this point, since the destroy callback is the last one
             // called.
