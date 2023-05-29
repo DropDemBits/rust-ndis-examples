@@ -12,8 +12,8 @@ pub mod raw {
 
     use wdf_kmdf_sys::{
         PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
-        PWDF_FILEOBJECT_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER, WDFOBJECT,
-        WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
+        PWDF_FILEOBJECT_CONFIG, PWDF_IO_QUEUE_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
+        WDFOBJECT, WDFQUEUE, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
@@ -582,7 +582,7 @@ pub mod raw {
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
     /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
-    /// - ([ChangeQueueState]) Must not be called concurrently with other state-changing functions
+    /// - ([ChangeQueueState]) Must not be called concurrently with other queue state-changing functions
     /// - ([DriverAttributeChanged]) The existing execution level or synchronization scope must not be modified(?)
     /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
     /// - ([MiniportOnlyWdmDevice]) FIXME: ???
@@ -610,7 +610,7 @@ pub mod raw {
             RegistryPath,
             DriverAttributes.unwrap_or(WDF_NO_OBJECT_ATTRIBUTES!()),
             DriverConfig,
-            Driver.map(|p| p as *mut _).unwrap_or(WDF_NO_HANDLE!()),
+            Driver.map(|p| p as _).unwrap_or(WDF_NO_HANDLE!()),
         ))
     }
 
@@ -633,6 +633,74 @@ pub mod raw {
     }
 
     // endregion: wdfdriver
+
+    // region: wdfio
+
+    /// Creates an IO queue for the given device
+    ///
+    /// A device can have multiple IO queues.
+    ///
+    /// While the default parent object for the queue is the passed-in device object,
+    /// the `ParentObject` in the object attributes can be set to another framework
+    /// device object, or an object who has a framework device object as an ancestor.
+    /// The queue object will be deleted when the parent object is deleted.
+    ///
+    /// If [`EvtCleanupCallback`] or [`EvtDestroyCallback`] is specified,
+    /// the framework will always call those callbacks at IRQL `PASSIVE_LEVEL`.
+    ///
+    /// ## Return Value
+    ///
+    /// The newly allocated queue object is stored in the place given by `Queue`.
+    ///
+    /// `STATUS_SUCCESS` is returned if the operation was successful, otherwise:
+    ///
+    /// - `STATUS_INVALID_PARAMETER` if an input parameter is invalid.
+    /// - `STATUS_INFO_LENGTH_MISMATCH` if the size of the [`WDF_IO_QUEUE_CONFIG`](wdf_kmdf_sys::WDF_IO_QUEUE_CONFIG)
+    /// - `STATUS_POWER_STATE_INVALID` if a power manangement operation is currently in progress
+    /// - `STATUS_INSUFFICIENT_RESOURCES` if there is not enough resources to allocate the queue object
+    /// - `STATUS_WDF_NO_CALLBACK` if no request handlers were specified, and the dispatching method is not
+    ///   [`WdfIoQueueDispatchManual`](wdf_kmdf_sys::WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatch)
+    /// - `STATUS_UNSUCCESSFUL` if a default queue is trying to be created, but a default queue already exists for the device,
+    ///   or an internal error occured
+    /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+    ///
+    /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+    /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+    /// - ([ChangeQueueState]) Must not be called concurrently with other queue state-changing functions
+    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DrvAckIoStop]) When the power-managed queue is getting powered down, remaining pending requests
+    ///   should be acknowledge, cancelled, or completed as appropriate.
+    ///   For self-managed IO requests, they should also be correctly handled inside of [`EvtDeviceSelfManagedIoSuspend`]
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [ChangeQueueState]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ChangeQueueState
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [DrvAckIoStop]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DrvAckIoStop
+    /// [`EvtDeviceSelfManagedIoSuspend`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DrvAckIoStop
+    #[must_use]
+    pub unsafe fn WdfIoQueueCreate(
+        Device: WDFDEVICE,                               // in
+        Config: PWDF_IO_QUEUE_CONFIG,                    // in
+        QueueAttributes: Option<PWDF_OBJECT_ATTRIBUTES>, // in, optional
+        Queue: Option<&mut WDFQUEUE>,                    // in, optional
+    ) -> NTSTATUS {
+        dispatch!(WdfIoQueueCreate(
+            Device,
+            Config,
+            QueueAttributes.unwrap_or(WDF_NO_OBJECT_ATTRIBUTES!()),
+            Queue.map_or(core::ptr::null_mut(), |p| p as _)
+        ))
+    }
+
+    // endregion: wdfio
 
     // region: wdfobject
 

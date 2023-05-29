@@ -35,6 +35,7 @@ mod bindings {
 }
 
 pub use bindings::*;
+use windows_kernel_sys::ULONG;
 
 #[macro_export]
 macro_rules! WDF_NO_OBJECT_ATTRIBUTES {
@@ -79,8 +80,8 @@ impl WDF_OBJECT_ATTRIBUTES {
     /// Initializes the [`WDF_OBJECT_ATTRIBUTES`] structure
     ///
     /// Sets
-    /// - `ExecutionLevel` to `WdfSynchronizationScopeInheritFromParent`
-    /// - `SynchronizationScope` to `WdfSynchronizationScopeInheritFromParent`
+    /// - `ExecutionLevel` to [`WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent`]
+    /// - `SynchronizationScope` to [`WDF_EXECUTION_LEVEL::WdfSynchronizationScopeInheritFromParent`]
     #[must_use]
     pub fn init() -> Self {
         // SAFETY: All fields are zero-able
@@ -88,8 +89,8 @@ impl WDF_OBJECT_ATTRIBUTES {
 
         attributes.Size = WDF_STRUCTURE_SIZE!(WDF_OBJECT_ATTRIBUTES);
         attributes.SynchronizationScope =
-            _WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent;
-        attributes.ExecutionLevel = _WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent;
+            WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent;
+        attributes.ExecutionLevel = WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent;
 
         attributes
     }
@@ -116,8 +117,8 @@ impl WDF_FILEOBJECT_CONFIG {
     /// Sets:
     /// - Size
     /// - Specified callback function pointers
-    /// - `FileObjectClass` to [`_WDF_FILEOBJECT_CLASS::WdfFileObjectWdfCannotUseFsContexts`]
-    /// - `AutoForwardCleanupClose` to [`_WDF_TRI_STATE::WdfUseDefault`]
+    /// - `FileObjectClass` to [`WDF_FILEOBJECT_CLASS::WdfFileObjectWdfCannotUseFsContexts`]
+    /// - `AutoForwardCleanupClose` to [`WDF_TRI_STATE::WdfUseDefault`]
     #[must_use]
     pub fn init(
         EvtDeviceFileCreate: PFN_WDF_DEVICE_FILE_CREATE, // in, optional
@@ -133,8 +134,50 @@ impl WDF_FILEOBJECT_CONFIG {
         config.EvtFileClose = EvtFileClose;
         config.EvtFileCleanup = EvtFileCleanup;
 
-        config.FileObjectClass = _WDF_FILEOBJECT_CLASS::WdfFileObjectWdfCannotUseFsContexts;
-        config.AutoForwardCleanupClose = _WDF_TRI_STATE::WdfUseDefault;
+        config.FileObjectClass = WDF_FILEOBJECT_CLASS::WdfFileObjectWdfCannotUseFsContexts;
+        config.AutoForwardCleanupClose = WDF_TRI_STATE::WdfUseDefault;
+
+        config
+    }
+}
+
+impl WDF_IO_QUEUE_CONFIG {
+    /// Initializes the [`WDF_IO_QUEUE_CONFIG`] structure
+    ///
+    /// Sets:
+    /// - Size
+    /// - PowerManaged to [`WDF_TRI_STATE::WdfUseDefault`]
+    ///
+    /// If `DispatchType` is [`WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchParallel`],
+    /// `NumberOfPresentedRequests` is set to [`ULONG::MAX`] to indicate that unlimited
+    /// IO requests can be sent
+    #[must_use]
+    pub fn init(DispatchType: WDF_IO_QUEUE_DISPATCH_TYPE) -> Self {
+        // SAFETY: All fields are zero-able
+        let mut config: Self = unsafe { core::mem::zeroed() };
+
+        config.Size = WDF_STRUCTURE_SIZE!(WDF_IO_QUEUE_CONFIG);
+        config.PowerManaged = WDF_TRI_STATE::WdfUseDefault;
+        config.DispatchType = DispatchType;
+
+        if config.DispatchType == WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchParallel {
+            // SAFETY: Is aligned, and the only union structure member
+            let settings = unsafe { config.Settings.Parallel.as_mut() };
+
+            settings.NumberOfPresentedRequests = ULONG::MAX;
+        }
+
+        config
+    }
+
+    /// Initializes the [`WDF_IO_QUEUE_CONFIG`] structure for the default queue
+    ///
+    /// Built on [`WDF_IO_QUEUE_CONFIG::init`]
+    #[must_use]
+    pub fn init_default_queue(DispatchType: WDF_IO_QUEUE_DISPATCH_TYPE) -> Self {
+        let mut config = Self::init(DispatchType);
+
+        config.DefaultQueue = true as u8;
 
         config
     }

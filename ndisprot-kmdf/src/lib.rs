@@ -1,13 +1,16 @@
 #![no_std]
 #![feature(allocator_api, const_option, result_option_inspect)]
 
-use wdf_kmdf_sys::{WDFDEVICE, WDFFILEOBJECT, WDFREQUEST, WDF_FILEOBJECT_CONFIG};
+use wdf_kmdf_sys::{
+    WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
+    WDF_IO_QUEUE_DISPATCH_TYPE, WDF_NO_OBJECT_ATTRIBUTES,
+};
 use windows_kernel_rs::{
     log::{self, debug, error, info, trace},
     string::{utf16str, UnicodeString},
     DriverObject,
 };
-use windows_kernel_sys::{Error, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING};
+use windows_kernel_sys::{Error, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING, ULONG};
 
 #[allow(non_snake_case)]
 #[no_mangle]
@@ -87,9 +90,6 @@ fn create_control_device(
     _driver: &mut wdf_kmdf::driver::DriverHandle,
     device_init: wdf_kmdf_sys::PWDFDEVICE_INIT,
 ) -> Result<WDFDEVICE, Error> {
-    // io_queue_config
-    // queue
-
     struct DeviceInit(wdf_kmdf_sys::PWDFDEVICE_INIT);
 
     impl Drop for DeviceInit {
@@ -164,14 +164,32 @@ fn create_control_device(
         wdf_kmdf::raw::WdfDeviceCreateSymbolicLink(control_device, DOS_DEVICE_NAME.as_raw_ptr())
     })?;
 
-    // Missing:
-    // WDF_IO_QUEUE_CONFIG::init_default_queue
-    // WdfIoQueueCreate
+    // Config the default queue to recieve parallel read, write, and ioctl requests.
+    // Default queues recieve all requests which are not (configure-forwarded using WdfDeviceConfigureRequestDispatching?)
+    let mut io_queue_config = WDF_IO_QUEUE_CONFIG::init_default_queue(
+        WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchParallel,
+    );
+
+    io_queue_config.EvtIoWrite = Some(ndisprot_evt_io_write);
+    io_queue_config.EvtIoRead = Some(ndisprot_evt_io_read);
+    io_queue_config.EvtIoDeviceControl = Some(ndisprot_evt_io_device_control);
+
+    let mut queue = core::ptr::null_mut();
+
+    Error::to_err(unsafe {
+        wdf_kmdf::raw::WdfIoQueueCreate(
+            control_device,
+            &mut io_queue_config,
+            None,
+            Some(&mut queue),
+        )
+    })?;
 
     // Until we notify WDF that we're done initializing,
     // all I/O requests are rejected.
     unsafe { wdf_kmdf::raw::WdfControlFinishInitializing(control_device) };
 
+    // Create a device object where an application to use NDIS devices
     return Ok(control_device);
 }
 
@@ -183,6 +201,27 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
 }
 unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {}
 unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {}
+
+unsafe extern "C" fn ndisprot_evt_io_write(
+    Queue: WDFQUEUE,     // in
+    Request: WDFREQUEST, // in
+    Length: usize,       // in
+) {
+}
+unsafe extern "C" fn ndisprot_evt_io_read(
+    Queue: WDFQUEUE,     // in
+    Request: WDFREQUEST, // in
+    Length: usize,       // in
+) {
+}
+unsafe extern "C" fn ndisprot_evt_io_device_control(
+    Queue: WDFQUEUE,           // in
+    Request: WDFREQUEST,       // in
+    OutputBufferLength: usize, // in
+    InputBufferLength: usize,  // in
+    IoControlCode: ULONG,      // in
+) {
+}
 
 const NT_DEVICE_NAME: UnicodeString<'static> =
     UnicodeString::new_const(utf16str!(r"\Device\Ndisprot"));
