@@ -85,104 +85,94 @@ fn driver_entry(
 
 fn create_control_device(
     _driver: &mut wdf_kmdf::driver::DriverHandle,
-    mut device_init: wdf_kmdf_sys::PWDFDEVICE_INIT,
+    device_init: wdf_kmdf_sys::PWDFDEVICE_INIT,
 ) -> Result<WDFDEVICE, Error> {
-    let mut status;
     // io_queue_config
     // queue
 
+    struct DeviceInit(wdf_kmdf_sys::PWDFDEVICE_INIT);
+
+    impl Drop for DeviceInit {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // Free the WDFDEVICE_INIT structure only if device creation fails
+                // Otherwise, the framework has ownership of the memory and so frees
+                // it itself.
+                unsafe { wdf_kmdf::raw::WdfDeviceInitFree(self.0) };
+
+                self.0 = core::ptr::null_mut();
+            }
+        }
+    }
+
+    let mut device_init = DeviceInit(device_init);
+
     // Default I/O type is Buffered
     // We want direct I/O for reads and writes so set it explicitly
-
     unsafe {
         wdf_kmdf::raw::WdfDeviceInitSetIoType(
-            device_init,
+            device_init.0,
             wdf_kmdf_sys::_WDF_DEVICE_IO_TYPE::WdfDeviceIoDirect,
         )
     };
 
-    // no goto?
-    'error: {
-        status = Error::to_err(unsafe {
-            wdf_kmdf::raw::WdfDeviceInitAssignName(device_init, Some(NT_DEVICE_NAME.as_raw_ptr()))
-        });
-        if status.is_err() {
-            break 'error;
-        }
+    Error::to_err(unsafe {
+        wdf_kmdf::raw::WdfDeviceInitAssignName(device_init.0, Some(NT_DEVICE_NAME.as_raw_ptr()))
+    })?;
 
-        // Initialize WDF_FILEOBJECT_CONFIG_INIT struct to tell the framework
-        // whether you're interested in handling Create, Close, and Cleanup
-        // requests that get generated when an application or another kernel
-        // component opens a handle to the device.
-        //
-        // If you don't register, the framework's default behaviour would be
-        // to complete these requests with STATUS_SUCCESS. A driver might be
-        // Interested in registering these events if it wants to do security
-        // validation and also wants to maintain per handle (fileobject)
-        // state.
-        let mut file_config = WDF_FILEOBJECT_CONFIG::init(
-            Some(ndisprot_evt_device_file_create),
-            Some(ndisprot_evt_file_close),
-            Some(ndisprot_evt_file_cleanup),
-        );
+    // Initialize WDF_FILEOBJECT_CONFIG_INIT struct to tell the framework
+    // whether you're interested in handling Create, Close, and Cleanup
+    // requests that get generated when an application or another kernel
+    // component opens a handle to the device.
+    //
+    // If you don't register, the framework's default behaviour would be
+    // to complete these requests with STATUS_SUCCESS. A driver might be
+    // Interested in registering these events if it wants to do security
+    // validation and also wants to maintain per handle (fileobject)
+    // state.
+    let mut file_config = WDF_FILEOBJECT_CONFIG::init(
+        Some(ndisprot_evt_device_file_create),
+        Some(ndisprot_evt_file_close),
+        Some(ndisprot_evt_file_cleanup),
+    );
 
-        let mut file_object_attribs =
-            wdf_kmdf::object::default_object_attributes::<FileObjectContext>();
+    let mut file_object_attribs =
+        wdf_kmdf::object::default_object_attributes::<FileObjectContext>();
 
-        unsafe {
-            wdf_kmdf::raw::WdfDeviceInitSetFileObjectConfig(
-                device_init,
-                &mut file_config,
-                Some(&mut file_object_attribs),
-            )
-        };
+    unsafe {
+        wdf_kmdf::raw::WdfDeviceInitSetFileObjectConfig(
+            device_init.0,
+            &mut file_config,
+            Some(&mut file_object_attribs),
+        )
+    };
 
-        let mut device_object_attribs =
-            wdf_kmdf::object::default_object_attributes::<ControlDevice>();
+    let mut device_object_attribs = wdf_kmdf::object::default_object_attributes::<ControlDevice>();
 
-        let mut control_device = core::ptr::null_mut();
-        status = Error::to_err(unsafe {
-            wdf_kmdf::raw::WdfDeviceCreate(
-                &mut device_init,
-                Some(&mut device_object_attribs),
-                &mut control_device,
-            )
-        });
-        if status.is_err() {
-            break 'error;
-        }
-        // `device_init` is set to NULL upon successful device creation
+    let mut control_device = core::ptr::null_mut();
+    Error::to_err(unsafe {
+        wdf_kmdf::raw::WdfDeviceCreate(
+            &mut device_init.0,
+            Some(&mut device_object_attribs),
+            &mut control_device,
+        )
+    })?;
+    // `device_init` is set to NULL upon successful device creation
 
-        // Create a symbolic link so that usermode apps can open the control device
-        status = Error::to_err(unsafe {
-            wdf_kmdf::raw::WdfDeviceCreateSymbolicLink(control_device, DOS_DEVICE_NAME.as_raw_ptr())
-        });
-        if status.is_err() {
-            break 'error;
-        }
+    // Create a symbolic link so that usermode apps can open the control device
+    Error::to_err(unsafe {
+        wdf_kmdf::raw::WdfDeviceCreateSymbolicLink(control_device, DOS_DEVICE_NAME.as_raw_ptr())
+    })?;
 
-        // Missing:
-        // WDF_IO_QUEUE_CONFIG::init_default_queue
-        // WdfIoQueueCreate
+    // Missing:
+    // WDF_IO_QUEUE_CONFIG::init_default_queue
+    // WdfIoQueueCreate
 
-        // Until we notify WDF that we're done initializing,
-        // all I/O requests are rejected.
-        unsafe { wdf_kmdf::raw::WdfControlFinishInitializing(control_device) };
+    // Until we notify WDF that we're done initializing,
+    // all I/O requests are rejected.
+    unsafe { wdf_kmdf::raw::WdfControlFinishInitializing(control_device) };
 
-        return Ok(control_device);
-    }
-
-    if !device_init.is_null() {
-        // Free the WDFDEVICE_INIT structure only if device creation fails
-        // Otherwise, the framework has ownership of the memory and so frees
-        // it itself.
-        unsafe { wdf_kmdf::raw::WdfDeviceInitFree(device_init) };
-    }
-
-    match status {
-        Ok(_) => unsafe { core::hint::unreachable_unchecked() },
-        Err(err) => Err(err),
-    }
+    return Ok(control_device);
 }
 
 unsafe extern "C" fn ndisprot_evt_device_file_create(
