@@ -69,9 +69,10 @@ macro_rules! WDF_NO_SEND_OPTIONS {
 
 // Right now, we don't handle struct versioning, so it's just the struct's size.
 // Should probably be a `Result<u32, Error>`
-#[allow(clippy::cast_possible_truncation)] // all sizes are less than u32::MAX
-fn WDF_STRUCTURE_SIZE<T: Sized>() -> u32 {
-    core::mem::size_of::<T>() as u32
+macro_rules! WDF_STRUCTURE_SIZE {
+    ($name:ty) => {
+        ::core::mem::size_of::<$name>() as u32
+    };
 }
 
 impl WDF_OBJECT_ATTRIBUTES {
@@ -85,7 +86,7 @@ impl WDF_OBJECT_ATTRIBUTES {
         // SAFETY: All fields are zero-able
         let mut attributes: Self = unsafe { core::mem::zeroed() };
 
-        attributes.Size = WDF_STRUCTURE_SIZE::<WDF_OBJECT_ATTRIBUTES>();
+        attributes.Size = WDF_STRUCTURE_SIZE!(WDF_OBJECT_ATTRIBUTES);
         attributes.SynchronizationScope =
             _WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent;
         attributes.ExecutionLevel = _WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent;
@@ -101,7 +102,7 @@ impl WDF_DRIVER_CONFIG {
         // SAFETY: All fields are zero-able
         let mut config: Self = unsafe { core::mem::zeroed() };
 
-        config.Size = WDF_STRUCTURE_SIZE::<Self>();
+        config.Size = WDF_STRUCTURE_SIZE!(WDF_DRIVER_CONFIG);
 
         config.EvtDriverDeviceAdd = EvtDriverDeviceAdd;
 
@@ -126,7 +127,7 @@ impl WDF_FILEOBJECT_CONFIG {
         // SAFETY: All fields are zero-able
         let mut config: Self = unsafe { core::mem::zeroed() };
 
-        config.Size = WDF_STRUCTURE_SIZE::<Self>();
+        config.Size = WDF_STRUCTURE_SIZE!(WDF_FILEOBJECT_CONFIG);
 
         config.EvtDeviceFileCreate = EvtDeviceFileCreate;
         config.EvtFileClose = EvtFileClose;
