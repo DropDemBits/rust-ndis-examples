@@ -12,8 +12,8 @@ pub mod raw {
 
     use wdf_kmdf_sys::{
         PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
-        PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER, WDFOBJECT, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE,
-        WDF_NO_OBJECT_ATTRIBUTES,
+        PWDF_FILEOBJECT_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER, WDFOBJECT,
+        WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
@@ -258,7 +258,6 @@ pub mod raw {
     ///
     // TODO: As proper intra-doc links
     /// [`WdfDeviceInitAssignSDDLString`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitassignsddlstring
-    /// [`WdfDeviceInitAssignName`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitassignname
     /// [`WdfDeviceInitSetDeviceClass`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitsetdeviceclass
     /// [`WdfDeviceMiniportCreate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfminiport/nf-wdfminiport-wdfdeviceminiportcreate
     /// [`WdfFdoAddStaticChild`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdffdo/nf-wdffdo-wdffdoaddstaticchild
@@ -279,6 +278,46 @@ pub mod raw {
         ))
     }
 
+    // FIXME: WdfDeviceCreateDeviceInterface
+
+    /// Creates a symbolic link to the specified device
+    ///
+    /// Once a symbolic link is created, applications can access the device
+    /// via the symbolic link. However, the usual way of providing applications
+    /// access to devices is via [device interfaces].
+    ///
+    /// The symbolic link is removed upon surprise removal of the device, allowing
+    /// reuse by a new instance of the device.
+    ///
+    /// [device interfaces]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/using-device-interfaces
+    ///
+    /// ## Return Value
+    ///
+    /// `STATUS_SUCCESS` if the symbolic link was successfully created successfully, otherwise:
+    ///
+    /// - `STATUS_INSUFFICIENT_RESOURCES` if there isn't enough space to store the device name.
+    /// - Other `NTSTATUS` values (see [`NTSTATUS` values])
+    /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
+    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    #[must_use]
+    pub unsafe fn WdfDeviceCreateSymbolicLink(
+        Device: WDFDEVICE,                  // in
+        SymbolicLinkName: PCUNICODE_STRING, // in
+    ) -> NTSTATUS {
+        dispatch!(WdfDeviceCreateSymbolicLink(Device, SymbolicLinkName))
+    }
+
     /// Assigns a device name to the new device object
     ///
     /// Must be called before [`WdfDeviceCreate`].
@@ -293,8 +332,9 @@ pub mod raw {
     ///
     /// ## Return Value
     ///
-    /// `STATUS_SUCCES` if the name was assigned successfully.
-    /// Otherwise, may return `STATUS_INSUFFICIENT_RESOURCES` if there isn't enough space to store the device name.
+    /// `STATUS_SUCCESS` if the name was assigned successfully, otherwise:
+    ///
+    /// - `STATUS_INSUFFICIENT_RESOURCES` if there isn't enough space to store the device name.
     ///
     /// ## Safety
     ///
@@ -406,7 +446,59 @@ pub mod raw {
     // FIXME: WdfDeviceInitSetDeviceClass
     // FIXME: WdfDeviceInitSetDeviceType
     // FIXME: WdfDeviceInitSetExclusive
-    // FIXME: WdfDeviceInitSetFileObjectConfig
+
+    /// Sets configuration information for the device's associated framework file objects
+    ///
+    /// Must be called before [`WdfDeviceCreate`].
+    ///
+    /// If the parent device object isn't set to [`SynchronizationScope::None`](crate::object::Synchronization::None) and
+    /// [`ExecutionLevel::Passive`](crate::object::ExecutionLevel::Passive), the default object attributes cannot be used
+    /// and must also specify [`SynchronizationScope::None`](crate::object::Synchronization::None),
+    /// and [`ExecutionLevel::Passive`](crate::object::ExecutionLevel::Passive).
+    ///
+    /// This is to ensure that the [`EvtWdfDeviceFileCreate`], [`EvtWdfFileClose`], and [`EvtWdfFileCleanup`] are all called
+    /// at IRQL `PASSIVE_LEVEL`.
+    ///
+    /// [`EvtWdfDeviceFileCreate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_device_file_create
+    /// [`EvtWdfFileClose`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_file_close
+    /// [`EvtWdfFileCleanup`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_file_cleanup
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+    /// - ([ChildDeviceInitApi]) The child device object initialization methods must be called before [`WdfDeviceCreate`]
+    /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
+    /// - ([DeviceInitAPI]) The device object initialization methods must be called before [`WdfDeviceCreate`]
+    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([FileObjectConfigured]) [`WdfDeviceInitSetFileObjectConfig`] must be called before [`WdfRequestGetFileObject`]
+    /// - ([PdoDeviceInitAPI]) The device object initialization methods and [`WdfPdoInitAllocate`] must be called before [`WdfDeviceCreate`]
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [ChildDeviceInitApi]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ChildDeviceInitAPI
+    /// [ControlDeviceInitAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ControlDeviceInitAPI
+    /// [DeviceInitAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DeviceInitAPI
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [`FileObjectConfigured`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-FileObjectConfigured
+    /// [PdoDeviceInitAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoDeviceInitAPI
+    ///
+    // TODO: As proper intra-doc links
+    /// [`WdfRequestGetFileObject`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestgetfileobject
+    pub unsafe fn WdfDeviceInitSetFileObjectConfig(
+        DeviceInit: PWDFDEVICE_INIT,                          // in
+        FileObjectConfig: PWDF_FILEOBJECT_CONFIG,             // in
+        FileObjectAttributes: Option<PWDF_OBJECT_ATTRIBUTES>, // in, optional
+    ) {
+        dispatch!(WdfDeviceInitSetFileObjectConfig(
+            DeviceInit,
+            FileObjectConfig,
+            FileObjectAttributes.unwrap_or(WDF_NO_OBJECT_ATTRIBUTES!())
+        ));
+    }
+
     // FIXME: WdfDeviceInitSetIoInCallerContextCallback
 
     /// Sets the preference for how a driver will access data buffers in read and write requests for a specific device
@@ -706,7 +798,7 @@ pub mod object {
         None = WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeNone.0,
     }
 
-    pub(crate) fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES {
+    pub fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES {
         let mut object_attrs = WDF_OBJECT_ATTRIBUTES::init();
 
         // Always set the context info

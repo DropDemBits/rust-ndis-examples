@@ -51,7 +51,6 @@ fn driver_entry(
                 let p_init = unsafe {
                     wdf_kmdf::raw::WdfControlDeviceInitAllocate(
                         driver.raw_handle(),
-                        // TODO: Have to declare it ourselves
                         core::ptr::addr_of!(
                             windows_kernel_sys::SDDL_DEVOBJ_SYS_ALL_ADM_RWX_WORLD_RW_RES_R
                         ),
@@ -65,11 +64,12 @@ fn driver_entry(
 
                 // call `create_control_device` to create the WDFDEVICE
                 // representing our software device
-                create_control_device(driver, p_init).inspect_err(|err| {
+                let control_device = create_control_device(driver, p_init).inspect_err(|err| {
                     error!("create_control_device failed with status {:#x}", err.0)
                 })?;
 
                 Ok(pinned_init::try_init!(NdisProt {
+                    control_device: control_device,
                     eth_type: NPROT_ETH_TYPE,
                     partial_cancel_id: 0,
                     local_cancel_id: 0,
@@ -86,11 +86,10 @@ fn driver_entry(
 fn create_control_device(
     _driver: &mut wdf_kmdf::driver::DriverHandle,
     mut device_init: wdf_kmdf_sys::PWDFDEVICE_INIT,
-) -> Result<(), Error> {
+) -> Result<WDFDEVICE, Error> {
     let mut status;
     // io_queue_config
     // queue
-    // control_device
 
     // Default I/O type is Buffered
     // We want direct I/O for reads and writes so set it explicitly
@@ -121,13 +120,56 @@ fn create_control_device(
         // Interested in registering these events if it wants to do security
         // validation and also wants to maintain per handle (fileobject)
         // state.
-        let file_config = WDF_FILEOBJECT_CONFIG::init(
+        let mut file_config = WDF_FILEOBJECT_CONFIG::init(
             Some(ndisprot_evt_device_file_create),
             Some(ndisprot_evt_file_close),
             Some(ndisprot_evt_file_cleanup),
         );
 
-        return status;
+        let mut file_object_attribs =
+            wdf_kmdf::object::default_object_attributes::<FileObjectContext>();
+
+        unsafe {
+            wdf_kmdf::raw::WdfDeviceInitSetFileObjectConfig(
+                device_init,
+                &mut file_config,
+                Some(&mut file_object_attribs),
+            )
+        };
+
+        let mut device_object_attribs =
+            wdf_kmdf::object::default_object_attributes::<ControlDevice>();
+
+        let mut control_device = core::ptr::null_mut();
+        status = Error::to_err(unsafe {
+            wdf_kmdf::raw::WdfDeviceCreate(
+                &mut device_init,
+                Some(&mut device_object_attribs),
+                &mut control_device,
+            )
+        });
+        if status.is_err() {
+            break 'error;
+        }
+        // `device_init` is set to NULL upon successful device creation
+
+        // Create a symbolic link so that usermode apps can open the control device
+        status = Error::to_err(unsafe {
+            wdf_kmdf::raw::WdfDeviceCreateSymbolicLink(control_device, DOS_DEVICE_NAME.as_raw_ptr())
+        });
+        if status.is_err() {
+            break 'error;
+        }
+
+        // Missing:
+        // WDF_IO_QUEUE_CONFIG::init_default_queue
+        // WdfIoQueueCreate
+
+        // Until we notify WDF that we're done initializing,
+        // all I/O requests are rejected.
+        unsafe { wdf_kmdf::raw::WdfControlFinishInitializing(control_device) };
+
+        return Ok(control_device);
     }
 
     if !device_init.is_null() {
@@ -137,7 +179,10 @@ fn create_control_device(
         unsafe { wdf_kmdf::raw::WdfDeviceInitFree(device_init) };
     }
 
-    status
+    match status {
+        Ok(_) => unsafe { core::hint::unreachable_unchecked() },
+        Err(err) => Err(err),
+    }
 }
 
 unsafe extern "C" fn ndisprot_evt_device_file_create(
@@ -159,18 +204,28 @@ const NPROT_ETH_TYPE: u16 = 0x8e88;
 const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
 
 struct NdisProt {
+    control_device: WDFDEVICE,
+    // todo: ndis_protocol_handle
     /// frame type of interest
     eth_type: u16,
     /// for cancelling sends
     partial_cancel_id: u8,
     local_cancel_id: u32,
-    // todo: open_list: Lock<ListEntry>
+    // todo: open_list: Lock<ListEntry<OpenContext>>
     /// have we seen `NetEventBindsComplete`?
     // Note: is a RKEVENT, Initialized via KeInitializeEvent
     binds_complete: (),
 }
 
 wdf_kmdf::impl_context_space!(NdisProt);
+
+struct FileObjectContext;
+
+wdf_kmdf::impl_context_space!(FileObjectContext);
+
+struct ControlDevice;
+
+wdf_kmdf::impl_context_space!(ControlDevice);
 
 #[vtable::vtable]
 impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
