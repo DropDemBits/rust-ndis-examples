@@ -10,7 +10,7 @@ use wdf_kmdf_sys::{
 };
 use windows_kernel_rs::{
     log::{self, debug, error},
-    string::{utf16str, UnicodeString},
+    string::{nt_unicode_str, unicode_string::NtUnicodeStr},
     DriverObject,
 };
 use windows_kernel_sys::{
@@ -35,7 +35,13 @@ unsafe extern "system" fn DriverEntry(
     let driver_object = unsafe { DriverObject::new(driver_object) };
     // SAFETY: Is a copy of the original PCUNICODE_STRING, but never modified,
     // and lifetime is tied to this variable (which is bound to `DriverEntry`)
-    let registry_path = unsafe { UnicodeString::from_raw(*registry_path) };
+    let registry_path = unsafe {
+        NtUnicodeStr::from_raw_parts(
+            (*registry_path).Buffer,
+            (*registry_path).Length,
+            (*registry_path).MaximumLength,
+        )
+    };
 
     match driver_entry(driver_object, registry_path) {
         Ok(()) => windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS,
@@ -43,11 +49,8 @@ unsafe extern "system" fn DriverEntry(
     }
 }
 
-fn driver_entry(
-    driver_object: DriverObject,
-    registry_path: UnicodeString<'_>,
-) -> Result<(), Error> {
-    const PROTO_NAME: UnicodeString<'static> = UnicodeString::new_const(utf16str!("NDISPROT"));
+fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) -> Result<(), Error> {
+    const PROTO_NAME: NtUnicodeStr<'static> = nt_unicode_str!("NDISPROT");
     debug!("DriverEntry");
 
     wdf_kmdf::driver::Driver::<NdisProt>::create(
@@ -97,7 +100,7 @@ fn driver_entry(
 
                 proto_char.MajorNdisVersion = 6;
                 proto_char.MinorNdisVersion = 0;
-                proto_char.Name = unsafe { PROTO_NAME.into_raw() };
+                proto_char.Name = unsafe { *(PROTO_NAME.as_ptr().cast()) };
 
                 proto_char.SetOptionsHandler = None;
                 proto_char.OpenAdapterCompleteHandlerEx = Some(ndisbind::open_adapter_complete);
@@ -176,7 +179,7 @@ fn create_control_device(
     };
 
     Error::to_err(unsafe {
-        wdf_kmdf::raw::WdfDeviceInitAssignName(device_init.0, Some(NT_DEVICE_NAME.as_raw_ptr()))
+        wdf_kmdf::raw::WdfDeviceInitAssignName(device_init.0, Some(NT_DEVICE_NAME.as_ptr().cast()))
     })?;
 
     // Initialize WDF_FILEOBJECT_CONFIG_INIT struct to tell the framework
@@ -220,7 +223,7 @@ fn create_control_device(
 
     // Create a symbolic link so that usermode apps can open the control device
     Error::to_err(unsafe {
-        wdf_kmdf::raw::WdfDeviceCreateSymbolicLink(control_device, DOS_DEVICE_NAME.as_raw_ptr())
+        wdf_kmdf::raw::WdfDeviceCreateSymbolicLink(control_device, DOS_DEVICE_NAME.as_ptr().cast())
     })?;
 
     // Config the default queue to recieve parallel read, write, and ioctl requests.
@@ -282,10 +285,8 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
 ) {
 }
 
-const NT_DEVICE_NAME: UnicodeString<'static> =
-    UnicodeString::new_const(utf16str!(r"\Device\Ndisprot"));
-const DOS_DEVICE_NAME: UnicodeString<'static> =
-    UnicodeString::new_const(utf16str!(r"\Global??\Ndisprot"));
+const NT_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Device\Ndisprot");
+const DOS_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Global??\Ndisprot");
 
 // Following two are arranged in the way a little-endian processor would read 2 bytes from the wire
 const NPROT_ETH_TYPE: u16 = 0x8e88;

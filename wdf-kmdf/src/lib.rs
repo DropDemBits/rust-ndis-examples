@@ -968,7 +968,7 @@ pub mod driver {
     use pinned_init::PinInit;
     use vtable::vtable;
     use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDFOBJECT, WDF_DRIVER_INIT_FLAGS};
-    use windows_kernel_rs::{string::UnicodeString, DriverObject};
+    use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
     use windows_kernel_sys::{
         sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
         Error,
@@ -1068,7 +1068,7 @@ pub mod driver {
         /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
         pub fn create<F, I>(
             driver_object: DriverObject,
-            registry_path: UnicodeString,
+            registry_path: NtUnicodeStr<'_>,
             config: DriverConfig,
             init_context: F,
         ) -> Result<(), Error>
@@ -1109,10 +1109,6 @@ pub mod driver {
             let mut handle = {
                 let driver_object = driver_object.into_raw();
 
-                // SAFETY: contained entirely within this block, will never outlive original
-                // WDF also copies the contents anyways
-                let registry_path = unsafe { registry_path.as_raw_ptr() };
-
                 // SAFETY: Replaced with the real driver pointer next
                 let mut handle = unsafe { DriverHandle::wrap(core::ptr::null_mut()) };
 
@@ -1120,7 +1116,7 @@ pub mod driver {
                 unsafe {
                     Error::to_err(raw::WdfDriverCreate(
                         driver_object,
-                        registry_path,
+                        registry_path.as_ptr().cast(),
                         Some(&mut object_attrs),
                         &mut driver_config,
                         Some(&mut handle.0),
