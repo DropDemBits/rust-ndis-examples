@@ -80,7 +80,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                 }
 
                 // call `create_control_device` to create the WDFDEVICE representing our software device
-                // ???: unsure about who drops `control_device`
+                // framework manages the lifetime of the control device
                 let control_device = create_control_device(driver, p_init).inspect_err(|err| {
                     error!("create_control_device failed with status {:#x}", err.0)
                 })?;
@@ -120,21 +120,20 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
 
                 // Register as a protocol driver
                 let mut handle = MaybeUninit::<NDIS_HANDLE>::uninit();
-                let status = Error::to_err(unsafe {
+                Error::to_err(unsafe {
                     windows_kernel_sys::NdisRegisterProtocolDriver(
                         core::ptr::null_mut(),
                         &mut proto_char,
                         handle.as_mut_ptr(),
                     )
-                });
-
-                if let Err(err) = status {
+                })
+                .inspect_err(|err| {
                     warn!(
                         "Failed to register protocol driver with NDIS (status code {:#x?})",
                         err.0
                     );
-                    return Err(err);
-                }
+                })?;
+                let handle = unsafe { handle.assume_init() };
 
                 let partial_cancel_id = unsafe { NdisGeneratePartialCancelId() };
 
@@ -142,6 +141,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
 
                 Ok(pinned_init::try_pin_init!(NdisProt {
                     control_device,
+                    ndis_protocol_handle: handle,
                     eth_type: NPROT_ETH_TYPE,
                     partial_cancel_id,
                     open_list <- SpinMutex::new(ListEntry::new()),
@@ -302,7 +302,7 @@ const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
 #[pin_data]
 struct NdisProt {
     control_device: WDFDEVICE,
-    // todo: ndis_protocol_handle
+    ndis_protocol_handle: NDIS_HANDLE,
     /// frame type of interest
     eth_type: u16,
     /// for cancelling sends
@@ -330,7 +330,11 @@ impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
     fn unload(&mut self) {
         debug!("Unload Enter");
         // UnregisterExCallback
-        // DoProtocolUnload
+
+        ndisbind::unload_protocol(self);
+
+        // the framework handles deleting of the control object
+        self.control_device = core::ptr::null_mut();
         debug!("Unload Exit");
     }
 }
@@ -383,8 +387,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 mod ndisbind {
     //! NDIS protocol entry points as well as handling binding and unbinding from adapters
     use windows_kernel_sys::{
-        sys::Win32::Foundation::STATUS_SUCCESS, NDIS_HANDLE, NDIS_OID, NTSTATUS,
-        OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID,
+        sys::Win32::Foundation::STATUS_SUCCESS, NdisDeregisterProtocolDriver, NDIS_HANDLE,
+        NDIS_OID, NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID,
         OID_802_11_BSSID_LIST, OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION,
         OID_802_11_DISASSOCIATE, OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE,
         OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI,
@@ -392,6 +396,8 @@ mod ndisbind {
         OID_802_3_MULTICAST_LIST, PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST,
         PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
     };
+
+    use crate::NdisProt;
 
     const SUPPORTED_SET_OIDS: &[NDIS_OID] = &[
         OID_802_11_INFRASTRUCTURE_MODE,
@@ -460,6 +466,15 @@ mod ndisbind {
         ProtocolBindingContext: NDIS_HANDLE,
         StatusIndication: PNDIS_STATUS_INDICATION,
     ) {
+    }
+
+    pub(crate) fn unload_protocol(context: &mut NdisProt) {
+        let proto_handle =
+            core::mem::replace(&mut context.ndis_protocol_handle, core::ptr::null_mut());
+
+        if !proto_handle.is_null() {
+            unsafe { NdisDeregisterProtocolDriver(proto_handle) };
+        }
     }
 }
 
