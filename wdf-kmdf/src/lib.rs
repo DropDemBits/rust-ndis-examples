@@ -586,7 +586,8 @@ pub mod raw {
     /// - ([ChangeQueueState]) Must not be called concurrently with other queue state-changing functions
     /// - ([DriverAttributeChanged]) The existing execution level or synchronization scope must not be modified(?)
     /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
-    /// - ([MiniportOnlyWdmDevice]) FIXME: ???
+    /// - ([MiniportOnlyWdmDevice]) Non-miniport drivers must not use [`IoCreateDevice`] and [`IoCreateDeviceSecure`], and instead must
+    ///   use the framework device creation functions
     ///
     /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
     /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
@@ -595,7 +596,8 @@ pub mod raw {
     /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
     /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
     /// [MiniportOnlyWdmDevice]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MiniportOnlyWdmDevice
-    ///
+    /// [`IoCreateDevice`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-iocreatedevice
+    /// [`IoCreateDeviceSecure`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdmsec/nf-wdmsec-wdmlibiocreatedevicesecure
     #[must_use]
     pub unsafe fn WdfDriverCreate(
         DriverObject: PDRIVER_OBJECT,                     // in
@@ -1344,7 +1346,7 @@ pub mod driver {
 
     use pinned_init::PinInit;
     use vtable::vtable;
-    use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDFOBJECT, WDF_DRIVER_INIT_FLAGS};
+    use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
     use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
     use windows_kernel_sys::{
         sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
