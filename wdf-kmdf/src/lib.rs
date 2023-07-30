@@ -13,7 +13,8 @@ pub mod raw {
     use wdf_kmdf_sys::{
         PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
         PWDF_FILEOBJECT_CONFIG, PWDF_IO_QUEUE_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
-        WDFOBJECT, WDFQUEUE, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
+        WDFOBJECT, WDFQUEUE, WDFSPINLOCK, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE,
+        WDF_NO_OBJECT_ATTRIBUTES,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
@@ -704,6 +705,84 @@ pub mod raw {
 
     // region: wdfobject
 
+    /// Deletes the framework object and its descendants
+    ///
+    /// If there are any other references to the object, the object will only be deleted once all of the other references are dereferenced.
+    ///
+    /// The following objects cannot be deleted by `WdfObjectDelete` since they are managed by the framework:
+    ///
+    /// - `WDFCHILDLIST`
+    /// - `WDFDEVICE`, unless it is a control device which sometimes needs to be deleted
+    /// - `WDFDRIVER`
+    /// - `WDFFILEOBJECT`
+    /// - `WDFINTERRUPT`
+    /// - `WDFQUEUE`, if it represents the default IO queue for an object, or if [`WdfDeviceConfigureRequestDispatching`]
+    ///   to setup the queue to receive all IO requests of a given type
+    /// - `WDFUSBPIPE`
+    /// - `WDFUSBDEVICEINTERFACE`
+    /// - `WDFWMIPROVIDER`
+    /// - `WDFIORESLIST`
+    /// - `WDFCMRESLIST`
+    /// - `WDFIORESREQLIST`
+    ///
+    /// There are no guarantees on the order in which child objects are deleted, and the object may still remain undeleted for an unspecified amount
+    /// of time after `WdfObjectDelete` is called.
+    ///
+    /// ## Note about deleting timer objects
+    ///
+    /// Timer objects cannot be deleted inside of callbacks that are called at `PASSIVE_LEVEL`.
+    /// See [`EVT_WDF_TIMER`] for more information.
+    ///
+    /// [`EVT_WDF_TIMER`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdftimer/nc-wdftimer-evt_wdf_timer#remarks
+    ///
+    /// ## Safety
+    ///
+    /// - `Handle` must point to a valid WDFOBJECT
+    /// - ([KmdfIrqlDependent], [KmdfIrql2])
+    ///   If a Control Device or common buffer is being deleted, IRQL: `PASSIVE_LEVEL`,
+    ///   otherwise IRQL: <= `DISPATCH_LEVEL`
+    /// - ([AddPdotoStaticChildlist]) For a PDO device, after calling [`WdfPdoInitAllocate`] and [`WdfDeviceCreate`], [`WdfFdoAddStaticChild`] must be called too
+    /// - ([ControlDeviceDeleted]) If a PnP driver creates a control device object, there are additional constraints on when it must be deleted
+    /// - ([CtlDeviceFinishInitDeviceAdd]) If a PnP driver creates a control device object in [`EvtDriverDeviceAdd`], [`WdfControlFinishInitializing`]
+    ///   must be called after [`WdfDeviceCreate`] but before the end of [`EvtDriverDeviceAdd`]
+    /// - ([CtlDeviceFinishInitDrEntry]) If a PnP driver creates a control device object in [`DriverEntry`], [`WdfControlFinishInitializing`]
+    ///   must be called after [`WdfDeviceCreate`] but before the end of [`DriverEntry`]
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    /// - ([InvalidReqAccessLocal]) Locally created requests must not be accessed after being completed or cancelled.
+    /// - ([MemAfterReqCompletedIntIoctlA]) Inside of [`EvtIoInternalDeviceControl`], the framework memory object must not be accessed after the IO request is completed
+    /// - ([MemAfterReqCompletedIoctlA]) Inside of [`EvtIoDeviceControl`], the framework memory object must not be accessed after the IO request is completed
+    /// - ([MemAfterReqCompletedReadA]) Inside of [`EvtIoRead`], the framework memory object must not be accessed after the IO request is completed
+    /// - ([MemAfterReqCompletedWriteA]) Inside of [`EvtIoWrite`], the framework memory object must not be accessed after the IO request is completed
+    /// - ([ReqDelete]) Driver-created requests must be deleted upon completion instead of being passed to the `WdfRequestCompleteXxx` family of functions
+    /// - ([ReqSendFail]) The correct completion status must be set in cases where [`WdfRequestSend`] can fail
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [AddPdotoStaticChildlist]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-AddPdoToStaticChildList
+    /// [ControlDeviceDeleted]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ControlDeviceDeleted
+    /// [CtlDeviceFinishInitDeviceAdd]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDeviceAdd
+    /// [CtlDeviceFinishInitDrEntry]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDrEntry
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [InvalidReqAccessLocal]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InvalidReqAccessLocal
+    /// [MemAfterReqCompletedIntIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedIntIoctlA
+    /// [MemAfterReqCompletedIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedIoctlA
+    /// [MemAfterReqCompletedReadA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedReadA
+    /// [MemAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedWriteA
+    /// [ReqDelete]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqDelete
+    /// [ReqSendFail]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqSendFail
+    /// [`EvtIoInternalDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_internal_device_control
+    /// [`EvtIoDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_device_control
+    /// [`EvtIoRead`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_read
+    /// [`EvtIoWrite`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_write
+    //
+    // TODO: As proper intra-doc links
+    /// [`WdfDeviceConfigureRequestDispatching`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nf-wdfobject-wdfobjectdelete
+    /// [`WdfRequestSend`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestsend
+    pub unsafe fn WdfObjectDelete(Object: WDFOBJECT) {
+        dispatch!(WdfObjectDelete(Object))
+    }
+
     /// If `TypeInfo` has a context space associated with the object, returns a pointer to the context space.
     /// Otherwise, returns `NULL`
     ///
@@ -719,6 +798,108 @@ pub mod raw {
     }
 
     // endregion: wdfobject
+
+    // region: wdfsync
+
+    /// Creates a framework spin-lock object
+    ///
+    /// By default, the parent object of the spin-lock is the driver object.
+    /// The parent of the spin-lock can be changed using `SpinLockAttributes`, but if it is not changed
+    /// the spin-lock object should be deleted once done with it, as otherwise instances of spin-locks will
+    /// persist until the driver is unloaded.
+    ///
+    /// ## Return Value
+    ///
+    /// The newly allocated queue object is stored in the place given by `SpinLock`.
+    ///
+    /// `STATUS_SUCCESS` is returned if the operation was successful, otherwise:
+    /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+    ///
+    /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+    /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    /// - ([ParentObjectCheckLock]) A parent object should be set for the lock object
+    /// - ([WdfSpinLock]) Calls to [`WdfSpinLockAcquire`] should be balanced with the number of calls to [`WdfSpinLockRelease`]
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [ParentObjectCheckLock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ParentObjectCheckLock
+    /// [WdfSpinlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfSpinlock
+    #[must_use]
+    pub unsafe fn WdfSpinLockCreate(
+        SpinLockAttributes: Option<PWDF_OBJECT_ATTRIBUTES>, // in, optional
+        SpinLock: &mut WDFSPINLOCK,                         // out
+    ) -> NTSTATUS {
+        dispatch!(WdfSpinLockCreate(
+            SpinLockAttributes.unwrap_or(WDF_NO_OBJECT_ATTRIBUTES!()),
+            SpinLock
+        ))
+    }
+
+    /// Acquires the specified spin lock
+    ///
+    /// This also raises the IRQL level to `DISPATCH_LEVEL`
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - This cannot be called on the spin lock of a [`WDF_INTERRUPT_CONFIG`]
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    /// - ([WdfSpinLock]) Calls to [`WdfSpinLockAcquire`] should be balanced with the number of calls to [`WdfSpinLockRelease`]
+    /// - ([WdfSpinLockRelease]) Calls to [`WdfSpinLockRelease`] should be balanced with the number of calls to [`WdfSpinLockAcquire`]
+    /// - ([ReqSendWhileSpinlock]) While a driver holds a spinlock, no IO requests should be sent, otherwise a deadlock could occur
+    ///
+    /// [`WDF_INTERRUPT_CONFIG`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfinterrupt/ns-wdfinterrupt-_wdf_interrupt_config
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [WdfSpinlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfSpinlock
+    /// [WdfSpinlockRelease]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfSpinlockRelease
+    /// [ReqSendWhileSpinlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqSendWhileSpinlock
+    //
+    // Note: while the original WDF documentation mentions that UMDF changes the IRQL to a passive level,
+    // the SAL2 annotations for `WdfSpinLockAcquire` specifically indicate it should always raise it to `DISPATCH_LEVEL`
+    pub unsafe fn WdfSpinLockAcquire(SpinLock: WDFSPINLOCK) {
+        dispatch!(WdfSpinLockAcquire(SpinLock))
+    }
+
+    /// Releases the specified spin lock
+    ///
+    /// This also adjusts the IRQL level back to what it was before acquiring the spin lock
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `DISPATCH_LEVEL`
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    /// - ([WdfSpinLock]) Calls to [`WdfSpinLockAcquire`] should be balanced with the number of calls to [`WdfSpinLockRelease`]
+    /// - ([WdfSpinLockRelease]) Calls to [`WdfSpinLockRelease`] should be balanced with the number of calls to [`WdfSpinLockAcquire`]
+    /// - ([ReqSendWhileSpinlock]) While a driver holds a spinlock, no IO requests should be sent, otherwise a deadlock could occur
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [WdfSpinlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfSpinlock
+    /// [WdfSpinlockRelease]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfSpinlockRelease
+    /// [ReqSendWhileSpinlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqSendWhileSpinlock
+    pub unsafe fn WdfSpinLockRelease(SpinLock: WDFSPINLOCK) {
+        dispatch!(WdfSpinLockRelease(SpinLock))
+    }
+
+    // endregion: wdfsync
 }
 
 pub mod object {
@@ -959,6 +1140,202 @@ pub mod object {
         //   - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
         // - We directly return the produced error
         unsafe { pin_init.__pinned_init(context_space) }
+    }
+}
+
+pub mod sync {
+    //! WDF-Based synchronization primatives
+
+    use core::{
+        cell::{Cell, UnsafeCell},
+        marker::PhantomPinned,
+        ops::{Deref, DerefMut},
+        pin::Pin,
+    };
+
+    use pinned_init::{pin_data, PinInit};
+    use wdf_kmdf_sys::WDFSPINLOCK;
+    use windows_kernel_sys::Error;
+
+    use crate::raw;
+
+    /// A spin-lock based mutex protecting some data.
+    ///
+    /// The data is guaranteed to be pinned.
+    #[pin_data]
+    pub struct SpinMutex<T> {
+        /// The backing spin lock
+        spin_lock: SpinLock,
+        /// If the mutex has been locked
+        is_locked: Cell<bool>,
+        /// Data we are protecting
+        #[pin]
+        data: UnsafeCell<T>,
+    }
+
+    impl<T> SpinMutex<T> {
+        /// Creates a new mutex
+        ///
+        /// ## IRQL: <= Dispatch
+        ///
+        /// ## Errors
+        ///
+        /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+        ///
+        /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+        /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+        pub fn new(value: impl PinInit<T, Error>) -> impl PinInit<Self, Error> {
+            pinned_init::try_pin_init!(SpinMutex {
+                spin_lock: SpinLock::new()?,
+                is_locked: Cell::new(false),
+                data <- unsafe { pinned_init::pin_init_from_closure(move |slot: *mut UnsafeCell<T>| {
+                    value.__pinned_init(slot.cast())
+                })}
+            }? Error)
+        }
+
+        /// Tries to acquire the mutex, returning a guard if successful
+        ///
+        /// ## IRQL: <= Dispatch
+        pub fn try_lock(&self) -> Option<Pin<SpinMutexGuard<'_, T>>> {
+            let _guard = self.spin_lock.acquire();
+
+            if self.is_locked.get() {
+                // Lock is already acquired
+                return None;
+            }
+
+            self.is_locked.set(true);
+
+            // SAFETY: Uhhhh
+            Some(unsafe {
+                Pin::new_unchecked(SpinMutexGuard {
+                    mutex: self,
+                    _pin: PhantomPinned,
+                })
+            })
+        }
+
+        /// Locks the mutex, busy-looping until the lock is acquired
+        ///
+        /// ## IRQL: <= Dispatch
+        pub fn lock(&self) -> Pin<SpinMutexGuard<'_, T>> {
+            loop {
+                let Some(guard) = self.try_lock() else {
+                    core::hint::spin_loop();
+                    continue;
+                };
+                break guard;
+            }
+        }
+    }
+
+    // Can't send `SpinMutex` to another thread because we've guaranteed that the storage will never move
+    // impl<T> !Send for SpinMutex<T> {}
+
+    // Can send &SpinMutex<T> to other threads as we can only observe `T` changing when we hold the lock.
+    //
+    // `T` also needs to be `Send` as we need to be able to manifest a `&mut T` on any thread.
+    // This is so that `SpinMutex<Rc<_>>` is invalid, as otherwise we could have any number of `Rc`'s on different threads.
+    unsafe impl<T> Sync for SpinMutex<T> where T: Send {}
+
+    /// Lock guard for a [`SpinMutex`]
+    pub struct SpinMutexGuard<'a, T> {
+        mutex: &'a SpinMutex<T>,
+        _pin: PhantomPinned,
+    }
+
+    impl<'a, T> Drop for SpinMutexGuard<'a, T> {
+        fn drop(&mut self) {
+            let spin_guard = self.mutex.spin_lock.acquire();
+            self.mutex.is_locked.set(false);
+            drop(spin_guard)
+        }
+    }
+
+    impl<'a, T> Deref for SpinMutexGuard<'a, T> {
+        type Target = T;
+
+        #[inline]
+        fn deref(&self) -> &Self::Target {
+            // SAFETY: We have exclusive access to the data
+            unsafe { &*self.mutex.data.get() }
+        }
+    }
+
+    impl<'a, T> DerefMut for SpinMutexGuard<'a, T> {
+        #[inline]
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            // SAFETY: We have exclusive access to the data
+            unsafe { &mut *self.mutex.data.get() }
+        }
+    }
+
+    /// Wrapper around a framework-based spin lock.
+    pub struct SpinLock(WDFSPINLOCK);
+
+    impl SpinLock {
+        /// Creates a new spin lock
+        ///
+        /// ## IRQL: <= Dispatch
+        ///
+        /// ## Errors
+        ///
+        /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+        ///
+        /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+        /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+        pub fn new() -> Result<Self, Error> {
+            let mut lock = core::ptr::null_mut();
+
+            // SAFETY:
+            // - Caller ensures we're calling this at the right IRQL
+            // - We're manually managing the lifetime of the spinlock (easier that way)
+            Error::to_err(unsafe { raw::WdfSpinLockCreate(None, &mut lock) })?;
+
+            Ok(Self(lock))
+        }
+
+        /// Acquires the spin lock, returning a guard that releases the lock once dropped
+        ///
+        /// ## IRQL: <= Dispatch
+        pub fn acquire(&self) -> SpinLockGuard<'_> {
+            // SAFETY:
+            // - We created the spin lock ourselves, so it's not part of an interrupt config struct
+            // - Caller ensures we're calling this at the right IRQL
+            unsafe {
+                raw::WdfSpinLockAcquire(self.0);
+            }
+
+            SpinLockGuard { lock: self }
+        }
+    }
+
+    impl Drop for SpinLock {
+        fn drop(&mut self) {
+            // - Cleanup callbacks are always called at either `DISPATCH_LEVEL` or `PASSIVE_LEVEL`
+            // - We're always deleting a spin lock, which has no special deletion requirements
+            unsafe { raw::WdfObjectDelete(self.0.cast()) }
+        }
+    }
+
+    // Can manifest SpinLock to another thread
+    unsafe impl Send for SpinLock {}
+    // Can send &SpinLock to other threads (no interior mutability observable)
+    unsafe impl Sync for SpinLock {}
+
+    /// A guard for a [`SpinLock`]
+    pub struct SpinLockGuard<'a> {
+        lock: &'a SpinLock,
+    }
+
+    impl<'a> Drop for SpinLockGuard<'a> {
+        fn drop(&mut self) {
+            // SAFETY:
+            // Having a guard guarantees we've called `WdfSpinLockAcquire`,
+            // and also implies we're at IRQL `DISPATCH_LEVEL`
+            unsafe { raw::WdfSpinLockRelease(self.lock.0) }
+        }
     }
 }
 
