@@ -2,21 +2,24 @@
 #![allow(non_snake_case, unused_variables, dead_code)] // Cut down on the warnings for now
 #![feature(allocator_api, const_option, result_option_inspect, offset_of)]
 
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, ptr::addr_of_mut};
 
+use pinned_init::{pin_data, PinInit};
+use wdf_kmdf::sync::SpinMutex;
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
     WDF_IO_QUEUE_DISPATCH_TYPE,
 };
 use windows_kernel_rs::{
-    log::{self, debug, error},
+    log::{self, debug, error, info, warn},
     string::{nt_unicode_str, unicode_string::NtUnicodeStr},
     DriverObject,
 };
 use windows_kernel_sys::{
-    Error, NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
-    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
-    NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING, ULONG,
+    Error, NdisGeneratePartialCancelId, LIST_ENTRY, NDIS_HANDLE,
+    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING,
+    ULONG,
 };
 
 #[allow(non_snake_case)]
@@ -76,8 +79,8 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                     ));
                 }
 
-                // call `create_control_device` to create the WDFDEVICE
-                // representing our software device
+                // call `create_control_device` to create the WDFDEVICE representing our software device
+                // ???: unsure about who drops `control_device`
                 let control_device = create_control_device(driver, p_init).inspect_err(|err| {
                     error!("create_control_device failed with status {:#x}", err.0)
                 })?;
@@ -126,18 +129,22 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                 });
 
                 if let Err(err) = status {
-                    windows_kernel_rs::log::warn!(
+                    warn!(
                         "Failed to register protocol driver with NDIS (status code {:#x?})",
                         err.0
                     );
                     return Err(err);
                 }
 
-                Ok(pinned_init::try_init!(NdisProt {
-                    control_device: control_device,
+                let partial_cancel_id = unsafe { NdisGeneratePartialCancelId() };
+
+                info!("DriverEntry: Ndis Cancel Id: {:#x?}", partial_cancel_id);
+
+                Ok(pinned_init::try_pin_init!(NdisProt {
+                    control_device,
                     eth_type: NPROT_ETH_TYPE,
-                    partial_cancel_id: 0,
-                    local_cancel_id: 0,
+                    partial_cancel_id,
+                    open_list <- SpinMutex::new(ListEntry::new()),
                     binds_complete: (),
                 }? Error))
             }
@@ -292,6 +299,7 @@ const DOS_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Global??\Ndisp
 const NPROT_ETH_TYPE: u16 = 0x8e88;
 const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
 
+#[pin_data]
 struct NdisProt {
     control_device: WDFDEVICE,
     // todo: ndis_protocol_handle
@@ -299,8 +307,9 @@ struct NdisProt {
     eth_type: u16,
     /// for cancelling sends
     partial_cancel_id: u8,
-    local_cancel_id: u32,
-    // todo: open_list: Lock<ListEntry<OpenContext>>
+    // TODO: ListEntry is really just a ListHead<OpenContextList>
+    #[pin]
+    open_list: SpinMutex<ListEntry>,
     /// have we seen `NetEventBindsComplete`?
     // Note: is a RKEVENT, Initialized via KeInitializeEvent
     binds_complete: (),
@@ -323,6 +332,24 @@ impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
         // UnregisterExCallback
         // DoProtocolUnload
         debug!("Unload Exit");
+    }
+}
+
+// Dummy type so that we can store a list entry in `NdisProt`
+struct ListEntry {
+    entry: LIST_ENTRY,
+}
+
+impl ListEntry {
+    fn new() -> impl PinInit<Self, Error> {
+        unsafe {
+            pinned_init::init_from_closure(|slot: *mut Self| {
+                let entry = addr_of_mut!((*slot).entry);
+                addr_of_mut!((*entry).Flink).write(entry);
+                addr_of_mut!((*entry).Blink).write(entry);
+                Ok(())
+            })
+        }
     }
 }
 
