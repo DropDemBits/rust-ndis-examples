@@ -67,7 +67,9 @@ fn vtable_impl(mut item: syn::ItemImpl) -> TokenStream {
         .items
         .iter()
         .filter_map(|item| {
-            let syn::ImplItem::Fn(impl_fn) = item else { return None };
+            let syn::ImplItem::Fn(impl_fn) = item else {
+                return None;
+            };
 
             let original_name = &impl_fn.sig.ident;
             let name = format!("HAS_{}", heck::AsShoutySnekCase(original_name.to_string()));
