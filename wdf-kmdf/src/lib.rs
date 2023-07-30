@@ -89,7 +89,7 @@ pub mod raw {
     ///   must be called after [`WdfDeviceCreate`] but before the end of [`EvtDriverDeviceAdd`]
     /// - ([CtlDeviceFinishInitDrEntry]) If a PnP driver creates a control device object in [`DriverEntry`], [`WdfControlFinishInitializing`]
     ///   must be called after [`WdfDeviceCreate`] but before the end of [`DriverEntry`]
-    /// - ([DriverCreate]) Must only be called from the `DriverEntry` point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     /// - ([InitFreeDeviceCallback]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs while initializing
     ///   a new framework device object, [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
     /// - ([InitFreeDeviceCreate]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs during one of the device object
@@ -138,7 +138,7 @@ pub mod raw {
     ///   must be called after [`WdfDeviceCreate`] but before the end of [`EvtDriverDeviceAdd`]
     /// - ([CtlDeviceFinishInitDrEntry]) If a PnP driver creates a control device object in [`DriverEntry`], [`WdfControlFinishInitializing`]
     ///   must be called after [`WdfDeviceCreate`] but before the end of [`DriverEntry`]
-    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     ///
     /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
     /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
@@ -304,7 +304,7 @@ pub mod raw {
     /// In addition to all passed-in pointers pointing to valid memory locations:
     ///
     /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
-    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     ///
     /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
     /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
@@ -344,7 +344,7 @@ pub mod raw {
     /// - ([ChildDeviceInitApi]) The child device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([DeviceInitAPI]) The device object initialization methods must be called before [`WdfDeviceCreate`]
-    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     /// - ([InitFreeDeviceCallback]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs while initializing
     ///   a new framework device object, [`WdfDeviceInitFree`] must be called on the [`WDFDEVICE_INIT`] structure
     /// - ([InitFreeDeviceCreate]) If a [`WDFDEVICE_INIT`] is from a [`WdfControlDeviceInitAllocate`] and an error occurs during one of the device object
@@ -471,7 +471,7 @@ pub mod raw {
     /// - ([ChildDeviceInitApi]) The child device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([DeviceInitAPI]) The device object initialization methods must be called before [`WdfDeviceCreate`]
-    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     /// - ([FileObjectConfigured]) [`WdfDeviceInitSetFileObjectConfig`] must be called before [`WdfRequestGetFileObject`]
     /// - ([PdoDeviceInitAPI]) The device object initialization methods and [`WdfPdoInitAllocate`] must be called before [`WdfDeviceCreate`]
     ///
@@ -521,7 +521,7 @@ pub mod raw {
     /// - ([ChildDeviceInitApi]) The child device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([ControlDeviceInitAPI]) The control device object initialization methods must be called before [`WdfDeviceCreate`]
     /// - ([DeviceInitAPI]) The device object initialization methods must be called before [`WdfDeviceCreate`]
-    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     /// - ([PdoDeviceInitAPI]) The device object initialization methods and [`WdfPdoInitAllocate`] must be called before [`WdfDeviceCreate`]
     ///
     /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
@@ -584,7 +584,7 @@ pub mod raw {
     /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `PASSIVE_LEVEL`
     /// - ([ChangeQueueState]) Must not be called concurrently with other queue state-changing functions
     /// - ([DriverAttributeChanged]) The existing execution level or synchronization scope must not be modified(?)
-    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     /// - ([MiniportOnlyWdmDevice]) FIXME: ???
     ///
     /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
@@ -673,7 +673,7 @@ pub mod raw {
     ///
     /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
     /// - ([ChangeQueueState]) Must not be called concurrently with other queue state-changing functions
-    /// - ([DriverCreate]) Must only be called from the [`DriverEntry`] point
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     /// - ([DrvAckIoStop]) When the power-managed queue is getting powered down, remaining pending requests
     ///   should be acknowledge, cancelled, or completed as appropriate.
     ///   For self-managed IO requests, they should also be correctly handled inside of [`EvtDeviceSelfManagedIoSuspend`]
