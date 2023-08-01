@@ -904,6 +904,61 @@ pub mod raw {
     // endregion: wdfsync
 }
 
+pub mod file_object {
+    use core::marker::PhantomData;
+
+    use wdf_kmdf_sys::WDFFILEOBJECT;
+
+    use crate::object::{self, IntoContextSpace};
+
+    #[derive(Debug)]
+    pub struct FileObject<T>(WDFFILEOBJECT, PhantomData<T>);
+
+    impl<T> FileObject<T> {
+        /// Wraps the raw handle in a file object wrapper
+        ///
+        /// ## Safety
+        ///
+        /// Respect aliasing rules, since this can be used to
+        /// generate aliasing mutable references to the context space.
+        /// Also, the context space must be initialized.
+        // FIXME: Make a proper wrapper eventually
+        pub unsafe fn wrap(handle: WDFFILEOBJECT) -> Self {
+            Self(handle, PhantomData)
+        }
+
+        /// Gets the file object handle for use with WDF functions that don't have clean wrappers yet
+        pub fn raw_handle(&mut self) -> WDFFILEOBJECT {
+            self.0
+        }
+    }
+
+    impl<T> FileObject<T>
+    where
+        T: IntoContextSpace,
+    {
+        pub fn get_context(&self) -> &T {
+            // SAFETY: Contruction guarantees that the space is initialized
+            unsafe { object::get_context(self).unwrap_unchecked() }
+        }
+
+        pub fn get_context_mut(&mut self) -> &mut T {
+            // SAFETY: Contruction guarantees that the space is initialized
+            unsafe { object::get_context_mut(self).unwrap_unchecked() }
+        }
+    }
+
+    impl<T> object::AsObjectHandle for FileObject<T> {
+        fn as_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.0.cast()
+        }
+
+        fn as_handle_mut(&mut self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.0.cast()
+        }
+    }
+}
+
 pub mod object {
 
     use wdf_kmdf_sys::{

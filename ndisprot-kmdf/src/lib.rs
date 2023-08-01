@@ -5,7 +5,7 @@
 use core::{mem::MaybeUninit, ptr::addr_of_mut};
 
 use pinned_init::{pin_data, PinInit};
-use wdf_kmdf::sync::SpinMutex;
+use wdf_kmdf::sync::{SpinLock, SpinMutex};
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
     WDF_IO_QUEUE_DISPATCH_TYPE,
@@ -16,10 +16,10 @@ use windows_kernel_rs::{
     DriverObject,
 };
 use windows_kernel_sys::{
-    Error, NdisGeneratePartialCancelId, LIST_ENTRY, NDIS_HANDLE,
-    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
-    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING,
-    ULONG,
+    sys::Win32::Foundation::STATUS_SUCCESS, Error, KeInitializeEvent, NdisGeneratePartialCancelId,
+    KEVENT, LIST_ENTRY, NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
+    NET_DEVICE_POWER_STATE, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING, ULONG,
 };
 
 #[allow(non_snake_case)]
@@ -145,7 +145,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                     eth_type: NPROT_ETH_TYPE,
                     partial_cancel_id,
                     open_list <- SpinMutex::new(ListEntry::new()),
-                    binds_complete: (),
+                    binds_complete <- KeEvent::new(EventType::Notification, false),
                 }? Error))
             }
         },
@@ -262,36 +262,6 @@ fn create_control_device(
     return Ok(control_device);
 }
 
-unsafe extern "C" fn ndisprot_evt_device_file_create(
-    Device: WDFDEVICE,
-    Request: WDFREQUEST,
-    FileObject: WDFFILEOBJECT,
-) {
-}
-unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {}
-unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {}
-
-unsafe extern "C" fn ndisprot_evt_io_write(
-    Queue: WDFQUEUE,     // in
-    Request: WDFREQUEST, // in
-    Length: usize,       // in
-) {
-}
-unsafe extern "C" fn ndisprot_evt_io_read(
-    Queue: WDFQUEUE,     // in
-    Request: WDFREQUEST, // in
-    Length: usize,       // in
-) {
-}
-unsafe extern "C" fn ndisprot_evt_io_device_control(
-    Queue: WDFQUEUE,           // in
-    Request: WDFREQUEST,       // in
-    OutputBufferLength: usize, // in
-    InputBufferLength: usize,  // in
-    IoControlCode: ULONG,      // in
-) {
-}
-
 const NT_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Device\Ndisprot");
 const DOS_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Global??\Ndisprot");
 
@@ -310,20 +280,90 @@ struct NdisProt {
     // TODO: ListEntry is really just a ListHead<OpenContextList>
     #[pin]
     open_list: SpinMutex<ListEntry>,
-    /// have we seen `NetEventBindsComplete`?
-    // Note: is a RKEVENT, Initialized via KeInitializeEvent
-    binds_complete: (),
+    /// Notifiying when binding is complete (used in ioctl)
+    #[pin]
+    binds_complete: KeEvent,
 }
 
 wdf_kmdf::impl_context_space!(NdisProt);
 
-struct FileObjectContext;
+#[derive(Debug)]
+struct FileObjectContext {
+    open_context: *mut OpenContext,
+}
 
 wdf_kmdf::impl_context_space!(FileObjectContext);
 
 struct ControlDevice;
 
 wdf_kmdf::impl_context_space!(ControlDevice);
+
+/// See <https://github.com/microsoft/Windows-driver-samples/blob/d9acf794c92ba2fb0525f6c794ef394709035ac3/network/ndis/ndisprot_kmdf/60/ndisprot.h#L54-L90>
+struct OpenContext {
+    /// Link to the global `open_list`
+    link: ListEntry,
+    /// State information
+    flags: u32,
+    ref_count: u32,
+    /// protects `flags`
+    lock: SpinLock,
+
+    /// Set in `OPEN_DEVICE`
+    file_object: WDFFILEOBJECT,
+
+    binding_handle: NDIS_HANDLE,
+    send_nbl_pool: NDIS_HANDLE,
+    // every nbl contains at least one net buffer
+    recv_nbl_pool: NDIS_HANDLE,
+
+    mac_options: u32,
+    max_frame_size: u32,
+    data_backfill_size: u32,
+    context_backfill_size: i32,
+
+    pending_send_count: u32,
+
+    read_queue: WDFQUEUE,
+    pending_read_count: u32,
+    recv_nbl_queue: LIST_ENTRY,
+    recv_nbl_len: u32,
+
+    power_state: NET_DEVICE_POWER_STATE,
+    /// signaled if PowerState is D0
+    powered_up_event: KeEvent,
+    /// used in `open_adapter`
+    device_name: NtUnicodeStr<'static>,
+    /// device display name
+    device_desc: NtUnicodeStr<'static>,
+
+    // For open/close_adapter
+    bind_status: NTSTATUS,
+    bind_event: KeEvent,
+
+    // structure signature, for sanity checking
+    oc_sig: u32,
+    state: OpenState,
+    closing_event: *mut KeEvent,
+    current_address: MACAddr,
+    multicast_address: [MACAddr; MAX_MULTICAST_ADDRESS],
+
+    status_indication_queue: WDFQUEUE,
+}
+
+enum OpenState {
+    Initializing,
+    Running,
+    Pausing,
+    Paused,
+    Restarting,
+    Closing,
+}
+
+const MAX_MULTICAST_ADDRESS: usize = 32;
+
+const OC_STRUCTURE_SIG: u32 = u32::from_be_bytes(['N' as u8, 'u' as u8, 'i' as u8, 'o' as u8]);
+
+struct MACAddr([u8; 6]);
 
 #[vtable::vtable]
 impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
@@ -355,6 +395,108 @@ impl ListEntry {
             })
         }
     }
+}
+
+#[pin_data]
+struct KeEvent {
+    #[pin]
+    event: KEVENT,
+}
+
+impl KeEvent {
+    fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self, Error> {
+        unsafe {
+            pinned_init::pin_init_from_closure(move |slot: *mut Self| {
+                KeInitializeEvent(
+                    addr_of_mut!((*slot).event),
+                    windows_kernel_sys::_EVENT_TYPE(event_type as i32),
+                    start_signaled.into(),
+                );
+
+                Ok(())
+            })
+        }
+    }
+}
+
+#[repr(i32)]
+enum EventType {
+    Notification = windows_kernel_sys::_EVENT_TYPE::NotificationEvent.0,
+    Synchronization = windows_kernel_sys::_EVENT_TYPE::SynchronizationEvent.0,
+}
+
+/// Called when the framework recives a IRP_MJ_CREATE request (e.g. when an application opens the device
+/// to perform IO operations on it).
+///
+/// ## Note
+/// This is called synchronously and in the context of the thread which created the IRP_MJ_CREATE request.
+unsafe extern "C" fn ndisprot_evt_device_file_create(
+    Device: WDFDEVICE,
+    Request: WDFREQUEST,
+    FileObject: WDFFILEOBJECT,
+) {
+    let mut file_object =
+        unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
+
+    debug!("Open: FileObject {:#x?}", FileObject);
+
+    file_object.get_context_mut().open_context = core::ptr::null_mut();
+
+    wdf_kmdf::raw::WdfRequestComplete(Request, STATUS_SUCCESS);
+}
+
+/// Called when all of the handles representing the FileObject are closed, as well as all of the references being removed.
+///
+/// ## Note
+/// This is called in an arbitrary thread context, so any context that was created in `FileCreate` should be done in the
+/// cleanup callback.
+unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
+    let mut file_object =
+        unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
+
+    debug!("Close: FileObject {:#x?}", FileObject);
+
+    // FIXME: `open_context` should be an `Option<Arc> instead`
+
+    file_object.get_context_mut().open_context = core::ptr::null_mut();
+}
+
+/// Called when the handle representing the `FileObject` is closed.
+///
+/// ## Note
+/// This is called in the context of the thread which originally closed the handle
+unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
+    //
+    let mut file_object =
+        unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
+
+    let open_context = file_object.get_context_mut().open_context;
+
+    debug!(
+        "Cleanup: FileObject {:#x?}, Open: {:#x?}",
+        file_object, open_context
+    );
+}
+
+unsafe extern "C" fn ndisprot_evt_io_write(
+    Queue: WDFQUEUE,     // in
+    Request: WDFREQUEST, // in
+    Length: usize,       // in
+) {
+}
+unsafe extern "C" fn ndisprot_evt_io_read(
+    Queue: WDFQUEUE,     // in
+    Request: WDFREQUEST, // in
+    Length: usize,       // in
+) {
+}
+unsafe extern "C" fn ndisprot_evt_io_device_control(
+    Queue: WDFQUEUE,           // in
+    Request: WDFREQUEST,       // in
+    OutputBufferLength: usize, // in
+    InputBufferLength: usize,  // in
+    IoControlCode: ULONG,      // in
+) {
 }
 
 // unfortunately we need to declare these two (__CxxFrameHandler3 & _fltused)
