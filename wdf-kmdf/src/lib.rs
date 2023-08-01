@@ -1204,7 +1204,7 @@ pub mod sync {
     //! WDF-Based synchronization primatives
 
     use core::{
-        cell::{Cell, UnsafeCell},
+        cell::UnsafeCell,
         marker::PhantomPinned,
         ops::{Deref, DerefMut},
         pin::Pin,
@@ -1223,8 +1223,6 @@ pub mod sync {
     pub struct SpinMutex<T> {
         /// The backing spin lock
         spin_lock: SpinLock,
-        /// If the mutex has been locked
-        is_locked: Cell<bool>,
         /// Data we are protecting
         #[pin]
         data: UnsafeCell<T>,
@@ -1244,7 +1242,6 @@ pub mod sync {
         pub fn new(value: impl PinInit<T, Error>) -> impl PinInit<Self, Error> {
             pinned_init::try_pin_init!(SpinMutex {
                 spin_lock: SpinLock::new()?,
-                is_locked: Cell::new(false),
                 data <- unsafe { pinned_init::pin_init_from_closure(move |slot: *mut UnsafeCell<T>| {
                     value.__pinned_init(slot.cast())
                 })}
@@ -1255,19 +1252,13 @@ pub mod sync {
         ///
         /// ## IRQL: <= Dispatch
         pub fn try_lock(&self) -> Option<Pin<SpinMutexGuard<'_, T>>> {
-            let _guard = self.spin_lock.acquire();
-
-            if self.is_locked.get() {
-                // Lock is already acquired
-                return None;
-            }
-
-            self.is_locked.set(true);
+            let guard = self.spin_lock.acquire();
 
             // SAFETY: Uhhhh
             Some(unsafe {
                 Pin::new_unchecked(SpinMutexGuard {
                     mutex: self,
+                    _guard: guard,
                     _pin: PhantomPinned,
                 })
             })
@@ -1299,15 +1290,8 @@ pub mod sync {
     /// Lock guard for a [`SpinMutex`]
     pub struct SpinMutexGuard<'a, T> {
         mutex: &'a SpinMutex<T>,
+        _guard: SpinLockGuard<'a>,
         _pin: PhantomPinned,
-    }
-
-    impl<'a, T> Drop for SpinMutexGuard<'a, T> {
-        fn drop(&mut self) {
-            let spin_guard = self.mutex.spin_lock.acquire();
-            self.mutex.is_locked.set(false);
-            drop(spin_guard)
-        }
     }
 
     impl<'a, T> Deref for SpinMutexGuard<'a, T> {
