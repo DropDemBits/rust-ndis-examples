@@ -88,4 +88,6 @@ fn main() {
 
     println!("cargo:rustc-link-lib=wdfldr");
     println!("cargo:rustc-link-lib=wdfdriverentry");
+
+    println!("cargo:rustc-link-lib=ndis");
 }
