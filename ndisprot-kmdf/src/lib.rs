@@ -2,7 +2,11 @@
 #![allow(non_snake_case, unused_variables, dead_code)] // Cut down on the warnings for now
 #![feature(allocator_api, const_option, result_option_inspect, offset_of)]
 
-use core::{mem::MaybeUninit, ptr::addr_of_mut};
+use core::{
+    mem::MaybeUninit,
+    ptr::addr_of_mut,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use pinned_init::{pin_data, PinInit};
 use wdf_kmdf::sync::{SpinLock, SpinMutex};
@@ -19,7 +23,8 @@ use windows_kernel_sys::{
     sys::Win32::Foundation::STATUS_SUCCESS, Error, KeInitializeEvent, NdisGeneratePartialCancelId,
     KEVENT, LIST_ENTRY, NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
-    NET_DEVICE_POWER_STATE, NTSTATUS, PDRIVER_OBJECT, PUNICODE_STRING, ULONG,
+    NDIS_REQUEST_TYPE, NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER,
+    PDRIVER_OBJECT, PUNICODE_STRING, ULONG,
 };
 
 #[allow(non_snake_case)]
@@ -289,6 +294,7 @@ wdf_kmdf::impl_context_space!(NdisProt);
 
 #[derive(Debug)]
 struct FileObjectContext {
+    // FIXME: `open_context` should be an `AtomicCell<Option<Arc>>` instead
     open_context: *mut OpenContext,
 }
 
@@ -299,12 +305,14 @@ struct ControlDevice;
 wdf_kmdf::impl_context_space!(ControlDevice);
 
 /// See <https://github.com/microsoft/Windows-driver-samples/blob/d9acf794c92ba2fb0525f6c794ef394709035ac3/network/ndis/ndisprot_kmdf/60/ndisprot.h#L54-L90>
+#[pin_data]
 struct OpenContext {
     /// Link to the global `open_list`
+    #[pin]
     link: ListEntry,
     /// State information
-    flags: u32,
-    ref_count: u32,
+    flags: OpenContextFlags,
+    ref_count: AtomicU32,
     /// protects `flags`
     lock: SpinLock,
 
@@ -325,11 +333,13 @@ struct OpenContext {
 
     read_queue: WDFQUEUE,
     pending_read_count: u32,
+    #[pin]
     recv_nbl_queue: LIST_ENTRY,
     recv_nbl_len: u32,
 
     power_state: NET_DEVICE_POWER_STATE,
     /// signaled if PowerState is D0
+    #[pin]
     powered_up_event: KeEvent,
     /// used in `open_adapter`
     device_name: NtUnicodeStr<'static>,
@@ -338,6 +348,7 @@ struct OpenContext {
 
     // For open/close_adapter
     bind_status: NTSTATUS,
+    #[pin]
     bind_event: KeEvent,
 
     // structure signature, for sanity checking
@@ -357,6 +368,45 @@ enum OpenState {
     Paused,
     Restarting,
     Closing,
+}
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct OpenContextFlags: u32 {
+        /// State of binding
+        const BIND_FLAGS = 0x0000_000F;
+        const BIND_IDLE = 1 << 0;
+        const BIND_OPENING = 1 << 1;
+        const BIND_FAILED = 1 << 2;
+        const BIND_ACTIVE = 1 << 3;
+        const BIND_CLOSING = 1 << 4;
+
+        /// State of IO opening
+        const OPEN_FLAGS = 0x0000_00F0;
+        const OPEN_IDLE = 0;
+        const OPEN_ACTIVE = 1 << 5;
+
+        const RESET_FLAGS = Self::RESET_IN_PROGRESS.bits() | Self::NOT_RESETTING.bits();
+        const RESET_IN_PROGRESS = 1 << 8;
+        const NOT_RESETTING = 0;
+
+        const MEDIA_FLAGS = Self::MEDIA_CONNECTED.bits() | Self::MEDIA_DISCONNECTED.bits();
+        const MEDIA_CONNECTED = 1 << 10;
+        const MEDIA_DISCONNECTED = 0;
+
+        const READ_FLAGS = Self::READ_SERVICING.bits();
+        /// Is the read service routine running?
+        const READ_SERVICING = 1 << 21;
+
+        const UNBIND_FLAGS = Self::UNBIND_RECEIVED.bits();
+        /// Seen NDIS Unbind?
+        const UNBIND_RECEIVED = 1 << 28;
+
+        // is 1 << 28 in original example but likely a mistake
+        const ALLOCATED_NBL = 1 << 29;
+        // is 1 << 29 in original example but adjusted due to prev
+        const NBL_RETREAT_RECV_RSVD = 1 << 30;
+    }
 }
 
 const MAX_MULTICAST_ADDRESS: usize = 32;
@@ -456,9 +506,14 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
 
     debug!("Close: FileObject {:#x?}", FileObject);
 
-    // FIXME: `open_context` should be an `Option<Arc> instead`
+    let open_context = core::mem::replace(
+        &mut file_object.get_context_mut().open_context,
+        core::ptr::null_mut(),
+    );
 
-    file_object.get_context_mut().open_context = core::ptr::null_mut();
+    if !open_context.is_null() {
+        deref_open_context(open_context);
+    }
 }
 
 /// Called when the handle representing the `FileObject` is closed.
@@ -476,6 +531,77 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         "Cleanup: FileObject {:#x?}, Open: {:#x?}",
         file_object, open_context
     );
+
+    if !open_context.is_null() {
+        // SAFETY: We checked that it isn't null, and get_context_mut guarantees that it's
+        // both valid and initialized.
+        let open_context = unsafe { &mut *open_context };
+
+        // Mark this endpoint
+        {
+            let _guard = open_context.lock.acquire();
+            // Note: This is equivalent to setting the open flags to idle
+            open_context.flags.remove(OpenContextFlags::OPEN_FLAGS);
+        }
+
+        // Set packet filter to 0, telling NDIS we aren't interested in any more receives.
+        // We do not want to wait for the device to be powered on
+        let packet_filter = [0u8; 4];
+        let mut bytes_processed = 0u32;
+        let status = ndisbind::validate_open_and_do_request(
+            open_context,
+            NDIS_REQUEST_TYPE::NdisRequestSetInformation,
+            OID_GEN_CURRENT_PACKET_FILTER,
+            packet_filter.as_ptr(),
+            packet_filter.len(),
+            &mut bytes_processed,
+            false,
+        );
+        if let Err(err) = Error::to_err(status) {
+            debug!(
+                "Cleanup: Open: {:#x?}, set packet filter ({:#x?}) failed {:#x?}",
+                open_context as *mut _, packet_filter, err
+            );
+
+            // Ignore the result
+            // We may stil continue to get (indicated?) receives,
+            // which will be handled approriately
+        }
+
+        {
+            let guard = open_context.lock.acquire();
+
+            if open_context.flags.contains(OpenContextFlags::BIND_ACTIVE) {
+                drop(guard);
+
+                // Cancel any pending reads
+                wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.read_queue);
+                // Cancel pending ioctl request for status indication
+                wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.status_indication_queue);
+            }
+        }
+
+        // Cleanup the receive packet queue
+        ndisbind::flush_receive_queue(open_context);
+    }
+
+    debug!("Cleanup: OpenContext: {:#x?}", open_context);
+}
+
+unsafe extern "C" fn ndisprot_evt_io_device_control(
+    Queue: WDFQUEUE,           // in
+    Request: WDFREQUEST,       // in
+    OutputBufferLength: usize, // in
+    InputBufferLength: usize,  // in
+    IoControlCode: ULONG,      // in
+) {
+}
+
+unsafe extern "C" fn ndisprot_evt_io_read(
+    Queue: WDFQUEUE,     // in
+    Request: WDFREQUEST, // in
+    Length: usize,       // in
+) {
 }
 
 unsafe extern "C" fn ndisprot_evt_io_write(
@@ -484,19 +610,37 @@ unsafe extern "C" fn ndisprot_evt_io_write(
     Length: usize,       // in
 ) {
 }
-unsafe extern "C" fn ndisprot_evt_io_read(
-    Queue: WDFQUEUE,     // in
-    Request: WDFREQUEST, // in
-    Length: usize,       // in
-) {
+
+/// Reference the given open context
+///
+/// Note: Is backed by an [`AtomicU32`], so no need to acquire `lock` first
+fn ref_open_context(open_context: *mut OpenContext) {
+    unsafe {
+        (*open_context).ref_count.fetch_add(1, Ordering::Acquire);
+    }
 }
-unsafe extern "C" fn ndisprot_evt_io_device_control(
-    Queue: WDFQUEUE,           // in
-    Request: WDFREQUEST,       // in
-    OutputBufferLength: usize, // in
-    InputBufferLength: usize,  // in
-    IoControlCode: ULONG,      // in
-) {
+
+/// Dereference the given open context, freeing it if the ref count goes to 0
+///
+/// Note: must not be holding `lock`
+fn deref_open_context(open_context: *mut OpenContext) {
+    if unsafe { (*open_context).ref_count.fetch_sub(1, Ordering::Release) } == 0 {
+        {
+            let open_context = unsafe { &mut *open_context };
+            debug!(
+                "DerefOpen: Open {:#x?}, flags {:#x?}, ref count of 0",
+                open_context as *mut _, open_context.flags
+            );
+
+            debug_assert!(open_context.binding_handle.is_null());
+            debug_assert!(open_context.file_object.is_null());
+            debug_assert_eq!(open_context.ref_count.load(Ordering::Acquire), 0);
+        }
+
+        unsafe { core::ptr::drop_in_place(open_context) };
+
+        // FIXME: How did we allocate this?
+    }
 }
 
 // unfortunately we need to declare these two (__CxxFrameHandler3 & _fltused)
@@ -530,16 +674,17 @@ mod ndisbind {
     //! NDIS protocol entry points as well as handling binding and unbinding from adapters
     use windows_kernel_sys::{
         sys::Win32::Foundation::STATUS_SUCCESS, NdisDeregisterProtocolDriver, NDIS_HANDLE,
-        NDIS_OID, NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID,
-        OID_802_11_BSSID_LIST, OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION,
-        OID_802_11_DISASSOCIATE, OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE,
-        OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI,
-        OID_802_11_SSID, OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
-        OID_802_3_MULTICAST_LIST, PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST,
-        PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
+        NDIS_OID, NDIS_REQUEST_TYPE, NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE,
+        OID_802_11_BSSID, OID_802_11_BSSID_LIST, OID_802_11_BSSID_LIST_SCAN,
+        OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE, OID_802_11_INFRASTRUCTURE_MODE,
+        OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS,
+        OID_802_11_REMOVE_WEP, OID_802_11_RSSI, OID_802_11_SSID, OID_802_11_STATISTICS,
+        OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS, OID_802_3_MULTICAST_LIST,
+        PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION,
+        PNET_PNP_EVENT_NOTIFICATION,
     };
 
-    use crate::NdisProt;
+    use crate::{NdisProt, OpenContext};
 
     const SUPPORTED_SET_OIDS: &[NDIS_OID] = &[
         OID_802_11_INFRASTRUCTURE_MODE,
@@ -617,6 +762,22 @@ mod ndisbind {
         if !proto_handle.is_null() {
             unsafe { NdisDeregisterProtocolDriver(proto_handle) };
         }
+    }
+
+    pub(crate) fn validate_open_and_do_request(
+        open_context: &mut OpenContext,
+        request_type: NDIS_REQUEST_TYPE,
+        oid: NDIS_OID,
+        info_buffer: *const u8,
+        info_len: usize,
+        bytes_processed: &mut u32,
+        wait_for_power_on: bool,
+    ) -> NTSTATUS {
+        loop {}
+    }
+
+    pub(crate) fn flush_receive_queue(open_context: &mut OpenContext) {
+        loop {}
     }
 }
 
