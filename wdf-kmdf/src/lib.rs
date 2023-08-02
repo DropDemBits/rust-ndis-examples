@@ -1365,24 +1365,41 @@ pub mod object {
         unsafe { context_space.as_mut() }
     }
 
-    /// Initializes the object's context area
+    /// Initializes the object's context area, using the closure provided
     ///
     /// ## Safety
     ///
     /// - Must not reinitialize an object's context space
     /// - Object must actually have the context space
-    pub(crate) unsafe fn context_pin_init<T: IntoContextSpace, E>(
-        handle: &mut impl AsObjectHandle,
-        pin_init: impl pinned_init::PinInit<T, E>,
-    ) -> Result<(), E> {
-        let handle = handle.as_handle_mut();
+    pub(crate) unsafe fn context_pin_init<T, Handle, I, Err>(
+        handle: &mut Handle,
+        init_context: impl FnOnce(&mut Handle) -> Result<I, Err>,
+    ) -> Result<(), Err>
+    where
+        T: IntoContextSpace,
+        Handle: AsObjectHandle,
+        I: pinned_init::PinInit<T, Err>,
+    {
+        let raw_handle = handle.as_handle_mut();
 
-        // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
+        // SAFETY: `raw_handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
         let context_space = unsafe {
             // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
-            crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
+            crate::raw::WdfObjectGetTypedContextWorker(raw_handle, T::CONTEXT_INFO)
         };
         let context_space = context_space.cast::<T>();
+
+        // Get closure to initialize context with
+        // Note: while this can panic, since we're assuming we're
+        // in a `panic=abort` context, we won't ever have access
+        // to an uninitialized context area.
+        //
+        // However, if we were to be in a `panic=unwind` context
+        // (which might supported if we link ucrt in), then we'd
+        // need to set an initialization flag stored after the
+        // real context area so that we don't drop uninitialized
+        // memory.
+        let pin_init = init_context(handle)?;
 
         // SAFETY:
         // - The following ensures that the context space is valid pinned uninitialized memory:
@@ -1414,6 +1431,8 @@ pub mod sync {
     /// A spin-lock based mutex protecting some data.
     ///
     /// The data is guaranteed to be pinned.
+    ///
+    /// IRQL-aware, and adjusts the IRQL to `DISPATCH_LEVEL` while the mutex is locked
     #[pin_data]
     pub struct SpinMutex<T> {
         /// The backing spin lock
@@ -1508,6 +1527,8 @@ pub mod sync {
     }
 
     /// Wrapper around a framework-based spin lock.
+    ///
+    /// IRQL-aware, and adjusts the IRQL to `DISPATCH_LEVEL` while the lock is acquired
     pub struct SpinLock(WDFSPINLOCK);
 
     impl SpinLock {
@@ -1679,14 +1700,13 @@ pub mod driver {
         ///
         /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
         /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
-        pub fn create<F, I>(
+        pub fn create<I>(
             driver_object: DriverObject,
             registry_path: NtUnicodeStr<'_>,
             config: DriverConfig,
-            init_context: F,
+            init_context: impl FnOnce(&mut DriverHandle) -> Result<I, Error>,
         ) -> Result<(), Error>
         where
-            F: FnOnce(&mut DriverHandle) -> Result<I, Error>,
             I: PinInit<T, Error>,
         {
             if matches!(config.pnp_mode, PnpMode::NonPnp) && T::HAS_DEVICE_ADD {
@@ -1739,14 +1759,11 @@ pub mod driver {
                 handle
             };
 
-            // Initialize context
-            let pin_init = init_context(&mut handle)?;
-
             // SAFETY:
             // - It's WDF's responsibility to insert the context area, since we create
             //   the default object attributes with T's context area
             // - The driver object was just created
-            unsafe { object::context_pin_init::<T, Error>(&mut handle, pin_init) }
+            unsafe { object::context_pin_init(&mut handle, init_context) }
         }
 
         unsafe extern "C" fn __dispatch_driver_device_add(
