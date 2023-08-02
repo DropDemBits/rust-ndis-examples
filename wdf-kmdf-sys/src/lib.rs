@@ -81,7 +81,7 @@ impl WDF_OBJECT_ATTRIBUTES {
     ///
     /// Sets
     /// - `ExecutionLevel` to [`WDF_SYNCHRONIZATION_SCOPE::WdfSynchronizationScopeInheritFromParent`]
-    /// - `SynchronizationScope` to [`WDF_EXECUTION_LEVEL::WdfSynchronizationScopeInheritFromParent`]
+    /// - `SynchronizationScope` to [`WDF_EXECUTION_LEVEL::WdfExecutionLevelInheritFromParent`]
     #[must_use]
     pub fn init() -> Self {
         // SAFETY: All fields are zero-able

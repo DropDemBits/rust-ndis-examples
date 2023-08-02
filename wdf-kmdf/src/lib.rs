@@ -298,6 +298,7 @@ pub mod raw {
     ///
     /// - `STATUS_INSUFFICIENT_RESOURCES` if there isn't enough space to store the device name.
     /// - Other `NTSTATUS` values (see [`NTSTATUS` values])
+    ///
     /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
     ///
     /// ## Safety
@@ -452,9 +453,9 @@ pub mod raw {
     ///
     /// Must be called before [`WdfDeviceCreate`].
     ///
-    /// If the parent device object isn't set to [`SynchronizationScope::None`](crate::object::Synchronization::None) and
+    /// If the parent device object isn't set to [`SynchronizationScope::None`](crate::object::SynchronizationScope::None) and
     /// [`ExecutionLevel::Passive`](crate::object::ExecutionLevel::Passive), the default object attributes cannot be used
-    /// and must also specify [`SynchronizationScope::None`](crate::object::Synchronization::None),
+    /// and must also specify [`SynchronizationScope::None`](crate::object::SynchronizationScope::None),
     /// and [`ExecutionLevel::Passive`](crate::object::ExecutionLevel::Passive).
     ///
     /// This is to ensure that the [`EvtWdfDeviceFileCreate`], [`EvtWdfFileClose`], and [`EvtWdfFileCleanup`] are all called
@@ -483,11 +484,12 @@ pub mod raw {
     /// [DeviceInitAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DeviceInitAPI
     /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
     /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
-    /// [`FileObjectConfigured`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-FileObjectConfigured
+    /// [FileObjectConfigured]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-FileObjectConfigured
     /// [PdoDeviceInitAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoDeviceInitAPI
     ///
     // TODO: As proper intra-doc links
     /// [`WdfRequestGetFileObject`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestgetfileobject
+    /// [`WdfPdoInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfpdo/nf-wdfpdo-wdfpdoinitallocate
     pub unsafe fn WdfDeviceInitSetFileObjectConfig(
         DeviceInit: PWDFDEVICE_INIT,                          // in
         FileObjectConfig: PWDF_FILEOBJECT_CONFIG,             // in
@@ -651,6 +653,9 @@ pub mod raw {
     /// If [`EvtCleanupCallback`] or [`EvtDestroyCallback`] is specified,
     /// the framework will always call those callbacks at IRQL `PASSIVE_LEVEL`.
     ///
+    /// [`EvtCleanupCallback`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nc-wdfobject-evt_wdf_object_context_cleanup
+    /// [`EvtDestroyCallback`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nc-wdfobject-evt_wdf_object_context_destroy
+    ///
     /// ## Return Value
     ///
     /// The newly allocated queue object is stored in the place given by `Queue`.
@@ -662,7 +667,7 @@ pub mod raw {
     /// - `STATUS_POWER_STATE_INVALID` if a power manangement operation is currently in progress
     /// - `STATUS_INSUFFICIENT_RESOURCES` if there is not enough resources to allocate the queue object
     /// - `STATUS_WDF_NO_CALLBACK` if no request handlers were specified, and the dispatching method is not
-    ///   [`WdfIoQueueDispatchManual`](wdf_kmdf_sys::WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatch)
+    ///   [`WdfIoQueueDispatchManual`](wdf_kmdf_sys::WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchManual)
     /// - `STATUS_UNSUCCESSFUL` if a default queue is trying to be created, but a default queue already exists for the device,
     ///   or an internal error occured
     /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
@@ -761,6 +766,7 @@ pub mod raw {
     /// [AddPdotoStaticChildlist]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-AddPdoToStaticChildList
     /// [ControlDeviceDeleted]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ControlDeviceDeleted
     /// [CtlDeviceFinishInitDeviceAdd]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDeviceAdd
+    /// [`EvtDriverDeviceAdd`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdriver/nc-wdfdriver-evt_wdf_driver_device_add
     /// [CtlDeviceFinishInitDrEntry]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDrEntry
     /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
     /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
@@ -775,6 +781,8 @@ pub mod raw {
     // TODO: As proper intra-doc links
     /// [`WdfDeviceConfigureRequestDispatching`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nf-wdfobject-wdfobjectdelete
     /// [`WdfRequestSend`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestsend
+    /// [`WdfPdoInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfpdo/nf-wdfpdo-wdfpdoinitallocate
+    /// [`WdfFdoAddStaticChild`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdffdo/nf-wdffdo-wdffdoaddstaticchild
     pub unsafe fn WdfObjectDelete(Object: WDFOBJECT) {
         dispatch!(WdfObjectDelete(Object))
     }
@@ -921,6 +929,7 @@ pub mod raw {
     /// [`WdfRequestStopAcknowledge`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequeststopacknowledge
     /// [`WdfRequestMarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelable
     /// [`WdfRequestIsCanceled`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestiscanceled
+    /// [`WdfRequestSend`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestsend
     pub unsafe fn WdfRequestComplete(Request: WDFREQUEST, Status: NTSTATUS) {
         dispatch!(WdfRequestComplete(Request, Status))
     }
