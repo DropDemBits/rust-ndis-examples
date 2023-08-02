@@ -13,7 +13,7 @@ pub mod raw {
     use wdf_kmdf_sys::{
         PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
         PWDF_FILEOBJECT_CONFIG, PWDF_IO_QUEUE_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
-        WDFOBJECT, WDFQUEUE, WDFSPINLOCK, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE,
+        WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFSPINLOCK, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE,
         WDF_NO_OBJECT_ATTRIBUTES,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
@@ -751,10 +751,8 @@ pub mod raw {
     ///   must be called after [`WdfDeviceCreate`] but before the end of [`DriverEntry`]
     /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
     /// - ([InvalidReqAccessLocal]) Locally created requests must not be accessed after being completed or cancelled.
-    /// - ([MemAfterReqCompletedIntIoctlA]) Inside of [`EvtIoInternalDeviceControl`], the framework memory object must not be accessed after the IO request is completed
-    /// - ([MemAfterReqCompletedIoctlA]) Inside of [`EvtIoDeviceControl`], the framework memory object must not be accessed after the IO request is completed
-    /// - ([MemAfterReqCompletedReadA]) Inside of [`EvtIoRead`], the framework memory object must not be accessed after the IO request is completed
-    /// - ([MemAfterReqCompletedWriteA]) Inside of [`EvtIoWrite`], the framework memory object must not be accessed after the IO request is completed
+    /// - ([MemAfterReqCompletedIntIoctlA], [MemAfterReqCompletedIoctlA], [MemAfterReqCompletedReadA], [MemAfterReqCompletedWriteA])
+    ///   The framework memory object must not be accessed after the IO request is completed
     /// - ([ReqDelete]) Driver-created requests must be deleted upon completion instead of being passed to the `WdfRequestCompleteXxx` family of functions
     /// - ([ReqSendFail]) The correct completion status must be set in cases where [`WdfRequestSend`] can fail
     ///
@@ -773,10 +771,6 @@ pub mod raw {
     /// [MemAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedWriteA
     /// [ReqDelete]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqDelete
     /// [ReqSendFail]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqSendFail
-    /// [`EvtIoInternalDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_internal_device_control
-    /// [`EvtIoDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_device_control
-    /// [`EvtIoRead`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_read
-    /// [`EvtIoWrite`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_write
     //
     // TODO: As proper intra-doc links
     /// [`WdfDeviceConfigureRequestDispatching`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nf-wdfobject-wdfobjectdelete
@@ -800,6 +794,138 @@ pub mod raw {
     }
 
     // endregion: wdfobject
+
+    // region: wdfrequest
+
+    /// Completes the specified IO request and the completion status
+    ///
+    /// `Status` can be any `NTSTATUS` value, though some of the common ones are:
+    ///
+    /// - `STATUS_SUCCESS` upon successful completion of the request
+    /// - `STATUS_CANCELLED` if the driver is cancelling the request
+    /// - `STATUS_UNSUCCESSFUL` if an error occurred during the request
+    ///
+    /// Drivers higher up on the driver stack can call [`WdfRequestGetStatus`] to obtain the `Status` that
+    /// was passed here, which is usually called inside of a [`CompletionRoutine`].
+    ///
+    /// This takes ownership of the passed in `Request`, and unless another reference has been added via
+    /// [`WdfObjectReference`], the request will be dropped (and thus invoking `Request`'s
+    /// [`EvtCleanupCallback`]). Even in the case of additional references, the request's associated IRP
+    /// structure should not be accessed. This extends to calling methods that access it, including
+    /// [`WdfRequestRetrieveOutputBuffer`] or [`WdfRequestRetrieveInputBuffer`].
+    ///
+    /// By default, the framework uses a default value that is passed to the system to boost the run-time
+    /// priority of the invoking thread (See [Specifying Priority Boosts When Completing I/O Requests]
+    /// for more info). [`WdfRequestCompleteWithPriorityBoost`] can be called instead to change the boost
+    /// value.
+    ///
+    /// For read, write, and IOCTL requests, [`WdfRequestCompleteWithInformation`] must be called so as
+    /// to provide sizing information. See the associated documentation for more information.
+    ///
+    /// More information on completeing requests can be found at [Completing I/O Requests].
+    ///
+    /// [Specifying Priority Boosts When Completing I/O Requests]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/specifying-priority-boosts-when-completing-i-o-requests
+    /// [Completing I/O Requests]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/completing-i-o-requests
+    /// [`CompletionRoutine`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nc-wdfrequest-evt_wdf_request_completion_routine
+    /// [`EvtCleanupCallback`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nc-wdfobject-evt_wdf_object_context_cleanup
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+    /// - ([BufAfterReqCompletedIntIoctl], [BufAfterReqCompletedIntIoctlA], [BufAfterReqCompletedIoctl], [BufAfterReqCompletedIoctlA], [BufAfterReqCompletedRead], [BufAfterReqCompletedReadA], [BufAfterReqCompletedWrite], [BufAfterReqCompletedWriteA], [BufAfterReqCompletedWriteA])
+    ///   The IO request buffer associated with the request must not be accessed after the request is completed.
+    /// - ([CompleteCanceledReq]) If a request has already been cancelled, it cannot also be completed.
+    /// - ([DeferredRequestCompleted]) If a request is deferred for later completion, it must be completed in the deferred processing callback function,
+    ///   unless it has been forwarded (and delivered) to the framework, or stopped processing via [`WdfRequestStopAcknowledge`].
+    /// - ([DoubleCompletion], [DoubleCompletionLocal]) Requests must not be completed multiple times
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    /// - ([EvtIoStopCancel]) A request from [`EvtIoStop`] which is uncancellabe must be either completed using one of the `WdfRequestCompleteXxx` functions, or requeued using [`WdfRequestStopAcknowledge`]
+    /// - ([EvtIoStopCompleteOrStopAck]) A request from [`EvtIoStop`] must either be completed using one of the `WdfRequestCompleteXxx` functions, or requeued using [`WdfRequestStopAcknowledge`]
+    /// - ([EvtSurpriseRemoveNoRequestComplete]) Requests from [`EvtDeviceSurpriseRemoval`] must not be completed, and instead must use self-managed IO callback functions
+    /// - ([NoCancelFromEvtSurpriseRemove]) Requests from [`EvtDeviceSurpriseRemoval`] must not be completed, and instead must use self-managed IO callback functions
+    /// - ([InvalidReqAccess]) Requests must not be accessed after having been completed or cancelled
+    /// - ([MarkCancOnCancReqLocal]) Requests cannot be marked cancelable multiple times by [`WdfRequestMarkCancelable`]
+    /// - ([MdlAfterReqCompletedIntIoctl], [MdlAfterReqCompletedIntIoctlA], [MdlAfterReqCompletedIoctl], [MdlAfterReqCompletedIoctlA], [MdlAfterReqCompletedRead], [MdlAfterReqCompletedReadA], [MdlAfterReqCompletedWrite], [MdlAfterReqCompletedWriteA], [MdlAfterReqCompletedWriteA])
+    ///   The MDL associated with the request must not be accesd after the request is completed
+    /// - ([MemAfterReqCompletedIntIoctl], [MemAfterReqCompletedIntIoctlA], [MemAfterReqCompletedIoctl], [MemAfterReqCompletedIoctlA], [MemAfterReqCompletedRead], [MemAfterReqCompletedReadA], [MemAfterReqCompletedWrite], [MemAfterReqCompletedWriteA])
+    ///   The framework memory object must not be accessed after the IO request is completed
+    /// - ([ReqDelete]) Driver-created requests must be deleted upon completion instead of being passed to the `WdfRequestCompleteXxx` family of functions
+    /// - ([ReqIsCancOnCancReq]) [`WdfRequestIsCanceled`] must only be called on requests not marked as cancelable
+    /// - ([ReqNotCanceledLocal])
+    /// - ([ReqSendFail]) The correct completion status must be set in cases where [`WdfRequestSend`] can fail
+    /// - ([RequestCompleted]) Requests from the default IO queue must either be completed, deferred, or forwarded to another queue
+    /// - ([RequestCompletedLocal]) Requests from [`EvtIoDefault`], [`EvtIoRead`], [`EvtIoWrite`], [`EvtIoDeviceControl`], and [`EvtIoInternalDeviceControl`]
+    ///   should either be completed or marked as cancelable using [`WdfRequestMarkCancelable`]
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [BufAfterReqCompletedIntIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIntIoctl
+    /// [BufAfterReqCompletedIntIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIntIoctlA
+    /// [BufAfterReqCompletedIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIoctl
+    /// [BufAfterReqCompletedIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIoctlA
+    /// [BufAfterReqCompletedRead]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedRead
+    /// [BufAfterReqCompletedReadA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedReadA
+    /// [BufAfterReqCompletedWrite]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedWrite
+    /// [BufAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedWriteA
+    /// [CompleteCanceledReq]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CompleteCanceledReq
+    /// [DeferredRequestCompleted]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DeferredRequestCompleted
+    /// [DoubleCompletion]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DoubleCompletion
+    /// [DoubleCompletionLocal]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DoubleCompletionLocal
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [EvtIoStopCancel]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-EvtIoStopCancel
+    /// [`EvtIoStop`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_stop
+    /// [EvtIoStopCompleteOrStopAck]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-EvtIoStopCompleteOrStopAck
+    /// [EvtSurpriseRemoveNoRequestComplete]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-EvtSurpriseRemoveNoRequestComplete
+    /// [`EvtDeviceSurpriseRemoval`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_device_surprise_removal
+    /// [InvalidReqAccess]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InvalidReqAccess
+    /// [MarkCancOnCancReqLocal]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MarkCancOnCancReqLocal
+    /// [MdlAfterReqCompletedIntIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIntIoctl
+    /// [MdlAfterReqCompletedIntIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIntIoctlA
+    /// [MdlAfterReqCompletedIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIoctl
+    /// [MdlAfterReqCompletedIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIoctlA
+    /// [MdlAfterReqCompletedRead]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedRead
+    /// [MdlAfterReqCompletedReadA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedReadA
+    /// [MdlAfterReqCompletedWrite]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedWrite
+    /// [MdlAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedWriteA
+    /// [MemAfterReqCompletedIntIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedIntIoctl
+    /// [MemAfterReqCompletedIntIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedIntIoctlA
+    /// [MemAfterReqCompletedIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedIoctl
+    /// [MemAfterReqCompletedIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedIoctlA
+    /// [MemAfterReqCompletedRead]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedRead
+    /// [MemAfterReqCompletedReadA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedReadA
+    /// [MemAfterReqCompletedWrite]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedWrite
+    /// [MemAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MemAfterReqCompletedWriteA
+    /// [NoCancelFromEvtSurpriseRemove]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-NoCancelFromEvtSurpriseRemove
+    /// [ReqDelete]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqDelete
+    /// [ReqIsCancOnCancReq]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqIsCancOnCancReq
+    /// [ReqNotCanceledLocal]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqNotCanceledLocal
+    /// [ReqSendFail]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqSendFail
+    /// [RequestCompleted]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-RequestCompleted
+    /// [RequestCompletedLocal]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-RequestCompletedLocal
+    /// [`EvtIoDefault`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_default
+    /// [`EvtIoRead`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_read
+    /// [`EvtIoWrite`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_write
+    /// [`EvtIoDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_device_control
+    /// [`EvtIoInternalDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_internal_device_control
+    //
+    // TODO: As proper-intra doc links
+    /// [`WdfRequestGetStatus`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nc-wdfrequest-evt_wdf_request_completion_routine
+    /// [`WdfObjectReference`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/wdfobjectreference
+    /// [`WdfRequestRetrieveOutputBuffer`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestretrieveinputbuffer
+    /// [`WdfRequestRetrieveInputBuffer`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestretrieveoutputbuffer
+    /// [`WdfRequestCompleteWithInformation`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestcompletewithinformation
+    /// [`WdfRequestCompleteWithPriorityBoost`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestcompletewithpriorityboost
+    /// [`WdfRequestStopAcknowledge`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequeststopacknowledge
+    /// [`WdfRequestMarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelable
+    /// [`WdfRequestIsCanceled`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestiscanceled
+    pub unsafe fn WdfRequestComplete(Request: WDFREQUEST, Status: NTSTATUS) {
+        dispatch!(WdfRequestComplete(Request, Status))
+    }
+
+    // endregion: wdfrequest
 
     // region: wdfsync
 
