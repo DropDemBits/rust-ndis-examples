@@ -1134,12 +1134,12 @@ pub mod file_object {
     {
         pub fn get_context(&self) -> &T {
             // SAFETY: Contruction guarantees that the space is initialized
-            unsafe { object::get_context(self).unwrap_unchecked() }
+            unsafe { object::get_context(self).unwrap() }
         }
 
         pub fn get_context_mut(&mut self) -> &mut T {
             // SAFETY: Contruction guarantees that the space is initialized
-            unsafe { object::get_context_mut(self).unwrap_unchecked() }
+            unsafe { object::get_context_mut(self).unwrap() }
         }
     }
 
@@ -1456,9 +1456,16 @@ pub mod sync {
         pub fn new(value: impl PinInit<T, Error>) -> impl PinInit<Self, Error> {
             pinned_init::try_pin_init!(SpinMutex {
                 spin_lock: SpinLock::new()?,
-                data <- unsafe { pinned_init::pin_init_from_closure(move |slot: *mut UnsafeCell<T>| {
-                    value.__pinned_init(slot.cast())
-                })}
+                data <- {
+                    let init = move |slot: *mut UnsafeCell<T>| {
+                        // SAFETY: by guarantees of `pin_init_from_closure`
+                        unsafe { value.__pinned_init(slot.cast()) }
+                    };
+                    
+                    // SAFETY: `data` is pinned too, and initialization requirements are guaranteed
+                    // by nature of delegating to `value`'s pinned init
+                    unsafe { pinned_init::pin_init_from_closure(init)}
+                }
             }? Error)
         }
 
@@ -1495,7 +1502,8 @@ pub mod sync {
     // Can't send `SpinMutex` to another thread because we've guaranteed that the storage will never move
     // impl<T> !Send for SpinMutex<T> {}
 
-    // Can send &SpinMutex<T> to other threads as we can only observe `T` changing when we hold the lock.
+    // SAFETY: Can send &SpinMutex<T> to other threads as we can only observe `T` changing
+    // when we hold the lock, and only one thread can hold the lock.
     //
     // `T` also needs to be `Send` as we need to be able to manifest a `&mut T` on any thread.
     // This is so that `SpinMutex<Rc<_>>` is invalid, as otherwise we could have any number of `Rc`'s on different threads.
@@ -1570,15 +1578,16 @@ pub mod sync {
 
     impl Drop for SpinLock {
         fn drop(&mut self) {
+            // SAFETY:
             // - Cleanup callbacks are always called at either `DISPATCH_LEVEL` or `PASSIVE_LEVEL`
             // - We're always deleting a spin lock, which has no special deletion requirements
             unsafe { raw::WdfObjectDelete(self.0.cast()) }
         }
     }
 
-    // Can manifest SpinLock to another thread
+    // SAFETY: Can manifest SpinLock to another thread (as-if we'd moved a pointer)
     unsafe impl Send for SpinLock {}
-    // Can send &SpinLock to other threads (no interior mutability observable)
+    // SAFETY: Can send &SpinLock to other threads (no interior mutability observable)
     unsafe impl Sync for SpinLock {}
 
     /// A guard for a [`SpinLock`]
