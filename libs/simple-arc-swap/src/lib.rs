@@ -3,7 +3,6 @@
 
 // During tests, allow importing std
 #[cfg(any(feature = "std", test))]
-#[macro_use]
 extern crate std;
 
 // Needed for `Arc`
@@ -32,10 +31,11 @@ impl<T> OptionArcSwap<T> {
     /// ## Examples
     ///
     /// ```rust
-    ///#extern crate alloc;
+    ///# extern crate alloc;
+    ///# use simple_arc_swap::OptionArcSwap;
     /// use alloc::sync::Arc;
     ///
-    /// let swap = OptionSwapArc::new(Some(Arc::new(5)));
+    /// let swap = OptionArcSwap::new(Some(Arc::new(5)));
     /// ```
     pub fn new(value: Option<Arc<T>>) -> Self {
         let Some(arc) = value else {

@@ -1,0 +1,20 @@
+[workspace]
+resolver="2"
+
+members = [
+  "ndisprot-kmdf",
+  "wdf-kmdf-sys",
+  "windows-kernel-sys",
+  "windows-kernel-rs",
+  "wdf-kmdf",
+]
+
+[workspace.dependencies]
+vtable = { path = "../libs/vtable" }
+pinned-init = { version = "0.0.6", default-features = false, features = ["alloc"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

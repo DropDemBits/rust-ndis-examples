@@ -1,4 +1,5 @@
 target/
-dist/
-DriverCertificate.cer
+driver/target/
+driver/dist/
+driver/DriverCertificate.cer
 kdnet-key.txt

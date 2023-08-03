@@ -1,0 +1,8 @@
+[[language]]
+name = "rust"
+
+[language.config]
+linkedProjects = [
+  "Cargo.toml",
+  "driver/Cargo.toml"
+]
