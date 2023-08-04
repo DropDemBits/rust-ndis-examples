@@ -143,6 +143,9 @@ fn generate() {
         .blocklist_type("_?P?KPCR.*")
         .blocklist_type("_?P?KIDTENTRY64")
         .blocklist_type("_?P?KGDTENTRY64")
+        // override as u32, and we'll always use `winresult`'s constants
+        .blocklist_type("P?C?NTSTATUS")
+        .blocklist_type("P?NDIS_STATUS")
         .generate()
         .unwrap()
         .write_to_file(out_path.join("bindings.rs"))

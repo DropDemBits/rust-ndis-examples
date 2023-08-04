@@ -1618,8 +1618,8 @@ pub mod driver {
     use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
     use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
     use windows_kernel_sys::{
-        sys::Win32::Foundation::{NTSTATUS, STATUS_INVALID_PARAMETER},
-        Error,
+        result::STATUS,
+        Error, NTSTATUS,
     };
 
     use crate::{
@@ -1725,7 +1725,7 @@ pub mod driver {
         {
             if matches!(config.pnp_mode, PnpMode::NonPnp) && T::HAS_DEVICE_ADD {
                 // Non-pnp drivers shouldn't specify the `device_add` callback
-                return Err(Error(STATUS_INVALID_PARAMETER));
+                return Err(Error(STATUS::INVALID_PARAMETER));
             }
 
             // NOTE: Since we can't `WdfObjectDelete` a driver, the framework handles
@@ -1793,12 +1793,12 @@ pub mod driver {
             // SAFETY: Initialized by this point
             let context_space = unsafe { object::get_context(&handle) };
             let Some(context_space) = context_space else {
-                return windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS;
+                return STATUS::SUCCESS.to_u32();
             };
 
             match T::device_add(context_space, device_init) {
-                Ok(()) => windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS,
-                Err(err) => err.0,
+                Ok(()) => STATUS::SUCCESS.to_u32(),
+                Err(err) => err.0.to_u32(),
             }
         }
 

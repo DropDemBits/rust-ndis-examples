@@ -19,8 +19,8 @@ use windows_kernel_rs::{
     DriverObject,
 };
 use windows_kernel_sys::{
-    sys::Win32::Foundation::STATUS_SUCCESS, Error, KeInitializeEvent, NdisGeneratePartialCancelId,
-    KEVENT, LIST_ENTRY, NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
+    result::STATUS, Error, KeInitializeEvent, NdisGeneratePartialCancelId, KEVENT, LIST_ENTRY,
+    NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
     NDIS_REQUEST_TYPE, NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER,
     PDRIVER_OBJECT, PUNICODE_STRING, ULONG,
@@ -51,9 +51,10 @@ unsafe extern "system" fn DriverEntry(
     };
 
     match driver_entry(driver_object, registry_path) {
-        Ok(()) => windows_kernel_sys::sys::Win32::Foundation::STATUS_SUCCESS,
+        Ok(()) => STATUS::SUCCESS,
         Err(err) => err.0,
     }
+    .to_u32()
 }
 
 fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) -> Result<(), Error> {
@@ -78,15 +79,13 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                     )
                 };
                 if p_init.is_null() {
-                    return Err(Error(
-                        windows_kernel_sys::sys::Win32::Foundation::STATUS_INSUFFICIENT_RESOURCES,
-                    ));
+                    return Err(Error(STATUS::INSUFFICIENT_RESOURCES));
                 }
 
                 // call `create_control_device` to create the WDFDEVICE representing our software device
                 // framework manages the lifetime of the control device
                 let control_device = create_control_device(driver, p_init).inspect_err(|err| {
-                    error!("create_control_device failed with status {:#x}", err.0)
+                    error!("create_control_device failed with status {:#x?}", err.0)
                 })?;
 
                 const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 =
@@ -154,7 +153,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
             }
         },
     )
-    .inspect_err(|err| error!("WdfDriverCreate failed with status {:#x}", err.0))?;
+    .inspect_err(|err| error!("WdfDriverCreate failed with status {:#x?}", err.0))?;
 
     Ok(())
 }
@@ -498,7 +497,7 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
 
     file_object.get_context_mut().open_context = OnceArc::new(None);
 
-    wdf_kmdf::raw::WdfRequestComplete(Request, STATUS_SUCCESS);
+    wdf_kmdf::raw::WdfRequestComplete(Request, STATUS::SUCCESS.to_u32());
 }
 
 /// Called when all of the handles representing the FileObject are closed, as well as all of the references being removed.
@@ -607,26 +606,18 @@ unsafe extern "C" fn ndisprot_evt_io_write(
 ) {
 }
 
-// unfortunately we need to declare these two (__CxxFrameHandler3 & _fltused)
+// unfortunately we need to declare _fltused
 //
-// `_fltused` is particularly problematic, since it implies that we have
-// floating point operations somewhere, and on x86 kernel mode drivers
-// should wrap floating point operations with state saving.
+// `_fltused` is problematic since it implies that we have floating point
+// operations somewhere, and on x86 kernel mode drivers should wrap floating
+// point operations with state saving.
 // (see https://github.com/Trantect/win_driver_example/issues/4)
 //
 // Since we don't plan to support the x86 arch, this isn't *too* bad,
 // but still sorta bad.
-//
-// This maybe comes from llvm being unable to determine that panicking
-// never happens, but might require having to use a crate using linker
-// tricks to guarantee it
 #[used]
 #[no_mangle]
 pub static _fltused: i32 = 0;
-#[no_mangle]
-pub extern "system" fn __CxxFrameHandler3() -> i32 {
-    0
-}
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -638,15 +629,14 @@ mod ndisbind {
     //! NDIS protocol entry points as well as handling binding and unbinding from adapters
     use alloc::sync::Arc;
     use windows_kernel_sys::{
-        sys::Win32::Foundation::STATUS_SUCCESS, NdisDeregisterProtocolDriver, NDIS_HANDLE,
-        NDIS_OID, NDIS_REQUEST_TYPE, NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE,
-        OID_802_11_BSSID, OID_802_11_BSSID_LIST, OID_802_11_BSSID_LIST_SCAN,
-        OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE, OID_802_11_INFRASTRUCTURE_MODE,
-        OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS,
-        OID_802_11_REMOVE_WEP, OID_802_11_RSSI, OID_802_11_SSID, OID_802_11_STATISTICS,
-        OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS, OID_802_3_MULTICAST_LIST,
-        PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION,
-        PNET_PNP_EVENT_NOTIFICATION,
+        result::STATUS, NdisDeregisterProtocolDriver, NDIS_HANDLE, NDIS_OID, NDIS_REQUEST_TYPE,
+        NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID,
+        OID_802_11_BSSID_LIST, OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION,
+        OID_802_11_DISASSOCIATE, OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE,
+        OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI,
+        OID_802_11_SSID, OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
+        OID_802_3_MULTICAST_LIST, PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST,
+        PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
     };
 
     use crate::{NdisProt, OpenContext};
@@ -678,7 +668,7 @@ mod ndisbind {
         BindContext: NDIS_HANDLE,
         BindParameters: PNDIS_BIND_PARAMETERS,
     ) -> NTSTATUS {
-        STATUS_SUCCESS
+        STATUS::SUCCESS.to_u32()
     }
 
     pub(crate) unsafe extern "C" fn open_adapter_complete(
@@ -691,7 +681,7 @@ mod ndisbind {
         UnbindContext: NDIS_HANDLE,
         ProtocolBindingContext: NDIS_HANDLE,
     ) -> NTSTATUS {
-        STATUS_SUCCESS
+        STATUS::SUCCESS.to_u32()
     }
 
     pub(crate) unsafe extern "C" fn close_adapter_complete(ProtocolBindingContext: NDIS_HANDLE) {}
@@ -700,11 +690,11 @@ mod ndisbind {
         ProtocolBindingContext: NDIS_HANDLE,
         NetPnPEventNotification: PNET_PNP_EVENT_NOTIFICATION,
     ) -> NTSTATUS {
-        STATUS_SUCCESS
+        STATUS::SUCCESS.to_u32()
     }
 
     pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NTSTATUS {
-        STATUS_SUCCESS
+        STATUS::SUCCESS.to_u32()
     }
 
     pub(crate) unsafe extern "C" fn request_complete(

@@ -16,11 +16,13 @@
 mod bindings;
 
 pub use bindings::*;
-pub use windows_sys as sys;
+pub use winresult as result;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use winresult::NtStatus;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct Error(pub NTSTATUS);
+pub struct Error(pub NtStatus);
 
 impl Error {
     /// Converts an [`NTSTATUS`] into an `Error`.
@@ -30,7 +32,7 @@ impl Error {
         if status == 0 {
             Ok(())
         } else {
-            Err(Error(status))
+            Err(Error(NtStatus::from(status)))
         }
     }
 }
