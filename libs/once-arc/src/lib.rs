@@ -20,11 +20,18 @@ use alloc::sync::Arc;
 /// A one-time inizializable container
 ///
 /// Always hands out clones of the `Arc`.
-#[derive(Debug)]
 pub struct OnceArc<T> {
     /// Invariant: This either stores a valid `Arc`,
     /// or null representing no `Arc` being there
     inner: AtomicPtr<T>,
+}
+
+impl<T: core::fmt::Debug> core::fmt::Debug for OnceArc<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OnceArc")
+            .field("inner", &self.get())
+            .finish()
+    }
 }
 
 impl<T: Default> Default for OnceArc<T> {
