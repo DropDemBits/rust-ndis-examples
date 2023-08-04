@@ -3,7 +3,7 @@ resolver="2"
 
 members = [
   "libs/vtable",
-  "libs/simple-arc-swap",
+  "libs/once-arc",
 ]
 
 [workspace.dependencies]
