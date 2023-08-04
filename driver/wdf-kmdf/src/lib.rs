@@ -1106,8 +1106,13 @@ pub mod file_object {
 
     use crate::object::{self, IntoContextSpace};
 
-    #[derive(Debug)]
     pub struct FileObject<T>(WDFFILEOBJECT, PhantomData<T>);
+
+    impl<T> core::fmt::Debug for FileObject<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_tuple("FileObject").field(&self.0).finish()
+        }
+    }
 
     impl<T> FileObject<T> {
         /// Wraps the raw handle in a file object wrapper

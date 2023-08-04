@@ -2,14 +2,13 @@
 #![allow(non_snake_case, unused_variables, dead_code)] // Cut down on the warnings for now
 #![feature(allocator_api, const_option, result_option_inspect, offset_of)]
 
-use core::{
-    mem::MaybeUninit,
-    ptr::addr_of_mut,
-    sync::atomic::{AtomicU32, Ordering},
-};
+extern crate alloc;
 
-use pinned_init::{pin_data, PinInit};
-use wdf_kmdf::sync::{SpinLock, SpinMutex};
+use core::{mem::MaybeUninit, ptr::addr_of_mut};
+
+use once_arc::OnceArc;
+use pinned_init::{pin_data, pinned_drop, PinInit};
+use wdf_kmdf::sync::SpinMutex;
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
     WDF_IO_QUEUE_DISPATCH_TYPE,
@@ -292,10 +291,8 @@ struct NdisProt {
 
 wdf_kmdf::impl_context_space!(NdisProt);
 
-#[derive(Debug)]
 struct FileObjectContext {
-    // FIXME: `open_context` should be an `AtomicCell<Option<Arc>>` instead
-    open_context: *mut OpenContext,
+    open_context: OnceArc<OpenContext>,
 }
 
 wdf_kmdf::impl_context_space!(FileObjectContext);
@@ -305,16 +302,12 @@ struct ControlDevice;
 wdf_kmdf::impl_context_space!(ControlDevice);
 
 /// See <https://github.com/microsoft/Windows-driver-samples/blob/d9acf794c92ba2fb0525f6c794ef394709035ac3/network/ndis/ndisprot_kmdf/60/ndisprot.h#L54-L90>
-#[pin_data]
+#[pin_data(PinnedDrop)]
 struct OpenContext {
     /// Link to the global `open_list`
     #[pin]
     link: ListEntry,
-    /// State information
-    flags: OpenContextFlags,
-    ref_count: AtomicU32,
-    /// protects `flags`
-    lock: SpinLock,
+    inner: SpinMutex<OpenContextInner>,
 
     /// Set in `OPEN_DEVICE`
     file_object: WDFFILEOBJECT,
@@ -359,6 +352,19 @@ struct OpenContext {
     multicast_address: [MACAddr; MAX_MULTICAST_ADDRESS],
 
     status_indication_queue: WDFQUEUE,
+}
+
+#[pinned_drop]
+impl PinnedDrop for OpenContext {
+    fn drop(self: core::pin::Pin<&mut Self>) {
+        debug_assert!(self.binding_handle.is_null());
+        debug_assert!(self.file_object.is_null());
+    }
+}
+
+struct OpenContextInner {
+    /// State information
+    flags: OpenContextFlags,
 }
 
 enum OpenState {
@@ -488,9 +494,9 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
     let mut file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    debug!("Open: FileObject {:#x?}", FileObject);
+    debug!("Open: FileObject {:#x?}", file_object);
 
-    file_object.get_context_mut().open_context = core::ptr::null_mut();
+    file_object.get_context_mut().open_context = OnceArc::new(None);
 
     wdf_kmdf::raw::WdfRequestComplete(Request, STATUS_SUCCESS);
 }
@@ -504,16 +510,9 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
     let mut file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    debug!("Close: FileObject {:#x?}", FileObject);
+    debug!("Close: FileObject {:#x?}", file_object);
 
-    let open_context = core::mem::replace(
-        &mut file_object.get_context_mut().open_context,
-        core::ptr::null_mut(),
-    );
-
-    if !open_context.is_null() {
-        deref_open_context(open_context);
-    }
+    file_object.get_context_mut().open_context.take();
 }
 
 /// Called when the handle representing the `FileObject` is closed.
@@ -525,23 +524,20 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
     let mut file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    let open_context = file_object.get_context_mut().open_context;
+    let open_context = file_object.get_context_mut().open_context.take();
 
     debug!(
         "Cleanup: FileObject {:#x?}, Open: {:#x?}",
-        file_object, open_context
+        file_object,
+        open_context.is_some()
     );
 
-    if !open_context.is_null() {
-        // SAFETY: We checked that it isn't null, and get_context_mut guarantees that it's
-        // both valid and initialized.
-        let open_context = unsafe { &mut *open_context };
-
+    if let Some(open_context) = open_context {
         // Mark this endpoint
         {
-            let _guard = open_context.lock.acquire();
+            let mut inner = open_context.inner.lock();
             // Note: This is equivalent to setting the open flags to idle
-            open_context.flags.remove(OpenContextFlags::OPEN_FLAGS);
+            inner.flags.remove(OpenContextFlags::OPEN_FLAGS);
         }
 
         // Set packet filter to 0, telling NDIS we aren't interested in any more receives.
@@ -549,7 +545,7 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         let packet_filter = [0u8; 4];
         let mut bytes_processed = 0u32;
         let status = ndisbind::validate_open_and_do_request(
-            open_context,
+            &open_context,
             NDIS_REQUEST_TYPE::NdisRequestSetInformation,
             OID_GEN_CURRENT_PACKET_FILTER,
             packet_filter.as_ptr(),
@@ -559,8 +555,8 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         );
         if let Err(err) = Error::to_err(status) {
             debug!(
-                "Cleanup: Open: {:#x?}, set packet filter ({:#x?}) failed {:#x?}",
-                open_context as *mut _, packet_filter, err
+                "Cleanup: set packet filter ({:#x?}) failed {:#x?}",
+                packet_filter, err
             );
 
             // Ignore the result
@@ -569,10 +565,10 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         }
 
         {
-            let guard = open_context.lock.acquire();
+            let inner = open_context.inner.lock();
 
-            if open_context.flags.contains(OpenContextFlags::BIND_ACTIVE) {
-                drop(guard);
+            if inner.flags.contains(OpenContextFlags::BIND_ACTIVE) {
+                drop(inner);
 
                 // Cancel any pending reads
                 wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.read_queue);
@@ -582,10 +578,10 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         }
 
         // Cleanup the receive packet queue
-        ndisbind::flush_receive_queue(open_context);
+        ndisbind::flush_receive_queue(&open_context);
     }
 
-    debug!("Cleanup: OpenContext: {:#x?}", open_context);
+    debug!("Cleanup");
 }
 
 unsafe extern "C" fn ndisprot_evt_io_device_control(
@@ -609,38 +605,6 @@ unsafe extern "C" fn ndisprot_evt_io_write(
     Request: WDFREQUEST, // in
     Length: usize,       // in
 ) {
-}
-
-/// Reference the given open context
-///
-/// Note: Is backed by an [`AtomicU32`], so no need to acquire `lock` first
-fn ref_open_context(open_context: *mut OpenContext) {
-    unsafe {
-        (*open_context).ref_count.fetch_add(1, Ordering::Acquire);
-    }
-}
-
-/// Dereference the given open context, freeing it if the ref count goes to 0
-///
-/// Note: must not be holding `lock`
-fn deref_open_context(open_context: *mut OpenContext) {
-    if unsafe { (*open_context).ref_count.fetch_sub(1, Ordering::Release) } == 0 {
-        {
-            let open_context = unsafe { &mut *open_context };
-            debug!(
-                "DerefOpen: Open {:#x?}, flags {:#x?}, ref count of 0",
-                open_context as *mut _, open_context.flags
-            );
-
-            debug_assert!(open_context.binding_handle.is_null());
-            debug_assert!(open_context.file_object.is_null());
-            debug_assert_eq!(open_context.ref_count.load(Ordering::Acquire), 0);
-        }
-
-        unsafe { core::ptr::drop_in_place(open_context) };
-
-        // FIXME: How did we allocate this?
-    }
 }
 
 // unfortunately we need to declare these two (__CxxFrameHandler3 & _fltused)
@@ -672,6 +636,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 mod ndisbind {
     //! NDIS protocol entry points as well as handling binding and unbinding from adapters
+    use alloc::sync::Arc;
     use windows_kernel_sys::{
         sys::Win32::Foundation::STATUS_SUCCESS, NdisDeregisterProtocolDriver, NDIS_HANDLE,
         NDIS_OID, NDIS_REQUEST_TYPE, NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE,
@@ -765,7 +730,7 @@ mod ndisbind {
     }
 
     pub(crate) fn validate_open_and_do_request(
-        open_context: &mut OpenContext,
+        open_context: &Arc<OpenContext>,
         request_type: NDIS_REQUEST_TYPE,
         oid: NDIS_OID,
         info_buffer: *const u8,
@@ -776,7 +741,7 @@ mod ndisbind {
         loop {}
     }
 
-    pub(crate) fn flush_receive_queue(open_context: &mut OpenContext) {
+    pub(crate) fn flush_receive_queue(open_context: &Arc<OpenContext>) {
         loop {}
     }
 }
