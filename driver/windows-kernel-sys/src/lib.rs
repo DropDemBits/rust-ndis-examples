@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(allocator_api)]
 #![allow(
     non_upper_case_globals,
     non_camel_case_types,
@@ -34,6 +35,12 @@ impl Error {
         } else {
             Err(Error(NtStatus::from(status)))
         }
+    }
+}
+
+impl From<core::alloc::AllocError> for Error {
+    fn from(_: core::alloc::AllocError) -> Self {
+        Self(result::STATUS::INSUFFICIENT_RESOURCES)
     }
 }
 

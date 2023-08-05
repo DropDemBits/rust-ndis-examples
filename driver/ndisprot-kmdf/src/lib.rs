@@ -4,23 +4,25 @@
 
 extern crate alloc;
 
-use core::{mem::MaybeUninit, ptr::addr_of_mut};
+use core::{mem::MaybeUninit, pin::Pin, ptr::addr_of_mut};
 
+use alloc::sync::Arc;
 use once_arc::OnceArc;
-use pinned_init::{pin_data, pinned_drop, PinInit};
+use pinned_init::{pin_data, pinned_drop, InPlaceInit, PinInit};
 use wdf_kmdf::sync::SpinMutex;
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
     WDF_IO_QUEUE_DISPATCH_TYPE,
 };
 use windows_kernel_rs::{
+    ioctl::{DeviceType, IoControlCode, RequiredAccess, TransferMethod},
     log::{self, debug, error, info, warn},
     string::{nt_unicode_str, unicode_string::NtUnicodeStr},
     DriverObject,
 };
 use windows_kernel_sys::{
-    result::STATUS, Error, KeInitializeEvent, NdisGeneratePartialCancelId, KEVENT, LIST_ENTRY,
-    NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
+    result::STATUS, Error, KeInitializeEvent, KeWaitForSingleObject, NdisGeneratePartialCancelId,
+    KEVENT, LIST_ENTRY, NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
     NDIS_REQUEST_TYPE, NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER,
     PDRIVER_OBJECT, PUNICODE_STRING, ULONG,
@@ -142,14 +144,20 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
 
                 info!("DriverEntry: Ndis Cancel Id: {:#x?}", partial_cancel_id);
 
-                Ok(pinned_init::try_pin_init!(NdisProt {
+                let globals = pinned_init::try_pin_init!(Globals {
                     control_device,
                     ndis_protocol_handle: handle,
                     eth_type: NPROT_ETH_TYPE,
                     partial_cancel_id,
                     open_list <- SpinMutex::new(ListEntry::new()),
                     binds_complete <- KeEvent::new(EventType::Notification, false),
-                }? Error))
+                }? Error);
+
+                Ok(pinned_init::try_pin_init! {
+                    NdisProt {
+                        globals: Arc::try_pin_init(globals)?
+                    }? Error
+                })
             }
         },
     )
@@ -242,8 +250,8 @@ fn create_control_device(
         WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchParallel,
     );
 
-    io_queue_config.EvtIoWrite = Some(ndisprot_evt_io_write);
-    io_queue_config.EvtIoRead = Some(ndisprot_evt_io_read);
+    io_queue_config.EvtIoWrite = Some(send::ndisprot_evt_io_write);
+    io_queue_config.EvtIoRead = Some(recv::ndisprot_evt_io_read);
     io_queue_config.EvtIoDeviceControl = Some(ndisprot_evt_io_device_control);
 
     let mut queue = core::ptr::null_mut();
@@ -274,6 +282,13 @@ const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
 
 #[pin_data]
 struct NdisProt {
+    globals: Pin<Arc<Globals>>,
+}
+
+wdf_kmdf::impl_context_space!(NdisProt);
+
+#[pin_data(PinnedDrop)]
+struct Globals {
     control_device: WDFDEVICE,
     ndis_protocol_handle: NDIS_HANDLE,
     /// frame type of interest
@@ -288,13 +303,33 @@ struct NdisProt {
     binds_complete: KeEvent,
 }
 
-wdf_kmdf::impl_context_space!(NdisProt);
+#[pinned_drop]
+impl PinnedDrop for Globals {
+    fn drop(mut self: Pin<&mut Self>) {
+        debug!("Globals Drop Enter");
+        // UnregisterExCallback
+
+        ndisbind::unload_protocol(self.as_mut());
+
+        // the framework handles deleting of the control object
+        self.control_device = core::ptr::null_mut();
+        debug!("Globals Drop Exit");
+    }
+}
 
 struct FileObjectContext {
     open_context: OnceArc<OpenContext>,
 }
 
 wdf_kmdf::impl_context_space!(FileObjectContext);
+
+impl FileObjectContext {
+    fn open_context(&self) -> Option<Pin<Arc<OpenContext>>> {
+        self.open_context
+            .get()
+            .map(|arc| unsafe { Pin::new_unchecked(arc) })
+    }
+}
 
 struct ControlDevice;
 
@@ -303,6 +338,8 @@ wdf_kmdf::impl_context_space!(ControlDevice);
 /// See <https://github.com/microsoft/Windows-driver-samples/blob/d9acf794c92ba2fb0525f6c794ef394709035ac3/network/ndis/ndisprot_kmdf/60/ndisprot.h#L54-L90>
 #[pin_data(PinnedDrop)]
 struct OpenContext {
+    globals: Pin<Arc<Globals>>,
+
     /// Link to the global `open_list`
     #[pin]
     link: ListEntry,
@@ -355,7 +392,7 @@ struct OpenContext {
 
 #[pinned_drop]
 impl PinnedDrop for OpenContext {
-    fn drop(self: core::pin::Pin<&mut Self>) {
+    fn drop(self: Pin<&mut Self>) {
         debug_assert!(self.binding_handle.is_null());
         debug_assert!(self.file_object.is_null());
     }
@@ -422,14 +459,9 @@ struct MACAddr([u8; 6]);
 
 #[vtable::vtable]
 impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
+    // This will also drop the (hopefully last remaining) reference to the globals
     fn unload(&mut self) {
         debug!("Unload Enter");
-        // UnregisterExCallback
-
-        ndisbind::unload_protocol(self);
-
-        // the framework handles deleting of the control object
-        self.control_device = core::ptr::null_mut();
         debug!("Unload Exit");
     }
 }
@@ -453,13 +485,13 @@ impl ListEntry {
 }
 
 #[pin_data]
-struct KeEvent {
+pub struct KeEvent {
     #[pin]
     event: KEVENT,
 }
 
 impl KeEvent {
-    fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self, Error> {
+    pub fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self, Error> {
         unsafe {
             pinned_init::pin_init_from_closure(move |slot: *mut Self| {
                 KeInitializeEvent(
@@ -472,10 +504,98 @@ impl KeEvent {
             })
         }
     }
+
+    pub fn wait(&self, timeout: Timeout) -> Result<(), Error> {
+        let timeout = timeout
+            .0
+            .as_ref()
+            .map_or(core::ptr::null::<i64>(), |it| (it as *const i64).cast());
+        let timeout = timeout.cast_mut();
+
+        let event = &self.event as *const KEVENT;
+
+        // SAFETY:
+        // We must imagine the `KEVENT` as Thread-safe
+        // or: The limits of my sanity when interfacing with implicit documentation
+        //
+        // We're going off of the "General Objects" description from here:
+        // <https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/ntos/ntosdef_x/dispatcher_header/index.htm>
+        //
+        // Calling `KeWaitForSingleObject` on a `KEVENT` likely accesses the following fields:
+        // - `Signalling: UCHAR` likely to check if the `KEVENT` is in the signalling state
+        // - `SignalState: LONG` for what kind of signaling to do
+        // - `WaitListHead: LIST_ENTRY` to add the current thread to the waiting list
+        //
+        // The thing is that there's an assumption of it being possible for multiple threads
+        // to access a `KEVENT` object as in <https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/defining-and-using-an-event-object>
+        // there's a description of a worker thread which is separate from the main thread.
+        //
+        // Multiple threads may also add themselves to `WaitListHead`, which
+        // can be done atomically using a CAS on a U128 or memory fence magic
+        //
+        // There's also the situation of this has been used in multithreaded
+        // contexts without crashing or blowing up.
+        //
+        // By all accounts, this must operate on a *const
+        Error::to_err(unsafe {
+            KeWaitForSingleObject(
+                event.cast::<core::ffi::c_void>().cast_mut(),
+                windows_kernel_sys::KWAIT_REASON::Executive,
+                windows_kernel_sys::MODE::KernelMode.0 as i8,
+                false as u8,
+                // LARGE_INTEGER basically has the same layout as an i64
+                timeout.cast(),
+            )
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Timeout(Option<i64>);
+
+impl Timeout {
+    /// Wait until reaching an absolute timestamp, relative to January 1st, 1601, in 100-nanosecond increments
+    ///
+    /// Also accounts for changes in the system time.
+    pub fn absolute(timestamp: i64) -> Self {
+        assert!(timestamp > 0);
+        Self(Some(timestamp))
+    }
+
+    /// Waits for an interval (in units of 100-nanoseconds) to pass
+    pub fn relative(duration: i64) -> Self {
+        assert!(duration > 0);
+        Self(Some(duration.wrapping_neg()))
+    }
+
+    /// Like [`Self::relative`], but in units of milliseconds
+    pub fn relative_ms(duration: i64) -> Self {
+        // 100 ns is basically 0.1 us
+        // 1 ms = 1_000 us = 1_000_0 100-ns
+        Self::relative(
+            duration
+                .checked_mul(1_000_0)
+                .expect("overflow in ms to 100-ns conversion"),
+        )
+    }
+
+    /// Don't wait and return immediately
+    pub fn dont_wait() -> Self {
+        Self(Some(0))
+    }
+
+    /// Wait indefinitely until the object is set to the signaled state.
+    ///
+    /// ## Note
+    ///
+    /// Caller must be at IRQL <= APC_LEVEL
+    pub fn forever() -> Self {
+        Self(None)
+    }
 }
 
 #[repr(i32)]
-enum EventType {
+pub enum EventType {
     Notification = windows_kernel_sys::_EVENT_TYPE::NotificationEvent.0,
     Synchronization = windows_kernel_sys::_EVENT_TYPE::SynchronizationEvent.0,
 }
@@ -519,7 +639,6 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
 /// ## Note
 /// This is called in the context of the thread which originally closed the handle
 unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
-    //
     let mut file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
@@ -583,6 +702,44 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
     debug!("Cleanup");
 }
 
+const FSCTL_NDISPROT_BASE: DeviceType = DeviceType::Network;
+const IOCTL_NDISPROT_OPEN_DEVICE: IoControlCode = IoControlCode::new(
+    FSCTL_NDISPROT_BASE,
+    0x200,
+    TransferMethod::Buffered,
+    RequiredAccess::ReadWrite,
+);
+const IOCTL_NDISPROT_QUERY_OID_VALUE: IoControlCode = IoControlCode::new(
+    FSCTL_NDISPROT_BASE,
+    0x201,
+    TransferMethod::Buffered,
+    RequiredAccess::ReadWrite,
+);
+const IOCTL_NDISPROT_SET_OID_VALUE: IoControlCode = IoControlCode::new(
+    FSCTL_NDISPROT_BASE,
+    0x205,
+    TransferMethod::Buffered,
+    RequiredAccess::ReadWrite,
+);
+const IOCTL_NDISPROT_QUERY_BINDING: IoControlCode = IoControlCode::new(
+    FSCTL_NDISPROT_BASE,
+    0x203,
+    TransferMethod::Buffered,
+    RequiredAccess::ReadWrite,
+);
+const IOCTL_NDISPROT_BIND_WAIT: IoControlCode = IoControlCode::new(
+    FSCTL_NDISPROT_BASE,
+    0x204,
+    TransferMethod::Buffered,
+    RequiredAccess::ReadWrite,
+);
+const IOCTL_NDISPROT_INDICATE_STATUS: IoControlCode = IoControlCode::new(
+    FSCTL_NDISPROT_BASE,
+    0x206,
+    TransferMethod::Buffered,
+    RequiredAccess::ReadWrite,
+);
+
 unsafe extern "C" fn ndisprot_evt_io_device_control(
     Queue: WDFQUEUE,           // in
     Request: WDFREQUEST,       // in
@@ -590,20 +747,63 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
     InputBufferLength: usize,  // in
     IoControlCode: ULONG,      // in
 ) {
+    let file_object = unsafe { wdf_kmdf::raw::WdfRequestGetFileObject(Request) };
+
+    let file_object =
+        unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(file_object) };
+
+    let open_context = file_object.get_context().open_context();
+
+    let mut bytes_returned = 0;
+
+    let control_code = IoControlCode::from(IoControlCode);
+
+    let mut nt_status = STATUS::UNSUCCESSFUL;
+
+    // Seen:
+    // - WdfRequestRetrieveOutputBuffer
+    // - WdfRequestRetrieveInputBuffer
+    // - WdfRequestForwardToIoQueue
+    // - WdfRequestCompleteWithInformation
+
+    match control_code {
+        IOCTL_NDISPROT_BIND_WAIT => {
+            // Block until we've seen a `NetEventBindsComplete` event,
+            // meaning that we've finished binding to all running adapters
+            // that we're supposed to bind to
+            //
+            // Wait a max of 5 seconds to see if this is the case
+
+            if let Some(open_context) = open_context {
+                nt_status = match open_context
+                    .globals
+                    .binds_complete
+                    .wait(Timeout::relative_ms(5_000))
+                {
+                    Ok(()) => STATUS::SUCCESS,
+                    Err(_) => STATUS::TIMEOUT,
+                };
+            } else {
+                // no open context to go off of, and would've timed out anyway
+                nt_status = STATUS::TIMEOUT;
+            }
+        }
+        IOCTL_NDISPROT_QUERY_BINDING => {}
+        IOCTL_NDISPROT_OPEN_DEVICE => {
+            // calls open_device
+        }
+        IOCTL_NDISPROT_QUERY_OID_VALUE => {}
+        IOCTL_NDISPROT_SET_OID_VALUE => {}
+        IOCTL_NDISPROT_INDICATE_STATUS => {}
+        _ => nt_status = STATUS::NOT_SUPPORTED,
+    }
 }
 
-unsafe extern "C" fn ndisprot_evt_io_read(
-    Queue: WDFQUEUE,     // in
-    Request: WDFREQUEST, // in
-    Length: usize,       // in
-) {
-}
-
-unsafe extern "C" fn ndisprot_evt_io_write(
-    Queue: WDFQUEUE,     // in
-    Request: WDFREQUEST, // in
-    Length: usize,       // in
-) {
+fn open_device(
+    device_name: &[u8],
+    FileObject: WDFFILEOBJECT,
+) -> Result<Pin<Arc<OpenContext>>, Error> {
+    loop {}
 }
 
 // unfortunately we need to declare _fltused
@@ -627,6 +827,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 mod ndisbind {
     //! NDIS protocol entry points as well as handling binding and unbinding from adapters
+    use core::pin::Pin;
+
     use alloc::sync::Arc;
     use windows_kernel_sys::{
         result::STATUS, NdisDeregisterProtocolDriver, NDIS_HANDLE, NDIS_OID, NDIS_REQUEST_TYPE,
@@ -639,7 +841,7 @@ mod ndisbind {
         PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
     };
 
-    use crate::{NdisProt, OpenContext};
+    use crate::{Globals, OpenContext};
 
     const SUPPORTED_SET_OIDS: &[NDIS_OID] = &[
         OID_802_11_INFRASTRUCTURE_MODE,
@@ -710,7 +912,7 @@ mod ndisbind {
     ) {
     }
 
-    pub(crate) fn unload_protocol(context: &mut NdisProt) {
+    pub(crate) fn unload_protocol(mut context: Pin<&mut Globals>) {
         let proto_handle =
             core::mem::replace(&mut context.ndis_protocol_handle, core::ptr::null_mut());
 
@@ -737,7 +939,15 @@ mod ndisbind {
 }
 
 mod send {
+    use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
     use windows_kernel_sys::{NDIS_HANDLE, PNET_BUFFER_LIST, ULONG};
+
+    pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
+        Queue: WDFQUEUE,     // in
+        Request: WDFREQUEST, // in
+        Length: usize,       // in
+    ) {
+    }
 
     pub(crate) unsafe extern "C" fn send_complete(
         ProtocolBindingContext: NDIS_HANDLE,
@@ -748,7 +958,15 @@ mod send {
 }
 
 mod recv {
+    use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
     use windows_kernel_sys::{NDIS_HANDLE, NDIS_PORT_NUMBER, PNET_BUFFER_LIST, ULONG};
+
+    pub(crate) unsafe extern "C" fn ndisprot_evt_io_read(
+        Queue: WDFQUEUE,     // in
+        Request: WDFREQUEST, // in
+        Length: usize,       // in
+    ) {
+    }
 
     pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
         ProtocolBindingContext: NDIS_HANDLE,

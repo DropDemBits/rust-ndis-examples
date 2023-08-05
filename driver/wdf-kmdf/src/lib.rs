@@ -14,7 +14,7 @@ pub mod raw {
         PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
         PWDF_FILEOBJECT_CONFIG, PWDF_IO_QUEUE_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
         WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFSPINLOCK, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE,
-        WDF_NO_OBJECT_ATTRIBUTES,
+        WDF_NO_OBJECT_ATTRIBUTES, WDFFILEOBJECT,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
@@ -488,7 +488,6 @@ pub mod raw {
     /// [PdoDeviceInitAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-PdoDeviceInitAPI
     ///
     // TODO: As proper intra-doc links
-    /// [`WdfRequestGetFileObject`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestgetfileobject
     /// [`WdfPdoInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfpdo/nf-wdfpdo-wdfpdoinitallocate
     pub unsafe fn WdfDeviceInitSetFileObjectConfig(
         DeviceInit: PWDFDEVICE_INIT,                          // in
@@ -994,6 +993,44 @@ pub mod raw {
         dispatch!(WdfRequestComplete(Request, Status))
     }
 
+    /// Gets the framework file object associated with the given IO request
+    ///
+    /// Returns a handle to the framework file object, or null if:
+    ///
+    /// - [`WdfDeviceInitSetFileObjectConfig`] has not been called with a
+    ///   [`WDF_FILEOBJECT_CLASS`] that creates file objects (e.g. [`WdfFileObjectCanBeOptional`])
+    /// - Another driver sent a read, write, or IO control request without previously sending a [`WdfRequestTypeCreate`] request
+    ///
+    /// For the most part, null checking only needs to be done if the first situation is true.
+    ///
+    /// For more information about framework file objects, see [Framework File Objects]
+    ///
+    /// [`WdfFileObjectCanBeOptional`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/ne-wdfdevice-_wdf_fileobject_class)
+    /// [`WdfRequestTypeCreate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/ne-wdfrequest-_wdf_request_type
+    /// [`WDF_FILEOBJECT_CLASS`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/ne-wdfdevice-_wdf_fileobject_class
+    /// [Framework File Objects]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-file-objects
+    ///
+    /// 
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    /// - ([FileObjectConfigured]) [`WdfDeviceInitSetFileObjectConfig`] must be called before [`WdfRequestGetFileObject`]
+    /// - ([InvalidReqAccess], [InvalidReqAccessLocal]) Requests must not be accessed after having been completed or cancelled
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [FileObjectConfigured]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-FileObjectConfigured
+    /// [InvalidReqAccess]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InvalidReqAccess
+    /// [InvalidReqAccess]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InvalidReqAccessLocal
+    pub unsafe fn WdfRequestGetFileObject(Request: WDFREQUEST) -> WDFFILEOBJECT {
+        dispatch!(WdfRequestGetFileObject(Request))
+    }
+
     // endregion: wdfrequest
 
     // region: wdfsync
@@ -1100,7 +1137,7 @@ pub mod raw {
 }
 
 pub mod file_object {
-    use core::marker::PhantomData;
+    use core::{marker::PhantomData, pin::Pin};
 
     use wdf_kmdf_sys::WDFFILEOBJECT;
 

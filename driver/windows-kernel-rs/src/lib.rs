@@ -126,6 +126,301 @@ pub mod log {
 
 pub use nt_string as string;
 
+pub mod ioctl {
+    use windows_kernel_sys::{
+        FILE_ANY_ACCESS, FILE_READ_ACCESS, FILE_WRITE_ACCESS, METHOD_BUFFERED, METHOD_IN_DIRECT,
+        METHOD_NEITHER, METHOD_OUT_DIRECT,
+    };
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct IoControlCode {
+        device_type: DeviceType,
+        required_access: RequiredAccess,
+        function_code: u16,
+        transfer_method: TransferMethod,
+    }
+
+    impl IoControlCode {
+        // borrowed from https://codentium.com/guides/windows-dev/windows-drivers-in-rust-io-controls/
+        const METHOD_BITS: usize = 2;
+        const NUM_BITS: usize = 12;
+        const ACCESS_BITS: usize = 2;
+        const TYPE_BITS: usize = 16;
+
+        const METHOD_SHIFT: usize = 0;
+        const NUM_SHIFT: usize = Self::METHOD_SHIFT + Self::METHOD_BITS;
+        const ACCESS_SHIFT: usize = Self::NUM_SHIFT + Self::NUM_BITS;
+        const TYPE_SHIFT: usize = Self::ACCESS_SHIFT + Self::ACCESS_BITS;
+
+        const METHOD_MASK: u32 = (1 << Self::METHOD_BITS) - 1;
+        const NUM_MASK: u32 = (1 << Self::NUM_BITS) - 1;
+        const ACCESS_MASK: u32 = (1 << Self::ACCESS_BITS) - 1;
+        const TYPE_MASK: u32 = (1 << Self::TYPE_BITS) - 1;
+
+        pub const fn new(
+            device_type: DeviceType,
+            function_code: u16,
+            transfer_method: TransferMethod,
+            required_access: RequiredAccess,
+        ) -> Self {
+            assert!(function_code < 0xFFF);
+
+            Self {
+                device_type,
+                required_access,
+                function_code,
+                transfer_method,
+            }
+        }
+    }
+
+    impl From<u32> for IoControlCode {
+        fn from(value: u32) -> Self {
+            let method = (value >> Self::METHOD_SHIFT) & Self::METHOD_MASK;
+            let function_code = ((value >> Self::NUM_SHIFT) & Self::NUM_MASK) as u16;
+            let access = (value >> Self::ACCESS_SHIFT) & Self::ACCESS_MASK;
+            let ty = ((value >> Self::TYPE_SHIFT) & Self::TYPE_MASK) as u16;
+
+            Self {
+                device_type: ty.into(),
+                required_access: RequiredAccess::from_bits(access as u8)
+                    .unwrap_or(RequiredAccess::Read),
+                function_code,
+                transfer_method: method.try_into().unwrap_or(TransferMethod::Buffered),
+            }
+        }
+    }
+
+    bitflags::bitflags! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct RequiredAccess: u8 {
+           const Any = FILE_ANY_ACCESS as u8;
+           const Read = FILE_READ_ACCESS as u8;
+           const Write = FILE_WRITE_ACCESS as u8;
+           const ReadWrite = FILE_READ_ACCESS as u8 | FILE_WRITE_ACCESS as u8;
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum TransferMethod {
+        Buffered = METHOD_BUFFERED as u8,
+        InDirect = METHOD_IN_DIRECT as u8,
+        OutDirect = METHOD_OUT_DIRECT as u8,
+        Neither = METHOD_NEITHER as u8,
+    }
+
+    impl TryFrom<u32> for TransferMethod {
+        type Error = ();
+
+        fn try_from(value: u32) -> Result<Self, Self::Error> {
+            match value {
+                METHOD_BUFFERED => Ok(Self::Buffered),
+                METHOD_IN_DIRECT => Ok(Self::InDirect),
+                METHOD_OUT_DIRECT => Ok(Self::OutDirect),
+                METHOD_NEITHER => Ok(Self::Neither),
+                _ => Err(()),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DeviceType {
+        I8042Port,
+        Acpi,
+        Battery,
+        Beep,
+        BusExtender,
+        CdRom,
+        CdRomFileSystem,
+        Changer,
+        Controller,
+        Datalink,
+        Dfs,
+        DfsFileSystem,
+        DfsVolume,
+        Disk,
+        DiskFileSystem,
+        Dvd,
+        FileSystem,
+        Fips,
+        FullscreenVideo,
+        InportPort,
+        Keyboard,
+        Ks,
+        Ksec,
+        Mailslot,
+        MassStorage,
+        MidiIn,
+        MidiOut,
+        Modem,
+        Mouse,
+        MultiUncProvider,
+        NamedPipe,
+        Network,
+        NetworkBrowser,
+        NetworkFileSystem,
+        NetworkRedirector,
+        Null,
+        ParallelPort,
+        PhysicalNetcard,
+        Printer,
+        Scanner,
+        Screen,
+        Serenum,
+        SerialMousePort,
+        SerialPort,
+        Smartcard,
+        Smb,
+        Sound,
+        Streams,
+        Tape,
+        TapeFileSystem,
+        Termsrv,
+        Transport,
+        Unknown,
+        Vdm,
+        Video,
+        VirtualDisk,
+        WaveIn,
+        WaveOut,
+        Custom(u16),
+    }
+
+    impl From<u16> for DeviceType {
+        fn from(value: u16) -> Self {
+            match value {
+                0x0027 => Self::I8042Port,
+                0x0032 => Self::Acpi,
+                0x0029 => Self::Battery,
+                0x0001 => Self::Beep,
+                0x002a => Self::BusExtender,
+                0x0002 => Self::CdRom,
+                0x0003 => Self::CdRomFileSystem,
+                0x0030 => Self::Changer,
+                0x0004 => Self::Controller,
+                0x0005 => Self::Datalink,
+                0x0006 => Self::Dfs,
+                0x0035 => Self::DfsFileSystem,
+                0x0036 => Self::DfsVolume,
+                0x0007 => Self::Disk,
+                0x0008 => Self::DiskFileSystem,
+                0x0033 => Self::Dvd,
+                0x0009 => Self::FileSystem,
+                0x003a => Self::Fips,
+                0x0034 => Self::FullscreenVideo,
+                0x000a => Self::InportPort,
+                0x000b => Self::Keyboard,
+                0x002f => Self::Ks,
+                0x0039 => Self::Ksec,
+                0x000c => Self::Mailslot,
+                0x002d => Self::MassStorage,
+                0x000d => Self::MidiIn,
+                0x000e => Self::MidiOut,
+                0x002b => Self::Modem,
+                0x000f => Self::Mouse,
+                0x0010 => Self::MultiUncProvider,
+                0x0011 => Self::NamedPipe,
+                0x0012 => Self::Network,
+                0x0013 => Self::NetworkBrowser,
+                0x0014 => Self::NetworkFileSystem,
+                0x0028 => Self::NetworkRedirector,
+                0x0015 => Self::Null,
+                0x0016 => Self::ParallelPort,
+                0x0017 => Self::PhysicalNetcard,
+                0x0018 => Self::Printer,
+                0x0019 => Self::Scanner,
+                0x001c => Self::Screen,
+                0x0037 => Self::Serenum,
+                0x001a => Self::SerialMousePort,
+                0x001b => Self::SerialPort,
+                0x0031 => Self::Smartcard,
+                0x002e => Self::Smb,
+                0x001d => Self::Sound,
+                0x001e => Self::Streams,
+                0x001f => Self::Tape,
+                0x0020 => Self::TapeFileSystem,
+                0x0038 => Self::Termsrv,
+                0x0021 => Self::Transport,
+                0x0022 => Self::Unknown,
+                0x002c => Self::Vdm,
+                0x0023 => Self::Video,
+                0x0024 => Self::VirtualDisk,
+                0x0025 => Self::WaveIn,
+                0x0026 => Self::WaveOut,
+                other if other >= 0x8000 => Self::Custom(other),
+                _ => Self::Unknown,
+            }
+        }
+    }
+
+    impl DeviceType {
+        pub fn to_u16(self) -> u16 {
+            match self {
+                Self::I8042Port => 0x0027,
+                Self::Acpi => 0x0032,
+                Self::Battery => 0x0029,
+                Self::Beep => 0x0001,
+                Self::BusExtender => 0x002a,
+                Self::CdRom => 0x0002,
+                Self::CdRomFileSystem => 0x0003,
+                Self::Changer => 0x0030,
+                Self::Controller => 0x0004,
+                Self::Datalink => 0x0005,
+                Self::Dfs => 0x0006,
+                Self::DfsFileSystem => 0x0035,
+                Self::DfsVolume => 0x0036,
+                Self::Disk => 0x0007,
+                Self::DiskFileSystem => 0x0008,
+                Self::Dvd => 0x0033,
+                Self::FileSystem => 0x0009,
+                Self::Fips => 0x003a,
+                Self::FullscreenVideo => 0x0034,
+                Self::InportPort => 0x000a,
+                Self::Keyboard => 0x000b,
+                Self::Ks => 0x002f,
+                Self::Ksec => 0x0039,
+                Self::Mailslot => 0x000c,
+                Self::MassStorage => 0x002d,
+                Self::MidiIn => 0x000d,
+                Self::MidiOut => 0x000e,
+                Self::Modem => 0x002b,
+                Self::Mouse => 0x000f,
+                Self::MultiUncProvider => 0x0010,
+                Self::NamedPipe => 0x0011,
+                Self::Network => 0x0012,
+                Self::NetworkBrowser => 0x0013,
+                Self::NetworkFileSystem => 0x0014,
+                Self::NetworkRedirector => 0x0028,
+                Self::Null => 0x0015,
+                Self::ParallelPort => 0x0016,
+                Self::PhysicalNetcard => 0x0017,
+                Self::Printer => 0x0018,
+                Self::Scanner => 0x0019,
+                Self::Screen => 0x001c,
+                Self::Serenum => 0x0037,
+                Self::SerialMousePort => 0x001a,
+                Self::SerialPort => 0x001b,
+                Self::Smartcard => 0x0031,
+                Self::Smb => 0x002e,
+                Self::Sound => 0x001d,
+                Self::Streams => 0x001e,
+                Self::Tape => 0x001f,
+                Self::TapeFileSystem => 0x0020,
+                Self::Termsrv => 0x0038,
+                Self::Transport => 0x0021,
+                Self::Unknown => 0x0022,
+                Self::Vdm => 0x002c,
+                Self::Video => 0x0023,
+                Self::VirtualDisk => 0x0024,
+                Self::WaveIn => 0x0025,
+                Self::WaveOut => 0x0026,
+                Self::Custom(value) => value,
+            }
+        }
+    }
+}
+
 pub struct DriverObject(windows_kernel_sys::PDRIVER_OBJECT);
 
 impl DriverObject {
