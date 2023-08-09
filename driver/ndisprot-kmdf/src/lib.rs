@@ -760,12 +760,6 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
 
     let mut nt_status = STATUS::UNSUCCESSFUL;
 
-    // Seen:
-    // - WdfRequestRetrieveOutputBuffer
-    // - WdfRequestRetrieveInputBuffer
-    // - WdfRequestForwardToIoQueue
-    // - WdfRequestCompleteWithInformation
-
     match control_code {
         IOCTL_NDISPROT_BIND_WAIT => {
             // Block until we've seen a `NetEventBindsComplete` event,

@@ -13,8 +13,8 @@ pub mod raw {
     use wdf_kmdf_sys::{
         PCWDF_OBJECT_CONTEXT_TYPE_INFO, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
         PWDF_FILEOBJECT_CONFIG, PWDF_IO_QUEUE_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDRIVER,
-        WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFSPINLOCK, WDF_DEVICE_IO_TYPE, WDF_NO_HANDLE,
-        WDF_NO_OBJECT_ATTRIBUTES, WDFFILEOBJECT,
+        WDFFILEOBJECT, WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFSPINLOCK, WDF_DEVICE_IO_TYPE,
+        WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
     };
     use windows_kernel_sys::{NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PVOID};
 
@@ -767,9 +767,90 @@ pub mod raw {
         ))
     }
 
+    // FIXME: ndisprot_kmdf required:
+    // - WdfIoQueueReadyNotify
+    // - WdfIoQueueRetrieveNextRequest
+    // - WdfIoQueueStart
+
     // endregion: wdfio
 
     // region: wdfobject
+
+    /// Allocates additional context space for the object
+    ///
+    /// A context space can be created when creating an object for the first time,
+    /// but this can be used to allocate additional context spaces after an object is created.
+    /// Each `WdfObjectAllocateContext` must use a unique context type, as only one instance of
+    /// a context type is allowed per object.
+    ///
+    /// Each context space can have its own [`EvtCleanupCallback`] and [`EvtDestroyCallback`] associated with it,
+    /// but the other properties (`ExecutionLevel`, `SynchronizationScope`, and `ParentObject`) are set on initial
+    /// object creation and should not be specified.
+    ///
+    /// Upon allocating the context space, it is zero-initialized.
+    ///
+    /// For more information about object context space, see [Framework Object Context Space]
+    ///
+    /// [`EvtCleanupCallback`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nc-wdfobject-evt_wdf_object_context_cleanup
+    /// [`EvtDestroyCallback`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nc-wdfobject-evt_wdf_object_context_destroy
+    /// [Framework Object Context Space]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-life-cycle
+    ///
+    /// ## Return value
+    ///
+    /// The newly allocated context space is stored in the place given by `Context`.
+    ///
+    /// `STATUS_SUCCESS` is returned if the operation was successful, otherwise:
+    ///
+    /// - `STATUS_INVALID_PARAMETER` if an input parameter is invalid
+    /// - `STATUS_OBJECT_NAME_INVALID` if the `ContextTypeInfo` member of `ContextAttributes` is invalid
+    /// - `STATUS_INSUFFICIENT_RESOURCES` if the context space couldn't be allocated
+    /// - `STATUS_DELETE_PENDING` if `Handle` is being deleted (no context space is allocated in this case)
+    /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+    ///
+    /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+    /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - IRQL: <= `DISPATCH_LEVEL`
+    /// - `ContextPointer` must be a context for an object
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    ///
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    #[must_use]
+    pub unsafe fn WdfObjectAllocateContext(
+        Handle: WDFOBJECT,                         // in
+        ContextAttributes: PWDF_OBJECT_ATTRIBUTES, // in
+        Context: &mut PVOID,                       // out
+    ) -> NTSTATUS {
+        dispatch!(WdfObjectAllocateContext(Handle, ContextAttributes, Context))
+    }
+
+    /// Returns the original framework object handle that the given context space is associated with
+    ///
+    /// For more information about object context space, see [Framework Object Context Space]
+    ///
+    /// [Framework Object Context Space]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-life-cycle
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - IRQL: Any
+    /// - `ContextPointer` must be a context for an object
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    ///
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    #[must_use]
+    pub unsafe fn WdfObjectContextGetObject(ContextPointer: PVOID) -> WDFOBJECT {
+        dispatch!(WdfObjectContextGetObject(ContextPointer))
+    }
+
+    // FIXME: WdfObjectCreate
 
     /// Deletes the framework object and its descendants
     ///
@@ -846,6 +927,8 @@ pub mod raw {
         dispatch!(WdfObjectDelete(Object))
     }
 
+    // FIXME: WdfObjectDereferenceActual
+
     /// If `TypeInfo` has a context space associated with the object, returns a pointer to the context space.
     /// Otherwise, returns `NULL`
     ///
@@ -859,6 +942,8 @@ pub mod raw {
     ) -> PVOID {
         dispatch!(WdfObjectGetTypedContextWorker(Handle, TypeInfo))
     }
+
+    // FIXME: WdfObjectReferenceActual
 
     // endregion: wdfobject
 
@@ -993,6 +1078,14 @@ pub mod raw {
         dispatch!(WdfRequestComplete(Request, Status))
     }
 
+    // FIXME: ndisprot_kmdf required
+    // - WdfRequestCompleteWithInformation
+    // - WdfRequestForwardToIoQueue
+    // - WdfRequestGetRequestorMode
+    // - WdfRequestRetrieveInputBuffer
+    // - WdfRequestRetrieveOutputBuffer
+    // - WdfRequestRetrieveOutputWdmMdl
+
     /// Gets the framework file object associated with the given IO request
     ///
     /// Returns a handle to the framework file object, or null if:
@@ -1010,7 +1103,7 @@ pub mod raw {
     /// [`WDF_FILEOBJECT_CLASS`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/ne-wdfdevice-_wdf_fileobject_class
     /// [Framework File Objects]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-file-objects
     ///
-    /// 
+    ///
     /// ## Safety
     ///
     /// In addition to all passed-in pointers pointing to valid memory locations:
@@ -1503,7 +1596,7 @@ pub mod sync {
                         // SAFETY: by guarantees of `pin_init_from_closure`
                         unsafe { value.__pinned_init(slot.cast()) }
                     };
-                    
+
                     // SAFETY: `data` is pinned too, and initialization requirements are guaranteed
                     // by nature of delegating to `value`'s pinned init
                     unsafe { pinned_init::pin_init_from_closure(init)}
@@ -1654,10 +1747,7 @@ pub mod driver {
     use vtable::vtable;
     use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
     use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
-    use windows_kernel_sys::{
-        result::STATUS,
-        Error, NTSTATUS,
-    };
+    use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
     use crate::{
         object::{self, default_object_attributes, IntoContextSpace},
