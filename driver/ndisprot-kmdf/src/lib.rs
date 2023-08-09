@@ -4,7 +4,12 @@
 
 extern crate alloc;
 
-use core::{mem::MaybeUninit, pin::Pin, ptr::addr_of_mut};
+use core::{
+    mem::MaybeUninit,
+    pin::Pin,
+    ptr::addr_of_mut,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use alloc::sync::Arc;
 use once_arc::OnceArc;
@@ -127,6 +132,8 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                 let mut handle = MaybeUninit::<NDIS_HANDLE>::uninit();
                 Error::to_err(unsafe {
                     windows_kernel_sys::NdisRegisterProtocolDriver(
+                        // must be an arc, stored in the driver so that it can be dropped on unload
+                        // or be a wdf-rc, attached to the driver
                         core::ptr::null_mut(),
                         &mut proto_char,
                         handle.as_mut_ptr(),
@@ -138,17 +145,23 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                         err.0
                     );
                 })?;
+
+                // Note:
+                // If an error occurs after a successful call to NdisRegisterProtocolDriver, the driver must call the NdisDeregisterProtocolDriver function before DriverEntry returns.
                 let handle = unsafe { handle.assume_init() };
 
-                let partial_cancel_id = unsafe { NdisGeneratePartialCancelId() };
+                let cancel_id_gen = CancelIdGen::new(unsafe { NdisGeneratePartialCancelId() });
 
-                info!("DriverEntry: Ndis Cancel Id: {:#x?}", partial_cancel_id);
+                info!(
+                    "DriverEntry: Ndis Cancel Id: {:#x?}",
+                    cancel_id_gen.partial_id
+                );
 
                 let globals = pinned_init::try_pin_init!(Globals {
                     control_device,
                     ndis_protocol_handle: handle,
                     eth_type: NPROT_ETH_TYPE,
-                    partial_cancel_id,
+                    cancel_id_gen,
                     open_list <- SpinMutex::new(ListEntry::new()),
                     binds_complete <- KeEvent::new(EventType::Notification, false),
                 }? Error);
@@ -287,18 +300,60 @@ struct NdisProt {
 
 wdf_kmdf::impl_context_space!(NdisProt);
 
+// Pretty much the only viable way to pass stuff via `ProtocolDriverContext`
+// while also being able to free it is to stuff it in a WdfObj parented to the driver
+//
+// Alternatively could do `ProtocolHandle<DriverContext>` storing a `Box<DriverContext>`
+// and then manifesting a reference in `BindAdapter`.
+
 #[pin_data(PinnedDrop)]
 struct Globals {
+    // Only used by BindAdapter to create the WDFIOQUEUEs for the adapter
     control_device: WDFDEVICE,
+    // Used in
+    // - ndisbind::BindAdapter
+    //   - ndisbind::CreateBinding
+    //     - Creating the NBL pool for send
+    //     - Creating the NBL pool for recv
+    //     - Opening the adapter (`NdisOpenAdapterEx`)
+    // - (Dropping) ProtocolUnloadHandler (unused)
+    // - (Dropping) EvtUnload
     ndis_protocol_handle: NDIS_HANDLE,
     /// frame type of interest
+    // Used in
+    // - RecieveNbl
+    //   - Have access to a ProtocolBindingContext
     eth_type: u16,
     /// for cancelling sends
-    partial_cancel_id: u8,
+    // Used in
+    // - send::EvtIoWrite
+    //   - Have access to FileObject.ContextSpace
+    // - ndisbind::DoRequest -> can we not use this?
+    //   - can use a different thing!
+    //   - could have like a per-file object thing?
+    //   - just has to match
+    //   - ahhhhh it's just supposed to be a usize
+    //   - also could just not since we never use it for cancellation
+    cancel_id_gen: CancelIdGen,
     // TODO: ListEntry is really just a ListHead<OpenContextList>
+    // Used in
+    // - ndisbind::BindAdapter (pre `CreateBinding`), mut
+    //   - Have access to a ProtocolBindingContext
+    // - ndisbind::QueryBinding, iter
+    //   - EvtIoDeviceControl
+    //     - Have access to FileObject.ContextSpace
+    // - ndisbind::LookupDevice, iter
+    //   - EvtIoDeviceControl
+    //     - Have access to FileObject.ContextSpace
     #[pin]
     open_list: SpinMutex<ListEntry>,
     /// Notifiying when binding is complete (used in ioctl)
+    // Used in
+    // - ndisbind::PnPEventHandler
+    //   - Have access to a ProtocolBindingContext
+    // - NdisprotOpenDevice
+    //   - IoCtl
+    //     - Has access to a dev ctx?
     #[pin]
     binds_complete: KeEvent,
 }
@@ -314,6 +369,26 @@ impl PinnedDrop for Globals {
         // the framework handles deleting of the control object
         self.control_device = core::ptr::null_mut();
         debug!("Globals Drop Exit");
+    }
+}
+
+struct CancelIdGen {
+    partial_id: u8,
+    local_id: AtomicUsize,
+}
+
+impl CancelIdGen {
+    fn new(partial_cancel_id: u8) -> Self {
+        Self {
+            partial_id: partial_cancel_id,
+            local_id: AtomicUsize::new(0),
+        }
+    }
+
+    fn next(&self) -> usize {
+        let mut id = self.local_id.fetch_add(1, Ordering::Relaxed).to_be_bytes();
+        id[0] = self.partial_id;
+        usize::from_be_bytes(id)
     }
 }
 
@@ -346,47 +421,207 @@ struct OpenContext {
     inner: SpinMutex<OpenContextInner>,
 
     /// Set in `OPEN_DEVICE`
+    // Used in
+    // - EvtFileCleanup (breaking assoc)
+    // - OpenDevice (setting up assoc, breaking assoc in error case of setting filter)
+    //
+    // Essentially just used as debugging for figuring out the assoc'd file object
     file_object: WDFFILEOBJECT,
 
+    // Used in
+    // - EvtIoWrite (read)
+    // - ReceiveNBLs (read)
+    //   - Have access to a ProtocolBindingContext
+    //   - AllocateReceiveNBLs (read)
+    // - FreeReceiveNBLs (read)
+    //   - ServiceReads
+    //     - EvtNotifyReadQueue
+    //       - ReadQueue event, have access to ctx area but done before binding create?
+    //     - QueueReceiveNBL
+    //       - ReceiveNBLs
+    //   - ReceiveNBLs
+    //     - QueueReceiveNBL
+    //   - FlushReceiveQueue
+    //     - PnPEventHandler
+    //       - Have access to a ProtocolBindingContext
+    //     - ShutdownBinding
+    //       - CreateBinding
+    //       - UnbindAdapter
+    //         - Have access to a ProtocolBindingContext
+    //     - EvtFileCleanup
     binding_handle: NDIS_HANDLE,
+    // set on adapter create
+    // Used in
+    // - EvtIoWrite
+    // - CreateBinding (write, pre binding open)
+    // - FreeBindResources
+    //   - ShutdownBinding
+    //     ...
     send_nbl_pool: NDIS_HANDLE,
     // every nbl contains at least one net buffer
+    // set on adapter create
+    // Used in
+    // - BindAdapter (write, in CreateBinding pre binding open)
+    // - FreeBindResources
+    //   - ShutdownBinding
+    //     ...
+    // - AllocateReceiveNBL
+    //   - ...
     recv_nbl_pool: NDIS_HANDLE,
 
+    // Used in
+    // - CreateBinding (write)
+    // - Restart (write)
     mac_options: u32,
+    // Used in
+    // - EvtIoWrite (read)
+    // - CreateBinding (write)
+    // - Restart (write)
     max_frame_size: u32,
+    // Used in
+    // - CreateBinding (write)
     data_backfill_size: u32,
-    context_backfill_size: i32,
+    // Used in
+    // - CreateBinding (write)
+    context_backfill_size: u32,
 
+    // protected by `lock`
+    // Used in
+    // - send::SendComplete (read (== 0), write (dec))
+    // - send::EvtIoWrite (write (inc))
+    // - PnPEventHandler (read)
+    // - ShutdownBinding (unprotected read, acqrel atomic (may dep on a queue)?)
+    // - WaitForPendingIo (unprotected read)
+    // - ValidateOpenAndDoRequest (read, write)
+    // - QueryOidValue (read, write)
+    //
+    // Also used to not make the binding go away
     pending_send_count: u32,
 
+    // Used in
+    // - OpenDevice (QueueStart)
+    // - EvtFileCleanup (PurgeQueueSync)
+    // - BindAdapter
+    //   - WdfIoQueueCreate
+    //   - WdfIoQueueReadyNotify
+    // - ShutdownBinding
+    //   - WdfIoQueuePurgeSync
+    // - FreeBindResources
+    // - WaitForPendingIO
+    //   - WdfIoQueuePurgeSync
+    // - recv::EvtIoRead
+    //   - WdfRequestForwardToIoQueue
+    // - recv::ServiceReads
+    //   - WdfIoQueueRetreiveNextRequest
     read_queue: WDFQUEUE,
+    // protected by `lock`
+    // Used in
+    // - recv::ServiceReads (write dec)
+    // - WaitForPendingIO (read)
+    // oh no (no inc)
     pending_read_count: u32,
     #[pin]
+    // Used in
+    // - recv::ServiceReads (read, technically write into_iter)
+    // - recv::QueueReceiveNBL (write)
+    // - recv::FlushReceiveQueue (write into_iter)
+    // - BindAdapter (write)
     recv_nbl_queue: LIST_ENTRY,
+    // protected by `lock`
+    // - recv::ServiceReads (write dec)
+    // - recv::QueueReceiveNBL (write inc + dec, read)
+    // - recv::FlushReceiveQueue (write dec)
     recv_nbl_len: u32,
 
+    // Used in
+    // - recv::QueueReceiveNBL (read)
+    // - PnPEventHandler (write)
+    // - CreateBinding (write)
+    // - ValidateOpenAndDoRequest (read)
+    // - Status (read)
     power_state: NET_DEVICE_POWER_STATE,
     /// signaled if PowerState is D0
+    // Used in
+    // - CreateBinding (write init, signal)
+    // - UnbindAdapter (signal)
+    // - PnPEventHandler (write init, signal)
+    //   - write init basically means that all waits in ValidateOpenAndDoRequest guarantee timeout
+    // - ValidateOpenAndDoRequest (wait)
+    //   - there's a lil note here too
     #[pin]
     powered_up_event: KeEvent,
     /// used in `open_adapter`
+    // Used in
+    // - CreateBinding (read dbg, write)
+    // - FreeBindResources (free)
     device_name: NtUnicodeStr<'static>,
     /// device display name
+    // Used in
+    // - CreateBinding (write)
+    // - FreeBindResources (free)
+    // - QueryBinding (read)
     device_desc: NtUnicodeStr<'static>,
 
     // For open/close_adapter
+    // Used in
+    // - OpenAdapterComplete (write)
+    // - CreateBinding (read)
+    // - ShutdownBinding (read)
+    //   - unused except for an assert
     bind_status: NTSTATUS,
+    // Used in
+    // - OpenAdapterComplete (signal)
+    // - CloseAdapterComplete (signal)
+    // - CreateBinding (write init, wait forever (after NdisOpenAdapterEx))
+    // - ShutdownBinding (write init, wait forever (after NdisCloseAdapterEx))
     #[pin]
     bind_event: KeEvent,
 
     // structure signature, for sanity checking
     oc_sig: u32,
+    // protected by `lock`
+    // Used in
+    // - send::EvtIoWrite (unprotected read)
+    // - recv::ReceiveNBLs (read)
+    // - recv::QueueReceiveNBL (read)
+    // - BindAdapter (write, Initializing)
+    // - CreateBinding (write, Paused)
+    // - UnbindAdapter (unprotected write, Closing)
+    // - PnPEventHandler
+    //   - (write, Pausing)
+    //   - (unprotected write, Paused)
+    //   - (unprotected read dbg, Paused)
+    //   - (unprotected write, Restart)
     state: OpenState,
+    // Used in
+    // - send::SendComplete (signal, write NULL)
+    // - ShutdownBinding (write NULL, write local event storage + init)
+    // - WaitForPendingIO (assert != NULL, wait forever)
+    // - ValidateOpenAndDoRequest (assert != NULL, signal, write NULL)
+    // - QueryOidValue (assert != NULL, signal, write NULL)
+    // - SetOidValue (assert != NULL, signal, write NULL)
     closing_event: *mut KeEvent,
+    // Used in
+    // - send::EvtIoWrite (read)
+    // - CreateBinding (write)
     current_address: MACAddr,
+    // Unused
     multicast_address: [MACAddr; MAX_MULTICAST_ADDRESS],
 
+    // Used in
+    // - EvtFileCleanup
+    //   - WdfIoQueuePurgeSync
+    // - EvtIoDeviceControl
+    //   - WdfRequestForwardToIoQueue
+    // - OpenDevice
+    //   - WdfIoQueueStart
+    // - BindAdapter
+    //   - WdfIoQueueCreate (pre Createbinding)
+    // - ShutdownBinding
+    //   - WdfIoQueuePurgeSync
+    // - FreeBindResources
+    // - ServiceIndicateStatusIrp
+    //  - WdfIoQueueRetrieveNextRequest
     status_indication_queue: WDFQUEUE,
 }
 
