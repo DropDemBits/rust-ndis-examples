@@ -1371,7 +1371,7 @@ pub mod raw {
     /// Both the source and destination queues must be owned by the same device.
     ///
     /// If the request has previously been marked cancelable using [`WdfRequestMarkCancelable`] or [`WdfRequestMarkCancelableEx`],
-    /// [`WdfRequestMarkUncancelable`] must be called before the call to [`WdfRequestForwardToIoQueue`].
+    /// [`WdfRequestUnmarkCancelable`] must be called before the call to [`WdfRequestForwardToIoQueue`].
     ///
     /// Upon calling [`WdfRequestForwardToIoQueue`], ownership of the request is transferred to the framework until it is delivered
     /// back to the driver. While the request is sitting in the queue, the framework retains ownership of the reqeust and can cancel
@@ -1431,8 +1431,8 @@ pub mod raw {
     ///
     /// - [Requeueing I/O Requests](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/requeuing-i-o-requests)
     /// - [Managing I/O Queues](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/managing-i-o-queues)
-    //
-    // TODO: As proper-intra doc links
+    ///
+    // TODO: As proper intra-doc links
     /// [`WdfRequestRequeue`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestrequeue
     /// [`WdfRequestMarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelable
     /// [`WdfRequestMarkCancelableEx`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelableex
@@ -1544,7 +1544,7 @@ pub mod raw {
     /// ## See Also
     ///
     /// - [Accessing Data Buffers in Framework-based Drivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/accessing-data-buffers-in-wdf-drivers)
-    //
+    ///
     // TODO: As proper-intra doc links
     /// [`WdfRequestRetrieveInputMemory`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestretrieveinputmemory
     #[must_use]
@@ -1630,7 +1630,7 @@ pub mod raw {
     /// ## See Also
     ///
     /// - [Accessing Data Buffers in Framework-based Drivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/accessing-data-buffers-in-wdf-drivers)
-    //
+    ///
     // TODO: As proper-intra doc links
     /// [`WdfRequestRetrieveOutputMemory`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestretrieveoutputmemory
     #[must_use]
@@ -1730,13 +1730,12 @@ pub mod raw {
     ///
     /// For the most part, null checking only needs to be done if the first situation is true.
     ///
-    /// For more information about framework file objects, see [Framework File Objects]
+    /// For more information about framework file objects, see [Framework File Objects].
     ///
-    /// [`WdfFileObjectCanBeOptional`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/ne-wdfdevice-_wdf_fileobject_class)
+    /// [`WdfFileObjectCanBeOptional`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/ne-wdfdevice-_wdf_fileobject_class
     /// [`WdfRequestTypeCreate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/ne-wdfrequest-_wdf_request_type
     /// [`WDF_FILEOBJECT_CLASS`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/ne-wdfdevice-_wdf_fileobject_class
     /// [Framework File Objects]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-file-objects
-    ///
     ///
     /// ## Safety
     ///
