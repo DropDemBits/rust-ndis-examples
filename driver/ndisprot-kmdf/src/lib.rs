@@ -30,7 +30,7 @@ use windows_kernel_sys::{
     KEVENT, LIST_ENTRY, NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
     NDIS_REQUEST_TYPE, NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER,
-    PDRIVER_OBJECT, PUNICODE_STRING, ULONG,
+    PDRIVER_OBJECT, PUNICODE_STRING, ULONG, ULONG_PTR,
 };
 
 #[allow(non_snake_case)]
@@ -1016,8 +1016,33 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                 // no open context to go off of, and would've timed out anyway
                 nt_status = STATUS::TIMEOUT;
             }
+
+            debug!("IoControl: BindWait returning {:#x?}", nt_status);
         }
-        IOCTL_NDISPROT_QUERY_BINDING => {}
+        IOCTL_NDISPROT_QUERY_BINDING => {
+            let mut sys_buffer = core::ptr::null_mut();
+            let mut buf_size = 0;
+
+            nt_status = unsafe {
+                wdf_kmdf::raw::WdfRequestRetrieveOutputBuffer(
+                    Request,
+                    core::mem::size_of::<QueryBinding>(),
+                    &mut sys_buffer,
+                    Some(&mut buf_size),
+                )
+                .into()
+            };
+
+            if nt_status.is_success() {
+                nt_status =
+                    ndisbind::query_binding(sys_buffer, buf_size, buf_size, &mut bytes_returned)
+                        .into();
+
+                debug!("IoControl: QueryBinding returning {:#x?}", nt_status);
+            } else {
+                error!("WdfRequestRetrieveOutputBuffer failed {:#x?}", nt_status);
+            }
+        }
         IOCTL_NDISPROT_OPEN_DEVICE => {
             // calls open_device
         }
@@ -1026,6 +1051,16 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
         IOCTL_NDISPROT_INDICATE_STATUS => {}
         _ => nt_status = STATUS::NOT_SUPPORTED,
     }
+
+    if nt_status != STATUS::PENDING {
+        unsafe {
+            wdf_kmdf::raw::WdfRequestCompleteWithInformation(
+                Request,
+                nt_status.to_u32(),
+                bytes_returned as ULONG_PTR,
+            )
+        }
+    }
 }
 
 fn open_device(
@@ -1033,6 +1068,15 @@ fn open_device(
     FileObject: WDFFILEOBJECT,
 ) -> Result<Pin<Arc<OpenContext>>, Error> {
     loop {}
+}
+
+#[repr(C)]
+struct QueryBinding {
+    binding_index: u32,
+    device_name_offset: u32,
+    device_name_length: u32,
+    device_descr_offset: u32,
+    device_descr_length: u32,
 }
 
 // unfortunately we need to declare _fltused
@@ -1067,7 +1111,7 @@ mod ndisbind {
         OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI,
         OID_802_11_SSID, OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
         OID_802_3_MULTICAST_LIST, PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST,
-        PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
+        PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION, PVOID,
     };
 
     use crate::{Globals, OpenContext};
@@ -1163,6 +1207,16 @@ mod ndisbind {
     }
 
     pub(crate) fn flush_receive_queue(open_context: &Arc<OpenContext>) {
+        loop {}
+    }
+
+    /// Returns information about the specified binding
+    pub(crate) fn query_binding(
+        buffer: PVOID,
+        input_length: usize,
+        output_length: usize,
+        bytes_returned: &mut usize,
+    ) -> NTSTATUS {
         loop {}
     }
 }
