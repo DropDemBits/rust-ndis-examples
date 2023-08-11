@@ -642,63 +642,6 @@ pub mod raw {
 
     // region: wdfio
 
-    /// Informs the framework to stop queuing IO requests to the queue
-    /// and cancel any unprocessed and driver-owned cancellable requests
-    ///
-    /// Returns after all of the unprocessed and driver-owned requests are
-    /// completed or canceled.
-    ///
-    /// After purging, an IO queue can be restarted using [`WdfIoQueueStart`].
-    ///
-    /// If the framework receives additional requests while purging the queue,
-    /// it completes the requests with a status of `STATUS_INVALID_DEVICE_STATE`.
-    ///
-    /// For more information about queue management, see [Managing I/O Queues]
-    ///
-    /// [Managing I/O Queues]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/managing-i-o-queues
-    ///
-    /// ## Note
-    ///
-    /// This must not be called from the following queue object event callbacks for **any queue**:
-    ///
-    /// - [`EvtIoDefault`]
-    /// - [`EvtIoRead`]
-    /// - [`EvtIoWrite`]
-    /// - [`EvtIoDeviceControl`]
-    /// - [`EvtIoInternalDeviceControl`]
-    ///
-    /// See [When CAN You Call `WdfIoQueuePurgeSynchronously`] for why this is the case.
-    ///
-    /// [`EvtIoDefault`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_default
-    /// [`EvtIoRead`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_read
-    /// [`EvtIoWrite`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_write
-    /// [`EvtIoDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_device_control
-    /// [`EvtIoInternalDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_internal_device_control
-    /// [When CAN You Call `WdfIoQueuePurgeSynchronously`]: https://www.osronline.com/article.cfm%5Eid=614.htm
-    ///
-    /// ## Safety
-    ///
-    /// In addition to all passed-in pointers pointing to valid memory locations:
-    ///
-    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
-    /// - ([ChangeQueueState]) Must not be called concurrently with other queue state-changing functions
-    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
-    /// - ([EvtSurpriseRemoveNoSuspendQueue]) While inside [`EvtDeviceSurpriseRemoval`], queues must not be drained, stopped, or purged,
-    ///   and should instead be using the self-managed IO callback functions
-    /// - ([NoIoQueuePurgeSynchronously]) See note above
-    ///
-    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
-    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
-    /// [ChangeQueueState]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ChangeQueueState
-    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
-    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
-    /// [EvtSurpriseRemoveNoSuspendQueue]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-EvtSurpriseRemoveNoSuspendQueue
-    /// [`EvtDeviceSurpriseRemoval`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_device_surprise_removal
-    /// [NoIoQueuePurgeSynchronously]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/noioqueuepurgesynchronously
-    pub unsafe fn WdfIoQueuePurgeSynchronously(Queue: WDFQUEUE) {
-        dispatch!(WdfIoQueuePurgeSynchronously(Queue))
-    }
-
     /// Creates an IO queue for the given device
     ///
     /// A device can have multiple IO queues.
@@ -764,6 +707,63 @@ pub mod raw {
             QueueAttributes.unwrap_or(WDF_NO_OBJECT_ATTRIBUTES!()),
             Queue.map_or(core::ptr::null_mut(), |p| p as _)
         ))
+    }
+
+    /// Informs the framework to stop queuing IO requests to the queue
+    /// and cancel any unprocessed and driver-owned cancellable requests
+    ///
+    /// Returns after all of the unprocessed and driver-owned requests are
+    /// completed or canceled.
+    ///
+    /// After purging, an IO queue can be restarted using [`WdfIoQueueStart`].
+    ///
+    /// If the framework receives additional requests while purging the queue,
+    /// it completes the requests with a status of `STATUS_INVALID_DEVICE_STATE`.
+    ///
+    /// For more information about queue management, see [Managing I/O Queues]
+    ///
+    /// [Managing I/O Queues]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/managing-i-o-queues
+    ///
+    /// ## Note
+    ///
+    /// This must not be called from the following queue object event callbacks for **any queue**:
+    ///
+    /// - [`EvtIoDefault`]
+    /// - [`EvtIoRead`]
+    /// - [`EvtIoWrite`]
+    /// - [`EvtIoDeviceControl`]
+    /// - [`EvtIoInternalDeviceControl`]
+    ///
+    /// See [When CAN You Call `WdfIoQueuePurgeSynchronously`] for why this is the case.
+    ///
+    /// [`EvtIoDefault`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_default
+    /// [`EvtIoRead`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_read
+    /// [`EvtIoWrite`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_write
+    /// [`EvtIoDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_device_control
+    /// [`EvtIoInternalDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_internal_device_control
+    /// [When CAN You Call `WdfIoQueuePurgeSynchronously`]: https://www.osronline.com/article.cfm%5Eid=614.htm
+    ///
+    /// ## Safety
+    ///
+    /// In addition to all passed-in pointers pointing to valid memory locations:
+    ///
+    /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+    /// - ([ChangeQueueState]) Must not be called concurrently with other queue state-changing functions
+    /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+    /// - ([EvtSurpriseRemoveNoSuspendQueue]) While inside [`EvtDeviceSurpriseRemoval`], queues must not be drained, stopped, or purged,
+    ///   and should instead be using the self-managed IO callback functions
+    /// - ([NoIoQueuePurgeSynchronously]) See note above
+    ///
+    /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+    /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+    /// [ChangeQueueState]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ChangeQueueState
+    /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+    /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+    /// [EvtSurpriseRemoveNoSuspendQueue]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-EvtSurpriseRemoveNoSuspendQueue
+    /// [`EvtDeviceSurpriseRemoval`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nc-wdfdevice-evt_wdf_device_surprise_removal
+    /// [NoIoQueuePurgeSynchronously]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/noioqueuepurgesynchronously
+    pub unsafe fn WdfIoQueuePurgeSynchronously(Queue: WDFQUEUE) {
+        dispatch!(WdfIoQueuePurgeSynchronously(Queue))
     }
 
     /// (Un)registers an event callback for when the IO queue goes from empty to non-empty
