@@ -1141,7 +1141,8 @@ pub unsafe fn WdfObjectGetTypedContextWorker(
 ///   The framework memory object must not be accessed after the IO request is completed
 /// - ([ReqDelete]) Driver-created requests must be deleted upon completion instead of being passed to the `WdfRequestCompleteXxx` family of functions
 /// - ([ReqIsCancOnCancReq]) [`WdfRequestIsCanceled`] must only be called on requests not marked as cancelable
-/// - ([ReqNotCanceledLocal])
+/// - ([ReqNotCanceledLocal]) If a request to be completed has previously been marked as cancelable,
+///   it must be unmarked from cancelation using [`WdfRequestUnmarkCancelable`] before completing the request.
 /// - ([ReqSendFail]) The correct completion status must be set in cases where [`WdfRequestSend`] can fail
 /// - ([RequestCompleted]) Requests from the default IO queue must either be completed, deferred, or forwarded to another queue
 /// - ([RequestCompletedLocal]) Requests from [`EvtIoDefault`], [`EvtIoRead`], [`EvtIoWrite`], [`EvtIoDeviceControl`], and [`EvtIoInternalDeviceControl`]
@@ -1205,6 +1206,7 @@ pub unsafe fn WdfObjectGetTypedContextWorker(
 /// [`WdfRequestCompleteWithPriorityBoost`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestcompletewithpriorityboost
 /// [`WdfRequestStopAcknowledge`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequeststopacknowledge
 /// [`WdfRequestMarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelable
+/// [`WdfRequestUnmarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestunmarkcancelablem
 /// [`WdfRequestIsCanceled`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestiscanceled
 /// [`WdfRequestSend`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestsend
 pub unsafe fn WdfRequestComplete(Request: WDFREQUEST, Status: NTSTATUS) {
@@ -1273,7 +1275,8 @@ pub unsafe fn WdfRequestComplete(Request: WDFREQUEST, Status: NTSTATUS) {
 ///   The framework memory object must not be accessed after the IO request is completed
 /// - ([ReqDelete]) Driver-created requests must be deleted upon completion instead of being passed to the `WdfRequestCompleteXxx` family of functions
 /// - ([ReqIsCancOnCancReq]) [`WdfRequestIsCanceled`] must only be called on requests not marked as cancelable
-/// - ([ReqNotCanceledLocal])
+/// - ([ReqNotCanceledLocal]) If a request to be completed has previously been marked as cancelable,
+///   it must be unmarked from cancelation using [`WdfRequestUnmarkCancelable`] before completing the request.
 /// - ([ReqSendFail]) The correct completion status must be set in cases where [`WdfRequestSend`] can fail
 /// - ([RequestCompleted]) Requests from the default IO queue must either be completed, deferred, or forwarded to another queue
 /// - ([RequestCompletedLocal]) Requests from [`EvtIoDefault`], [`EvtIoRead`], [`EvtIoWrite`], [`EvtIoDeviceControl`], and [`EvtIoInternalDeviceControl`]
@@ -1338,6 +1341,7 @@ pub unsafe fn WdfRequestComplete(Request: WDFREQUEST, Status: NTSTATUS) {
 /// [`WdfRequestCompleteWithPriorityBoost`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestcompletewithpriorityboost
 /// [`WdfRequestStopAcknowledge`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequeststopacknowledge
 /// [`WdfRequestMarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelable
+/// [`WdfRequestUnmarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestunmarkcancelablem
 /// [`WdfRequestIsCanceled`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestiscanceled
 /// [`WdfRequestSend`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestsend
 pub unsafe fn WdfRequestCompleteWithInformation(
