@@ -695,7 +695,7 @@ struct MACAddr([u8; 6]);
 #[vtable::vtable]
 impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
     // This will also drop the (hopefully last remaining) reference to the globals
-    fn unload(&mut self) {
+    fn unload(self: Pin<&mut Self>) {
         debug!("Unload Enter");
         debug!("Unload Exit");
     }
@@ -850,9 +850,18 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
 
     debug!("Open: FileObject {:#x?}", file_object);
 
-    file_object.get_context_mut().open_context = OnceArc::new(None);
+    let status = unsafe {
+        file_object.init_context_space(pinned_init::try_init!(FileObjectContext {
+            open_context: OnceArc::new(None)
+        }? Error))
+    };
 
-    wdf_kmdf::raw::WdfRequestComplete(Request, STATUS::SUCCESS.to_u32());
+    let status = match status {
+        Ok(()) => STATUS::SUCCESS,
+        Err(err) => err.0,
+    };
+
+    wdf_kmdf::raw::WdfRequestComplete(Request, status.to_u32());
 }
 
 /// Called when all of the handles representing the FileObject are closed, as well as all of the references being removed.
@@ -866,7 +875,7 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
 
     debug!("Close: FileObject {:#x?}", file_object);
 
-    file_object.get_context_mut().open_context.take();
+    // file_object.get_context_mut().open_context.take();
 }
 
 /// Called when the handle representing the `FileObject` is closed.
@@ -877,7 +886,8 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
     let mut file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    let open_context = file_object.get_context_mut().open_context.take();
+    // let open_context = file_object.get_context_mut().open_context.take();
+    let open_context = None::<Arc<OpenContext>>;
 
     debug!(
         "Cleanup: FileObject {:#x?}, Open: {:#x?}",

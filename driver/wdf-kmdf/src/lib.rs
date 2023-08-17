@@ -11,7 +11,9 @@ pub mod raw;
 pub mod file_object {
     use core::marker::PhantomData;
 
+    use pinned_init::PinInit;
     use wdf_kmdf_sys::WDFFILEOBJECT;
+    use windows_kernel_sys::Error;
 
     use crate::object::{self, IntoContextSpace};
 
@@ -46,14 +48,20 @@ pub mod file_object {
     where
         T: IntoContextSpace,
     {
-        pub fn get_context(&self) -> &T {
-            // SAFETY: Contruction guarantees that the space is initialized
-            unsafe { object::get_context(self).unwrap() }
+        pub fn get_context(&self) -> object::ContextSpaceGuard<'_, T> {
+            object::get_context(self).expect("context space was not initialized")
         }
 
-        pub fn get_context_mut(&mut self) -> &mut T {
-            // SAFETY: Contruction guarantees that the space is initialized
-            unsafe { object::get_context_mut(self).unwrap() }
+        /// ## Safety:
+        ///
+        /// - Must only be initializing the context space once
+        pub unsafe fn init_context_space(
+            &mut self,
+            init_context: impl PinInit<T, Error>,
+        ) -> Result<(), Error> {
+            // SAFETY: By construction of `Self`, this guarantees that we have the context space
+            // Caller guarantees that this is only called once
+            unsafe { object::context_pin_init(self, |_| Ok(init_context)) }
         }
     }
 
@@ -70,10 +78,17 @@ pub mod file_object {
 
 pub mod object {
 
+    use core::{
+        mem::MaybeUninit,
+        pin::Pin,
+        sync::atomic::{AtomicU8, AtomicUsize, Ordering},
+    };
+
     use wdf_kmdf_sys::{
         WDFOBJECT, WDF_EXECUTION_LEVEL, WDF_OBJECT_ATTRIBUTES, WDF_OBJECT_CONTEXT_TYPE_INFO,
         WDF_SYNCHRONIZATION_SCOPE,
     };
+    use windows_kernel_sys::{result::STATUS, Error};
 
     #[doc(hidden)]
     pub mod __macro_internals {
@@ -218,6 +233,8 @@ pub mod object {
 
         // Always set the context info
         object_attrs.ContextTypeInfo = T::CONTEXT_INFO as *const _;
+        // Make space for the drop lock at the end
+        object_attrs.ContextSizeOverride = core::mem::size_of::<ContextSpaceWithDropLock<T>>();
 
         object_attrs
     }
@@ -228,14 +245,155 @@ pub mod object {
         fn as_handle_mut(&mut self) -> WDFOBJECT;
     }
 
-    /// Gets a mut ref to the associated context space, or `None` if not found
+    #[repr(C)]
+    struct ContextSpaceWithDropLock<T> {
+        /// Original context space
+        data: MaybeUninit<T>,
+        /// Drop lock ensuring that `EvtDestroyCallback` / `EvtDriverUnload` have
+        /// exclusive access to the context area.
+        ///
+        /// While WDF ensures that all WDF objects that may access a context area
+        /// and are appropriatedly parented or refcounted (e.g. timers, work items,
+        /// and DPCs) get completed before driver unload / object destruction.
+        ///
+        /// However, in the situation of improperly parented objects, bad refcounts,
+        /// or other threads (created using `PsCreateSystemThread`) potentially
+        /// accessing the context area at the wrong time, they may cause a data
+        /// race as other live shared references breaks the exclusivity invariant
+        /// required for dropping an object.
+        ///
+        /// `DropLock` (in combination with [`ContextSpaceGuard`]) ensures that
+        /// dropping waits for all existing readers to drop their access, and
+        /// prevents new readers from getting access to the about-to-be-dropped
+        /// context space.
+        //
+        // Note: WDF Guarantees that the entire context space is zero-initialized,
+        // so `readers` and `init_flag` of `DropLock` are both initialized to 0
+        drop_lock: DropLock,
+    }
+
+    impl<T> ContextSpaceWithDropLock<T> {
+        /// ## Safety
+        ///
+        /// `this` must be a pointer to an allocated context space, and must
+        /// be valid for the whole area
+        unsafe fn drop_lock<'a>(this: *mut Self) -> &'a DropLock
+        where
+            'static: 'a,
+        {
+            // SAFETY: Caller guarantees that the pointer is to an allocated context space
+            // and that it is to the full context space area
+            let drop_lock = unsafe { core::ptr::addr_of!((*this).drop_lock) };
+
+            // SAFETY: Context space is guaranteed to be aligned to at most 16-byte alignment,
+            // and all possible bit patterns of both `u8` and `usize` (which `AtomicU8` and `AtomicUsize` respectively has the same repr as)
+            // are valid values
+            unsafe { &*drop_lock }
+        }
+
+        fn is_init(&self) -> bool {
+            // `Acquire` is paired with the `Release `store in `mark_context_init`
+            // and `drop_context_space`
+            self.drop_lock.init_flag.load(Ordering::Acquire) == CONTEXT_SPACE_INIT_MARKER
+        }
+    }
+
+    /// Marker for when the context space is initialized
+    const CONTEXT_SPACE_INIT_MARKER: u8 = 0xAA;
+    /// Marker for when the context space has been dropped
+    const CONTEXT_SPACE_DROPPED_MARKER: u8 = 0xDD;
+
+    struct DropLock {
+        /// How many active read referencences are there before it can be dropped
+        readers: AtomicUsize,
+        /// Current initialization state
+        ///
+        /// Representing the initialization flag as a `AtomicU8` because we need to synchronize
+        /// access to readers, and also because multiple threads may be trying accessing the
+        /// context area
+        init_flag: AtomicU8,
+    }
+
+    pub struct ContextSpaceGuard<'a, T> {
+        context_space: &'a ContextSpaceWithDropLock<T>,
+    }
+
+    impl<'a, T> ContextSpaceGuard<'a, T> {
+        fn new(
+            context_space: &'a ContextSpaceWithDropLock<T>,
+        ) -> Result<Self, GetContextSpaceError> {
+            // Pre-acquire a reader reference so that we don't accidentally get the context space
+            // dropped before we can acquire it
+            //
+            // Is relaxed since this is just a counter
+            context_space
+                .drop_lock
+                .readers
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |readers| {
+                    readers.checked_add(1)
+                })
+                .expect("too many context space readers");
+
+            // Check if the context space has been initialized
+            if context_space.is_init() {
+                // Make the context space guard!
+                // `context_space.is_init()` returning true ensures that the context space has been initialized
+                Ok(ContextSpaceGuard { context_space })
+            } else {
+                // Not initialized
+
+                // Undo our readers bump
+                context_space
+                    .drop_lock
+                    .readers
+                    .fetch_sub(1, Ordering::Relaxed);
+
+                return Err(GetContextSpaceError::NotInitialized);
+            }
+        }
+    }
+
+    impl<'a, T> Drop for ContextSpaceGuard<'a, T> {
+        fn drop(&mut self) {
+            self.context_space
+                .drop_lock
+                .readers
+                .fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    impl<'a, T> core::ops::Deref for ContextSpaceGuard<'a, T> {
+        type Target = T;
+
+        fn deref(&self) -> &Self::Target {
+            // SAFETY: By having an instance of `ContextSpace`, we know the originating context space is
+            // valid and initialized
+            unsafe { &*self.context_space.data.as_ptr() }
+        }
+    }
+
+    /// ## Safety:
     ///
-    /// ## Safety
-    ///
-    /// The object's context space must be initialized
-    pub(crate) unsafe fn get_context<T: IntoContextSpace>(
+    /// - `context_space` must be a pointer to the original context space
+    /// - The context space must actually be initialized
+    unsafe fn mark_context_space_init<T: IntoContextSpace>(
+        context_space: *mut ContextSpaceWithDropLock<T>,
+    ) {
+        // SAFETY: Caller guarantees that the pointer is to an allocated context space
+        // and that it is to the full context space area
+        let drop_lock = unsafe { ContextSpaceWithDropLock::drop_lock(context_space) };
+
+        // Needs to be `Release` ordering so as to guarantee that the initialization
+        // writes are visible to other threads
+        drop_lock
+            .init_flag
+            .store(CONTEXT_SPACE_INIT_MARKER, Ordering::Release)
+    }
+
+    /// Gets a ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
+    pub(crate) fn get_context<T: IntoContextSpace>(
         handle: &impl AsObjectHandle,
-    ) -> Option<&T> {
+    ) -> Result<ContextSpaceGuard<'_, T>, GetContextSpaceError> {
         let handle = handle.as_handle();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
@@ -243,24 +401,43 @@ pub mod object {
             // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
             crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
         };
-        let context_space = context_space.cast::<T>();
+
+        if context_space.is_null() {
+            // `context_space` is only NULL if `T` doesnt't have a context on the object
+            return Err(GetContextSpaceError::NotFound);
+        }
+
+        // Note: `context_space` comes from `WdfGetTypedContextWorker`, which
+        // returns a pointer to the base of the context space so we can get the additional metadata
+        let context_space = context_space.cast::<ContextSpaceWithDropLock<T>>();
 
         // SAFETY:
         // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
         //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
         // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
-        // - It's the caller's responsibility to ensure that the context space is initialized
-        unsafe { context_space.as_ref() }
+        // - We've checked `context_space` to not be NULL
+        //
+        // Note that the actual context space data isn't required to be initialized since it's behind a `MaybeUninit`
+        let context_space = unsafe { &*context_space };
+
+        // Make the guard to the context space
+        ContextSpaceGuard::new(context_space)
     }
 
-    /// Gets a mut ref to the associated context space, or `None` if not found
+    /// Drops the associated context space
     ///
-    /// ## Safety
+    /// Allows performing extra work before the context space is dropped
     ///
-    /// The object's context space must be initialized
-    pub(crate) unsafe fn get_context_mut<T: IntoContextSpace>(
+    /// This waits for any additional readers to stop accessing the context space before dropping,
+    /// and this wait may take a bit. Care must be taken for other readers to not hold their [`ContextSpaceGuard`]
+    /// for too long in order to drop in a timely manner.
+    ///
+    /// Returns the appropriate [`GetContextError::NotInitialized`] code if the context space was never initialized or already dropped,
+    /// or [`GetContextError::NotFound`] if this was not a context space of the object
+    pub(crate) fn drop_context_space<T: IntoContextSpace>(
         handle: &mut impl AsObjectHandle,
-    ) -> Option<&mut T> {
+        additional_work: impl FnOnce(Pin<&mut T>),
+    ) -> Result<(), GetContextSpaceError> {
         let handle = handle.as_handle_mut();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
@@ -268,15 +445,103 @@ pub mod object {
             // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
             crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
         };
-        let context_space = context_space.cast::<T>();
 
+        if context_space.is_null() {
+            // `context_space` is only NULL if `T` doesnt't have a context on the object
+            return Err(GetContextSpaceError::NotFound);
+        }
+
+        // Note: `context_space` comes from `WdfGetTypedContextWorker`, which
+        // returns a pointer to the base of the context space so we can get the additional metadata
+        let context_space = context_space.cast::<ContextSpaceWithDropLock<T>>();
+
+        // SAFETY: `context_space` comes from `WdfGetTypedContextWorker`, which
+        // returns a pointer to the base of the context space
+        let drop_lock = unsafe { ContextSpaceWithDropLock::drop_lock(context_space) };
+
+        // Check if the context space is still initialized and we're the only one dropping it
+        //
+        // Success ordering is `Acquire` ordering to pair with the `Release` store in here and in `mark_context_space_init`
+        // Failure ordering is `Relaxed` because we don't care about the value
+        if drop_lock
+            .init_flag
+            .compare_exchange(
+                CONTEXT_SPACE_INIT_MARKER,
+                CONTEXT_SPACE_DROPPED_MARKER,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            // Context space has either already been dropped, in the process of being dropped, or was never initialized
+            return Err(GetContextSpaceError::NotInitialized);
+        }
+
+        // Wait for any remaining readers to drop their context space guards.
+        // There won't be any additional readers added because acquiring a
+        // context space guard requires that the `init_flag` is `CONTEXT_SPACE_INIT_MARKER`,
+        // but we've set `init_flag` to `CONTEXT_SPACE_DROP_MARKER`
+        //
+        // Is `Relaxed` ordering because it is not related to any other access
+        // (just a counter for how many readers there are).
+        while drop_lock.readers.load(Ordering::Relaxed) != 0 {
+            core::hint::spin_loop();
+        }
+
+        // Do any additonal work before dropping the context area,
+        // which requires a pinned mut ref
+        //
+        // No other threads have access to the context space,
+        // so we can soundly make a pinned mutable ref to the context area
+        //
         // SAFETY:
-        // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
+        // - `context_space` comes from `WdfGetTypedContextWorker`, which
+        //   returns a pointer to the base of the context space
+        // - WDF aligns memory allocations to MEMORY_ALLOCATION_ALIGNMENT
         //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
         // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
-        // - It's the caller's responsibility to ensure that the context space is initialized
-        // - &mut on the original handle guarantees exclusivity
-        unsafe { context_space.as_mut() }
+        // - We've ensured that `readers`
+        //   is 0 meaning that we have exclusive access to the context space.
+        let context_space = unsafe { &mut *context_space };
+        // SAFETY: Ditto
+        let context_space = unsafe { &mut *context_space.data.as_mut_ptr() };
+
+        // SAFETY: An object context space is heap-allocated and has a stable address
+        let mut context_space = unsafe { Pin::new_unchecked(context_space) };
+
+        // Do any additional work before we drop the context space
+        additional_work(context_space.as_mut());
+
+        // And then drop it!
+        // SAFETY: We're only dropping it below
+        let context_space = unsafe { context_space.get_unchecked_mut() };
+
+        // SAFETY:
+        // Guaranteed to be unused by this point, since the destroy callback is the last one
+        // called.
+        // Object initialization guarantees that this was valid initialized memory
+        unsafe { core::ptr::drop_in_place(context_space) };
+
+        Ok(())
+    }
+
+    /// Error encountered while trying to get an object context space
+    #[derive(Debug)]
+    pub enum GetContextSpaceError {
+        /// The context space was not found
+        NotFound,
+        /// The context space has not been initialized yet,
+        /// or initialization of the context space has failed
+        NotInitialized,
+    }
+
+    impl From<GetContextSpaceError> for Error {
+        fn from(value: GetContextSpaceError) -> Self {
+            match value {
+                GetContextSpaceError::NotFound => Error(STATUS::NOT_FOUND),
+                GetContextSpaceError::NotInitialized => Error(STATUS::INVALID_DEVICE_STATE),
+            }
+        }
     }
 
     /// Initializes the object's context area, using the closure provided
@@ -304,15 +569,19 @@ pub mod object {
         let context_space = context_space.cast::<T>();
 
         // Get closure to initialize context with
-        // Note: while this can panic, since we're assuming we're
-        // in a `panic=abort` context, we won't ever have access
-        // to an uninitialized context area.
         //
-        // However, if we were to be in a `panic=unwind` context
-        // (which might supported if we link ucrt in), then we'd
-        // need to set an initialization flag stored after the
-        // real context area so that we don't drop uninitialized
-        // memory.
+        // Note: while this can panic, since we're assuming we're in a
+        // `panic=abort` context, we won't ever have access to an uninitialized
+        // context area as a result of panicking.
+        //
+        // However, if the handle were to ever lead to getting the context
+        // space during initialization of the same context space, then we could
+        // technically access uninitialized memory. This can happen if we were
+        // to access the driver context area via having a handle to a device
+        // (which allows getting the driver).
+        //
+        // We'd also have to do this anyway if we were to be in a `panic=unwind`
+        // context (which might supported if we link ucrt in)
         let pin_init = init_context(handle)?;
 
         // SAFETY:
@@ -321,8 +590,13 @@ pub mod object {
         //     (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
         //   - WDF does not move the allocation for the original object context
         //   - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
-        // - We directly return the produced error
-        unsafe { pin_init.__pinned_init(context_space) }
+        // - We directly `?` the produced error
+        unsafe { pin_init.__pinned_init(context_space)? }
+
+        // By this point we've successfully initialized the context space
+        unsafe { mark_context_space_init::<T>(context_space.cast()) };
+
+        Ok(())
     }
 }
 
@@ -520,7 +794,7 @@ pub mod sync {
 }
 
 pub mod driver {
-    use core::marker::PhantomData;
+    use core::{marker::PhantomData, ops::Deref, pin::Pin};
 
     use pinned_init::PinInit;
     use vtable::vtable;
@@ -605,7 +879,7 @@ pub mod driver {
         ///
         /// Most ownership-related unload tasks should instead be done via the fields
         /// implementing `Drop`, rather than being manually deallocated here.
-        fn unload(&mut self) {}
+        fn unload(self: Pin<&mut Self>) {}
     }
 
     impl<T: DriverCallbacks> Driver<T> {
@@ -698,13 +972,12 @@ pub mod driver {
             // concurrent immutable mutations
             let handle = unsafe { DriverHandle::wrap(driver) };
 
-            // SAFETY: Initialized by this point
-            let context_space = unsafe { object::get_context(&handle) };
-            let Some(context_space) = context_space else {
-                return STATUS::SUCCESS.to_u32();
+            let context_space = match object::get_context::<T>(&handle) {
+                Ok(it) => it,
+                Err(err) => return Error::from(err).0.to_u32(),
             };
 
-            match T::device_add(context_space, device_init) {
+            match T::device_add(context_space.deref(), device_init) {
                 Ok(()) => STATUS::SUCCESS.to_u32(),
                 Err(err) => err.0.to_u32(),
             }
@@ -714,24 +987,19 @@ pub mod driver {
             // SAFETY: Driver unload only gets called once, and after everything?
             let mut handle = unsafe { DriverHandle::wrap(driver) };
 
-            // SAFETY: Initialized by this point
-            let context_space = unsafe { object::get_context_mut(&mut handle) };
-            let Some(context_space) = context_space else {
-                // Nothing to do
+            // Drop the context area
+            let status = object::drop_context_space::<T>(&mut handle, |context_space| {
+                if T::HAS_UNLOAD {
+                    // Do the unload callback...
+                    context_space.unload();
+                }
+            });
+
+            if let Err(err) = status {
+                // No (valid) context space to drop, nothing to do
+                windows_kernel_rs::log::warn!("No driver context space to drop ({:x?})", err);
                 return;
             };
-
-            if T::HAS_UNLOAD {
-                // Do the unload callback...
-                T::unload(context_space);
-            }
-
-            // And then drop it!
-            // SAFETY:
-            // Guaranteed to be unused by this point, since the destroy callback is the last one
-            // called.
-            // Object initialization guarantees that this was valid initialized memory
-            unsafe { core::ptr::drop_in_place(context_space) };
         }
 
         unsafe extern "C" fn __dispatch_evt_cleanup(_driver: wdf_kmdf_sys::WDFOBJECT) {
