@@ -1098,6 +1098,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     windows_kernel_rs::__handle_panic(info);
 }
 
+#[no_mangle]
+pub extern "system" fn __CxxFrameHandler3() -> i32 {
+    0
+}
+
 mod ndisbind {
     //! NDIS protocol entry points as well as handling binding and unbinding from adapters
     use core::pin::Pin;
