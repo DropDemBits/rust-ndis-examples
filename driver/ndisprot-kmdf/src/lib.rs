@@ -43,7 +43,7 @@ unsafe extern "system" fn DriverEntry(
     static ALLOCATOR: windows_kernel_rs::allocator::KernelAlloc =
         windows_kernel_rs::allocator::KernelAlloc;
 
-    windows_kernel_rs::init_kernel_logger!(log::COMPONENT_IHVDRIVER, log::LevelFilter::Info);
+    windows_kernel_rs::init_kernel_logger!(log::COMPONENT_IHVDRIVER, log::LevelFilter::Debug);
 
     // SAFETY: This is the driver entry point
     let driver_object = unsafe { DriverObject::new(driver_object) };
