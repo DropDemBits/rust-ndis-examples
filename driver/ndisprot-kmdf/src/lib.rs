@@ -1103,6 +1103,7 @@ mod ndisbind {
     use core::pin::Pin;
 
     use alloc::sync::Arc;
+    use windows_kernel_rs::log;
     use windows_kernel_sys::{
         result::STATUS, NdisDeregisterProtocolDriver, NDIS_HANDLE, NDIS_OID, NDIS_REQUEST_TYPE,
         NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID,
@@ -1143,6 +1144,12 @@ mod ndisbind {
         BindContext: NDIS_HANDLE,
         BindParameters: PNDIS_BIND_PARAMETERS,
     ) -> NTSTATUS {
+        log::debug!(
+            "bind_adapter: {:#x?} {:#x?} {:#x?}",
+            ProtocolDriverContext,
+            BindContext,
+            BindParameters
+        );
         STATUS::SUCCESS.to_u32()
     }
 
@@ -1156,6 +1163,11 @@ mod ndisbind {
         UnbindContext: NDIS_HANDLE,
         ProtocolBindingContext: NDIS_HANDLE,
     ) -> NTSTATUS {
+        log::debug!(
+            "unbind_adapter: {:#x?} {:#x?}",
+            UnbindContext,
+            ProtocolBindingContext
+        );
         STATUS::SUCCESS.to_u32()
     }
 
@@ -1165,10 +1177,16 @@ mod ndisbind {
         ProtocolBindingContext: NDIS_HANDLE,
         NetPnPEventNotification: PNET_PNP_EVENT_NOTIFICATION,
     ) -> NTSTATUS {
+        log::debug!(
+            "pnp_event_handler: {:#x?} {:#x?}",
+            ProtocolBindingContext,
+            NetPnPEventNotification
+        );
         STATUS::SUCCESS.to_u32()
     }
 
     pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NTSTATUS {
+        log::debug!("unload_handler",);
         STATUS::SUCCESS.to_u32()
     }
 
