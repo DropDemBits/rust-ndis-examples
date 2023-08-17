@@ -642,6 +642,8 @@ pub mod driver {
             // so it's best to always drop the driver context area in our unload
             // trampoline.
             let mut object_attrs = default_object_attributes::<T>();
+            object_attrs.EvtCleanupCallback = Some(Self::__dispatch_evt_cleanup);
+            object_attrs.EvtDestroyCallback = Some(Self::__dispatch_evt_destroy);
 
             let mut driver_config = wdf_kmdf_sys::WDF_DRIVER_CONFIG::init(
                 T::HAS_DEVICE_ADD.then_some(Self::__dispatch_driver_device_add),
@@ -730,6 +732,14 @@ pub mod driver {
             // called.
             // Object initialization guarantees that this was valid initialized memory
             unsafe { core::ptr::drop_in_place(context_space) };
+        }
+
+        unsafe extern "C" fn __dispatch_evt_cleanup(_driver: wdf_kmdf_sys::WDFOBJECT) {
+            windows_kernel_rs::log::debug!("EvtCleanupCallback");
+        }
+
+        unsafe extern "C" fn __dispatch_evt_destroy(_driver: wdf_kmdf_sys::WDFOBJECT) {
+            windows_kernel_rs::log::debug!("EvtDestroyCallback");
         }
     }
 }
