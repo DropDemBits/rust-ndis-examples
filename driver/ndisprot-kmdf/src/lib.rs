@@ -14,7 +14,7 @@ use core::{
 use alloc::sync::Arc;
 use once_arc::OnceArc;
 use pinned_init::{pin_data, pinned_drop, InPlaceInit, PinInit};
-use wdf_kmdf::sync::SpinMutex;
+use wdf_kmdf::{object::AsObjectHandle, sync::SpinMutex};
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
     WDF_IO_QUEUE_DISPATCH_TYPE,
@@ -132,9 +132,8 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                 let mut handle = MaybeUninit::<NDIS_HANDLE>::uninit();
                 Error::to_err(unsafe {
                     windows_kernel_sys::NdisRegisterProtocolDriver(
-                        // must be an arc, stored in the driver so that it can be dropped on unload
-                        // or be a wdf-rc, attached to the driver
-                        core::ptr::null_mut(),
+                        // Pass in the driver context so that `BindAdapter` has access to the driver globals
+                        driver.as_handle_mut(),
                         &mut proto_char,
                         handle.as_mut_ptr(),
                     )
