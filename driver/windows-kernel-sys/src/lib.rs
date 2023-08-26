@@ -12,7 +12,9 @@
     clippy::useless_transmute,
     clippy::too_many_arguments,
     clippy::unnecessary_cast,
-    clippy::pedantic
+    clippy::pedantic,
+    // fixed by rust-lang/rust-bindgen#2583 but it's not part of a release yet
+    clippy::incorrect_clone_impl_on_copy_type
 )]
 mod bindings;
 
