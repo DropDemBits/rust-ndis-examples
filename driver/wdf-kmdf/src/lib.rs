@@ -52,7 +52,7 @@ pub mod file_object {
             object::get_context(self).expect("context space was not initialized")
         }
 
-        /// ## Safety:
+        /// ## Safety
         ///
         /// - Must only be initializing the context space once
         pub unsafe fn init_context_space(
@@ -290,12 +290,6 @@ pub mod object {
             // are valid values
             unsafe { &*drop_lock }
         }
-
-        fn is_init(&self) -> bool {
-            // `Acquire` is paired with the `Release `store in `mark_context_init`
-            // and `drop_context_space`
-            self.drop_lock.init_flag.load(Ordering::Acquire) == CONTEXT_SPACE_INIT_MARKER
-        }
     }
 
     /// Marker for when the context space is initialized
@@ -314,51 +308,110 @@ pub mod object {
         init_flag: AtomicU8,
     }
 
+    impl DropLock {
+        fn acquire(&self) -> Result<DropGuard<'_>, GetContextSpaceError> {
+            // Pre-acquire a reader reference so that we don't accidentally get the context space
+            // dropped before we can acquire it
+            //
+            // Is Relaxed since this is a counter, and `init_flag` is responsible
+            // for indicating if the context space is actually initialized or not
+            self.readers
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |readers| {
+                    readers.checked_add(1)
+                })
+                .expect("too many context space readers");
+
+            let guard = DropGuard { drop_lock: self };
+
+            // Check if the context space has been initialized
+            if !self.is_init() {
+                // Not initialized
+                drop(guard);
+                return Err(GetContextSpaceError::NotInitialized);
+            }
+
+            Ok(guard)
+        }
+
+        fn is_init(&self) -> bool {
+            // `Acquire` is paired with the `Release `store in `mark_initialized`
+            // and `acquire_exclusive`
+            self.init_flag.load(Ordering::Acquire) == CONTEXT_SPACE_INIT_MARKER
+        }
+
+        /// ## Safety
+        ///
+        /// The associated context space must be initialized
+        unsafe fn mark_initialized(&self) {
+            // Needs to be `Release` ordering so as to guarantee that the initialization
+            // writes are visible to other threads
+            self.init_flag
+                .store(CONTEXT_SPACE_INIT_MARKER, Ordering::Release)
+        }
+
+        fn acquire_exclusive(&self) -> Result<(), GetContextSpaceError> {
+            // Check if the context space is still initialized and we're the only one dropping it
+            //
+            // Success ordering is `Acquire` ordering to pair with the `Release` store in here and in `mark_initialized`
+            // Failure ordering is `Relaxed` because we don't care about the value
+            if self
+                .init_flag
+                .compare_exchange(
+                    CONTEXT_SPACE_INIT_MARKER,
+                    CONTEXT_SPACE_DROPPED_MARKER,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
+                .is_err()
+            {
+                // Context space has either already been dropped, in the process of being dropped, or was never initialized
+                return Err(GetContextSpaceError::NotInitialized);
+            }
+
+            // Wait for any remaining readers to drop their context space guards.
+            // There won't be any additional readers added because acquiring a
+            // context space guard requires that the `init_flag` is `CONTEXT_SPACE_INIT_MARKER`,
+            // but we've set `init_flag` to `CONTEXT_SPACE_DROP_MARKER`
+            //
+            // Is `Relaxed` ordering because it is not related to any other access
+            // (just a counter for how many readers there are).
+            while self.readers.load(Ordering::Relaxed) != 0 {
+                core::hint::spin_loop();
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Guard that prevents the context area from being dropped
+    struct DropGuard<'a> {
+        drop_lock: &'a DropLock,
+    }
+
+    impl<'a> Drop for DropGuard<'a> {
+        fn drop(&mut self) {
+            self.drop_lock.readers.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
     pub struct ContextSpaceGuard<'a, T> {
         context_space: &'a ContextSpaceWithDropLock<T>,
+        _guard: DropGuard<'a>,
     }
 
     impl<'a, T> ContextSpaceGuard<'a, T> {
         fn new(
             context_space: &'a ContextSpaceWithDropLock<T>,
         ) -> Result<Self, GetContextSpaceError> {
-            // Pre-acquire a reader reference so that we don't accidentally get the context space
-            // dropped before we can acquire it
-            //
-            // Is relaxed since this is just a counter
-            context_space
-                .drop_lock
-                .readers
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |readers| {
-                    readers.checked_add(1)
-                })
-                .expect("too many context space readers");
+            // Try to acquire the drop lock
+            // Getting a guard ensures that the context space has been initialized
+            let guard = context_space.drop_lock.acquire()?;
 
-            // Check if the context space has been initialized
-            if context_space.is_init() {
-                // Make the context space guard!
-                // `context_space.is_init()` returning true ensures that the context space has been initialized
-                Ok(ContextSpaceGuard { context_space })
-            } else {
-                // Not initialized
-
-                // Undo our readers bump
-                context_space
-                    .drop_lock
-                    .readers
-                    .fetch_sub(1, Ordering::Relaxed);
-
-                return Err(GetContextSpaceError::NotInitialized);
-            }
-        }
-    }
-
-    impl<'a, T> Drop for ContextSpaceGuard<'a, T> {
-        fn drop(&mut self) {
-            self.context_space
-                .drop_lock
-                .readers
-                .fetch_sub(1, Ordering::Relaxed);
+            // Make the context space guard!
+            Ok(ContextSpaceGuard {
+                context_space,
+                _guard: guard,
+            })
         }
     }
 
@@ -383,17 +436,13 @@ pub mod object {
         // and that it is to the full context space area
         let drop_lock = unsafe { ContextSpaceWithDropLock::drop_lock(context_space) };
 
-        // Needs to be `Release` ordering so as to guarantee that the initialization
-        // writes are visible to other threads
-        drop_lock
-            .init_flag
-            .store(CONTEXT_SPACE_INIT_MARKER, Ordering::Release)
+        // SAFETY: Caller guarantees that the context space is initialized
+        unsafe { drop_lock.mark_initialized() };
     }
 
-    /// Gets a ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
-    pub(crate) fn get_context<T: IntoContextSpace>(
+    fn get_context_space_ptr<T: IntoContextSpace>(
         handle: &impl AsObjectHandle,
-    ) -> Result<ContextSpaceGuard<'_, T>, GetContextSpaceError> {
+    ) -> Result<*mut ContextSpaceWithDropLock<T>, GetContextSpaceError> {
         let handle = handle.as_handle();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
@@ -411,10 +460,19 @@ pub mod object {
         // returns a pointer to the base of the context space so we can get the additional metadata
         let context_space = context_space.cast::<ContextSpaceWithDropLock<T>>();
 
+        Ok(context_space)
+    }
+
+    /// Gets a ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
+    pub(crate) fn get_context<T: IntoContextSpace>(
+        handle: &impl AsObjectHandle,
+    ) -> Result<ContextSpaceGuard<'_, T>, GetContextSpaceError> {
+        let context_space = get_context_space_ptr::<T>(handle)?;
+
         // SAFETY:
         // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
         //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
-        // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
+        // - `IntoContextSpace` requires alignment to MEMORY_ALLOCATION_ALIGNMENT or smaller
         // - We've checked `context_space` to not be NULL
         //
         // Note that the actual context space data isn't required to be initialized since it's behind a `MaybeUninit`
@@ -426,7 +484,7 @@ pub mod object {
 
     /// Drops the associated context space
     ///
-    /// Allows performing extra work before the context space is dropped
+    /// Allows performing extra work before the context space is dropped.
     ///
     /// This waits for any additional readers to stop accessing the context space before dropping,
     /// and this wait may take a bit. Care must be taken for other readers to not hold their [`ContextSpaceGuard`]
@@ -435,58 +493,17 @@ pub mod object {
     /// Returns the appropriate [`GetContextError::NotInitialized`] code if the context space was never initialized or already dropped,
     /// or [`GetContextError::NotFound`] if this was not a context space of the object
     pub(crate) fn drop_context_space<T: IntoContextSpace>(
-        handle: &mut impl AsObjectHandle,
+        handle: &impl AsObjectHandle,
         additional_work: impl FnOnce(Pin<&mut T>),
     ) -> Result<(), GetContextSpaceError> {
-        let handle = handle.as_handle_mut();
+        let context_space = get_context_space_ptr::<T>(handle)?;
 
-        // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
-        let context_space = unsafe {
-            // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
-            crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
-        };
-
-        if context_space.is_null() {
-            // `context_space` is only NULL if `T` doesnt't have a context on the object
-            return Err(GetContextSpaceError::NotFound);
-        }
-
-        // Note: `context_space` comes from `WdfGetTypedContextWorker`, which
-        // returns a pointer to the base of the context space so we can get the additional metadata
-        let context_space = context_space.cast::<ContextSpaceWithDropLock<T>>();
-
-        // SAFETY: `context_space` comes from `WdfGetTypedContextWorker`, which
-        // returns a pointer to the base of the context space
+        // SAFETY: `get_context_space_ptr` returns a pointer to the base of the context space
         let drop_lock = unsafe { ContextSpaceWithDropLock::drop_lock(context_space) };
 
-        // Check if the context space is still initialized and we're the only one dropping it
-        //
-        // Success ordering is `Acquire` ordering to pair with the `Release` store in here and in `mark_context_space_init`
-        // Failure ordering is `Relaxed` because we don't care about the value
-        if drop_lock
-            .init_flag
-            .compare_exchange(
-                CONTEXT_SPACE_INIT_MARKER,
-                CONTEXT_SPACE_DROPPED_MARKER,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            // Context space has either already been dropped, in the process of being dropped, or was never initialized
-            return Err(GetContextSpaceError::NotInitialized);
-        }
-
-        // Wait for any remaining readers to drop their context space guards.
-        // There won't be any additional readers added because acquiring a
-        // context space guard requires that the `init_flag` is `CONTEXT_SPACE_INIT_MARKER`,
-        // but we've set `init_flag` to `CONTEXT_SPACE_DROP_MARKER`
-        //
-        // Is `Relaxed` ordering because it is not related to any other access
-        // (just a counter for how many readers there are).
-        while drop_lock.readers.load(Ordering::Relaxed) != 0 {
-            core::hint::spin_loop();
-        }
+        // Ensure that we are the only user of the context space,
+        // and that the context space is still initialized
+        drop_lock.acquire_exclusive()?;
 
         // Do any additonal work before dropping the context area,
         // which requires a pinned mut ref
@@ -499,9 +516,9 @@ pub mod object {
         //   returns a pointer to the base of the context space
         // - WDF aligns memory allocations to MEMORY_ALLOCATION_ALIGNMENT
         //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
-        // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
-        // - We've ensured that `readers`
-        //   is 0 meaning that we have exclusive access to the context space.
+        // - `IntoContextSpace` requires alignment to MEMORY_ALLOCATION_ALIGNMENT or smaller
+        // - `DropLock::acquire_exlusive` ensures that the context space is initialized,
+        //   and we have exclusive access to the context space
         let context_space = unsafe { &mut *context_space };
         // SAFETY: Ditto
         let context_space = unsafe { &mut *context_space.data.as_mut_ptr() };
@@ -593,7 +610,7 @@ pub mod object {
         // - We directly `?` the produced error
         unsafe { pin_init.__pinned_init(context_space)? }
 
-        // By this point we've successfully initialized the context space
+        // SAFETY: By this point we've successfully initialized the context space
         unsafe { mark_context_space_init::<T>(context_space.cast()) };
 
         Ok(())
@@ -985,10 +1002,10 @@ pub mod driver {
 
         unsafe extern "C" fn __dispatch_driver_unload(driver: WDFDRIVER) {
             // SAFETY: Driver unload only gets called once, and after everything?
-            let mut handle = unsafe { DriverHandle::wrap(driver) };
+            let handle = unsafe { DriverHandle::wrap(driver) };
 
             // Drop the context area
-            let status = object::drop_context_space::<T>(&mut handle, |context_space| {
+            let status = object::drop_context_space::<T>(&handle, |context_space| {
                 if T::HAS_UNLOAD {
                     // Do the unload callback...
                     context_space.unload();
@@ -998,8 +1015,7 @@ pub mod driver {
             if let Err(err) = status {
                 // No (valid) context space to drop, nothing to do
                 windows_kernel_rs::log::warn!("No driver context space to drop ({:x?})", err);
-                return;
-            };
+            }
         }
 
         unsafe extern "C" fn __dispatch_evt_cleanup(_driver: wdf_kmdf_sys::WDFOBJECT) {
