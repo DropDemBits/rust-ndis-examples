@@ -43,7 +43,7 @@ script='''
 call "%VC_BUILD_DIR%" x64
 
 copy ndisprot-kmdf\ndisprot.inf %TARGET_PATH%
-stampinf -f %TARGET_PATH%\ndisprot.inf -a amd64 -d * -v %DRIVER_VERSION% -k 1.31
+stampinf -f %TARGET_PATH%\ndisprot.inf -a amd64 -d * -v %DRIVER_VERSION% -k 1.31 -x
 '''
 
 [tasks.dist]
@@ -63,7 +63,7 @@ inf2cat /driver:dist\ /os:10_x64
 if not exist DriverCertificate.cer ( makecert -r -pe -ss PrivateCertStore -n CN=DriverCertificate DriverCertificate.cer ) else ( echo Certificate already exists. )
 
 @rem And sign the driver
-signtool sign /a /ph /v /s PrivateCertStore /n DriverCertificate /fd sha1 /t http://timestamp.digicert.com dist/%DRIVER_NAME%.sys dist/*.cat
+signtool sign /debug /a /ph /v /s PrivateCertStore /n DriverCertificate /fd sha1 /t http://timestamp.digicert.com dist/%DRIVER_NAME%.sys dist/*.cat
 
 copy DriverCertificate.cer dist\
 '''
