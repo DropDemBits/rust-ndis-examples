@@ -1,1 +1,3 @@
 doc-valid-idents = ["PnP", ".."]
+accept-comment-above-statement = true
+accept-comment-above-attributes = true

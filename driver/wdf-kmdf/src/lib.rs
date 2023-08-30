@@ -446,10 +446,8 @@ pub mod object {
         let handle = handle.as_handle();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
-        let context_space = unsafe {
-            // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
-            crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO)
-        };
+        let context_space =
+            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
 
         if context_space.is_null() {
             // `context_space` is only NULL if `T` doesnt't have a context on the object
