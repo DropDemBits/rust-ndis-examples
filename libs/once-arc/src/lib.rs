@@ -136,6 +136,8 @@ impl<T> OnceArc<T> {
     pub fn try_init(&self, new: Arc<T>) -> Result<(), Arc<T>> {
         let new_arc = Self::into_inner_ptr(Some(new));
 
+        // Use `Release` on success so that other threads can see the latest `Arc` we put in
+        // Use `Acquire` on failure since we still want a valid `Arc` to go from
         match self.inner.compare_exchange(
             core::ptr::null_mut(),
             new_arc,
@@ -160,7 +162,9 @@ impl<T> OnceArc<T> {
                 //
                 // SAFETY: `inner` is always either from a `Arc::into_raw`
                 // by the invariant of `inner`, and is not null because we
-                // failed the compare exchange.
+                // failed the compare exchange. The old `Arc` will also
+                // still be valid since `take()` requires exclusive access
+                // and replaces `inner` with `ptr::null()`.
                 let old_arc = unsafe { Self::manifest_cloned_arc(old_arc) };
                 Err(old_arc.expect("current `Arc` should not be null"))
             }
