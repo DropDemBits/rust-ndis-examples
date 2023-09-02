@@ -88,15 +88,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
-name = "cc"
-version = "1.0.81"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c6b2562119bf28c3439f7f02db99faf0aa1a8cdfe5772a2ee155d32227239f0"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "cexpr"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -488,7 +479,6 @@ name = "wdf-kmdf-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",
- "cc",
  "thiserror",
  "windows-kernel-sys",
  "winreg",
@@ -549,7 +539,6 @@ name = "windows-kernel-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",
- "cc",
  "thiserror",
  "winreg",
  "winresult",

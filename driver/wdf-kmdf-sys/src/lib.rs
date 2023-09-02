@@ -38,6 +38,17 @@ mod bindings {
 pub use bindings::*;
 use windows_kernel_sys::ULONG;
 
+// We also define `WdfMinimumVersionRequired` as a static since bindgen
+// interprets the original `WdfMinimumVersionRequired` as a constant.
+//
+// We also don't explicitly set the minimum version and instead use whatever
+// we got from bindgen so that we only have to change the minimum minor version
+// from one place (useful for if we allow changing the minimum version), as well
+// as not having to remake the logic for choosing the minimum version.
+#[allow(hidden_glob_reexports)] // only used during WDF loading
+#[no_mangle]
+static WdfMinimumVersionRequired: ULONG = bindings::WdfMinimumVersionRequired;
+
 #[macro_export]
 macro_rules! WDF_NO_OBJECT_ATTRIBUTES {
     () => {

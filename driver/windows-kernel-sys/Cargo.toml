@@ -10,6 +10,5 @@ winresult = "0.1.3"
 
 [build-dependencies]
 bindgen = "0.65.1"
-cc = "1.0.79"
 thiserror = "1.0.40"
 winreg = "0.50.0"

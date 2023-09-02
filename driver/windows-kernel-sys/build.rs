@@ -117,10 +117,6 @@ fn generate() {
     // Find the include directory containing the kernel headers.
     let include_dir = get_km_dir(DirectoryType::Include).unwrap();
 
-    // Supplimentary headers (presumably from ntddk)
-    let crt_dir = include_dir.join("crt");
-    let shared_dir = get_shared_dir().unwrap();
-
     // Get the build directory.
     let out_path = build_dir();
 
@@ -150,17 +146,6 @@ fn generate() {
         .unwrap()
         .write_to_file(out_path.join("bindings.rs"))
         .unwrap();
-
-    // Rerun if the wrapper stubs changed
-    println!("cargo:rerun-if-changed=src/wrapper.c");
-    cc::Build::new()
-        .flag("/kernel")
-        .include(include_dir)
-        .include(crt_dir)
-        .include(shared_dir)
-        .include(out_path)
-        .file("src/wrapper.c")
-        .compile("wrapper_bindings");
 }
 
 fn header_hacks_dir() -> PathBuf {
