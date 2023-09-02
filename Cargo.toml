@@ -4,6 +4,7 @@ resolver="2"
 members = [
   "libs/vtable",
   "libs/once-arc",
+  "prottest"
 ]
 
 [workspace.dependencies]
