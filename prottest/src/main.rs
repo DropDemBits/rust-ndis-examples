@@ -1,17 +1,17 @@
 //! Test program for ndisprot_kmdf.sys
-#![allow(unused)] // not everything is set up yet
 
 use std::str::FromStr;
 
+use bytemuck::Zeroable;
 use clap::Parser;
 use color_eyre::eyre::{Result, WrapErr};
 use windows::Win32::{
     Foundation::{CloseHandle, ERROR_NO_MORE_ITEMS, GENERIC_READ, GENERIC_WRITE, HANDLE},
-    Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING},
+    Storage::FileSystem::{CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING},
     System::IO::DeviceIoControl,
 };
 
-use crate::user_io_interface::{NdisProtIoctl, QueryBinding, QueryBindingHeader};
+use crate::user_io_interface::{NdisProtIoctl, QueryBinding, QueryBindingHeader, QueryOid};
 
 const DEFAULT_NDISPROT_DEVICE: &str = r"\\.\\NdisProt";
 
@@ -21,7 +21,10 @@ const FAKE_SRC_MAC_ADDR: MACAddr = MACAddr([0; MAC_ADDR_LEN]);
 
 const DEFAULT_PACKET_LENGTH: u32 = 100;
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, Eq, bytemuck_derive::Zeroable, bytemuck_derive::Pod,
+)]
+#[repr(transparent)]
 struct MACAddr([u8; MAC_ADDR_LEN]);
 
 impl std::fmt::Display for MACAddr {
@@ -62,6 +65,7 @@ impl FromStr for MACAddr {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, bytemuck_derive::Zeroable, bytemuck_derive::Pod)]
 #[repr(C, packed)]
 struct EthHeader {
     dst_addr: MACAddr,
@@ -121,16 +125,29 @@ fn main() -> Result<()> {
     }
 
     // open the device
-    state.open_ndis_device()?;
+    state
+        .open_ndis_device()
+        .wrap_err("trying to open ndis device")?;
 
-    // remaining:
-    // - set src mac
-    // - set dst mac
-    // - either:
-    //   - only do reads
-    //   - do writes and reads
+    state
+        .get_src_mac()
+        .wrap_err("trying to get src MAC address")?;
 
-    println!("note: no other options supported right now");
+    println!("got local MAC: {}", state.src_mac_addr);
+
+    if let Some(mac_addr) = state.opts.override_mac_address {
+        state.dst_mac_addr = mac_addr;
+    }
+
+    match state.opts.mode {
+        Mode::Read => {
+            state.do_read();
+        }
+        Mode::Write => {
+            state.do_write();
+            state.do_read();
+        }
+    }
 
     Ok(())
 }
@@ -215,6 +232,141 @@ impl State {
             .wrap_err("failed to open device")
         }
     }
+
+    fn get_src_mac(&mut self) -> Result<()> {
+        println!("trying to get src mac address");
+
+        let oid_query = QueryOid::<{ std::mem::size_of::<MACAddr>() }> {
+            oid: windows::Win32::NetworkManagement::Ndis::OID_802_3_CURRENT_ADDRESS,
+            port_number: 0,
+            data: MACAddr::default().0,
+        };
+        let oid_query_bytes = bytemuck::bytes_of(&oid_query);
+
+        let mut oid_query_result = QueryOid::<{ std::mem::size_of::<MACAddr>() }>::zeroed();
+        let oid_query_result_bytes = bytemuck::bytes_of_mut(&mut oid_query_result);
+
+        let mut bytes_written = 0;
+
+        unsafe {
+            DeviceIoControl(
+                self.device_handle,
+                NdisProtIoctl::QueryOidValue.code().bits(),
+                Some(oid_query_bytes.as_ptr().cast()),
+                oid_query_bytes.len() as u32,
+                Some(oid_query_result_bytes.as_mut_ptr().cast()),
+                oid_query_result_bytes.len() as u32,
+                Some(&mut bytes_written),
+                None,
+            )
+            .wrap_err("DeviceIoControl failed")?;
+        }
+
+        println!("IoControl success, BytesWritten {bytes_written}");
+        if bytes_written as usize != std::mem::size_of_val(&oid_query_result) {
+            color_eyre::eyre::bail!(
+                "returned MAC address buffer was not the right size ({bytes_written} != {})",
+                std::mem::size_of_val(&oid_query_result)
+            );
+        }
+
+        self.src_mac_addr = MACAddr(oid_query_result.data);
+
+        Ok(())
+    }
+
+    fn do_read(&self) {
+        let mut read_buf = (0..self.opts.packet_length)
+            .map(|_| 0u8)
+            .collect::<Vec<_>>();
+
+        let mut read_count = 0;
+        loop {
+            let mut bytes_read = 0;
+            let res = unsafe {
+                ReadFile(
+                    self.device_handle,
+                    Some(read_buf.as_mut_slice()),
+                    Some(&mut bytes_read),
+                    None,
+                )
+                .wrap_err_with(|| format!("ReadFile failed on Handle {:?}", self.device_handle))
+            };
+
+            if let Err(err) = res {
+                eprintln!("{err}");
+                break;
+            }
+
+            read_count += 1;
+
+            if self
+                .opts
+                .packet_count
+                .is_some_and(|count| read_count == count)
+            {
+                break;
+            }
+        }
+
+        println!("do_read finished: read {read_count} packets");
+    }
+
+    fn do_write(&self) {
+        println!("do_write");
+
+        let header = EthHeader {
+            src_addr: if self.opts.use_fake_address {
+                FAKE_SRC_MAC_ADDR
+            } else {
+                self.src_mac_addr
+            },
+            dst_addr: self.dst_mac_addr,
+            eth_type: self.eth_type,
+        };
+        let header = bytemuck::bytes_of(&header);
+
+        let mut write_buf = (0..self.opts.packet_length)
+            .map(|idx| idx.wrapping_sub(header.len() as u32) as u8)
+            .collect::<Vec<_>>();
+
+        write_buf[0..header.len()].copy_from_slice(header);
+
+        let mut write_count = 0;
+        let mut bytes_read = 0;
+
+        loop {
+            let res = unsafe {
+                WriteFile(
+                    self.device_handle,
+                    Some(write_buf.as_slice()),
+                    Some(&mut bytes_read),
+                    None,
+                )
+                .wrap_err_with(|| format!("ReadFile failed on Handle {:?}", self.device_handle))
+            };
+
+            if let Err(err) = res {
+                eprintln!("{err}");
+                break;
+            }
+
+            write_count += 1;
+
+            if self
+                .opts
+                .packet_count
+                .is_some_and(|count| write_count == count)
+            {
+                break;
+            }
+        }
+
+        println!(
+            "do_read finished: sent {write_count} packets of {} bytes each",
+            self.opts.packet_length
+        );
+    }
 }
 
 impl Drop for State {
@@ -278,6 +430,7 @@ mod user_io_interface {
     };
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[allow(unused)] // we don't use everything here
     pub enum NdisProtIoctl {
         OpenDevice,
         QueryOidValue,
@@ -435,6 +588,22 @@ mod user_io_interface {
             })
         }
     }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct QueryOid<const BUFFER_SIZE: usize> {
+        pub oid: u32,
+        pub port_number: u32,
+        pub data: [u8; BUFFER_SIZE],
+    }
+
+    unsafe impl<const BUFFER_SIZE: usize> bytemuck::Zeroable for QueryOid<BUFFER_SIZE> {
+        fn zeroed() -> Self {
+            unsafe { core::mem::zeroed() }
+        }
+    }
+
+    unsafe impl<const BUFFER_SIZE: usize> bytemuck::Pod for QueryOid<BUFFER_SIZE> {}
 
     pub mod ioctl {
         use mycelium_bitfield::{bitfield, enum_from_bits, FromBits};
