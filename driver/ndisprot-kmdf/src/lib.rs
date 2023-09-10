@@ -495,7 +495,7 @@ struct OpenContext {
     // - QueryOidValue (read, write)
     //
     // Also used to not make the binding go away
-    pending_send_count: u32,
+    pended_send_count: u32,
 
     // Used in
     // - OpenDevice (QueueStart)
