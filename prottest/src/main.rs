@@ -445,7 +445,6 @@ mod user_io_interface {
             const FSCTL_NDISPROT_BASE: DeviceType =
                 DeviceType::Standard(StandardDeviceType::Network);
 
-            // Done like this because I don't know how to construct an IoControlCode in a const context
             match self {
                 Self::OpenDevice => IoControlCode::code(
                     FSCTL_NDISPROT_BASE,
@@ -619,6 +618,7 @@ mod user_io_interface {
         }
 
         impl IoControlCode {
+            // can't make this const because there's no const traits yet
             pub fn code(
                 device_type: DeviceType,
                 function_code: u16,
@@ -680,16 +680,12 @@ mod user_io_interface {
         }
 
         impl FromBits<u32> for DeviceType {
-            type Error = &'static str;
+            type Error = <Self as FromBits<u16>>::Error;
             const BITS: u32 = <Self as FromBits<u16>>::BITS;
 
             fn try_from_bits(bits: u32) -> Result<Self, Self::Error> {
-                if bits <= 0x7FFF {
-                    Ok(Self::Standard(StandardDeviceType::try_from_bits(
-                        bits as u16,
-                    )?))
-                } else if bits <= u16::MAX as u32 {
-                    Ok(Self::Vendor(VendorDeviceType::from_bits(bits as u16)))
+                if bits <= u16::MAX as u32 {
+                    <Self as FromBits<u16>>::try_from_bits(bits as u16)
                 } else {
                     Err("expected a StandardDeviceType (in [0..0x7FFF]) or a VendorDeviceType (in [0x8000..0xFFFF]))")
                 }
