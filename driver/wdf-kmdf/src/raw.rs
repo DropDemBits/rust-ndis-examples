@@ -986,7 +986,50 @@ pub unsafe fn WdfObjectContextGetObject(ContextPointer: PVOID) -> WDFOBJECT {
     dispatch!(WdfObjectContextGetObject(ContextPointer))
 }
 
-// FIXME: WdfObjectCreate
+/// Creates a general framework object
+///
+/// By default, the parent of a general framework object is the framework driver, but this can be changed by setting the [`ParentObject`](wdf_kmdf_sys::WDF_OBJECT_ATTRIBUTES::ParentObject) field in [`WDF_OBJECT_ATTRIBUTES`](wdf_kmdf_sys::WDF_OBJECT_ATTRIBUTES).
+///
+/// The framework deletes the general object once its parent object is deleted, or the object is manually deleted via [`WdfObjectDelete`].
+/// If the general object's parent is not set, the object should be deleted once its lifetime ends, otherwise the object will stay alive until the driver is unloaded.
+///
+/// ## Return value
+///
+/// The newly created object is stored in the place given by `Object`.
+///
+/// `STATUS_SUCCESS` is returned if the operation was successful, otherwise:
+///
+/// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+///
+/// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+/// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+///
+/// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+/// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+///
+/// ## See Also
+///
+/// - [Using General Framework Objects](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/using-general-framework-objects)
+/// - [Framework Object Lifecycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-life-cycle)
+#[must_use]
+pub unsafe fn WdfObjectCreate(
+    Attributes: Option<PWDF_OBJECT_ATTRIBUTES>,
+    Object: &mut WDFOBJECT,
+) -> NTSTATUS {
+    dispatch!(WdfObjectCreate(
+        Attributes.unwrap_or(core::ptr::null_mut()),
+        Object
+    ))
+}
 
 /// Deletes the framework object and its descendants
 ///
