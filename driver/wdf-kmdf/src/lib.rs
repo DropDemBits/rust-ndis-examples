@@ -656,13 +656,16 @@ pub mod sync {
         ///
         /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
         /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
-        pub fn new(value: impl PinInit<T, Error>) -> impl PinInit<Self, Error> {
+        pub fn new<E>(value: impl PinInit<T, E>) -> impl PinInit<Self, Error>
+        where
+            E: Into<Error>,
+        {
             pinned_init::try_pin_init!(SpinMutex {
                 spin_lock: SpinLock::new()?,
                 data <- {
                     let init = move |slot: *mut UnsafeCell<T>| {
                         // SAFETY: by guarantees of `pin_init_from_closure`
-                        unsafe { value.__pinned_init(slot.cast()) }
+                        unsafe { value.__pinned_init(slot.cast()).map_err(|err| err.into()) }
                     };
 
                     // SAFETY: `data` is pinned too, and initialization requirements are guaranteed
