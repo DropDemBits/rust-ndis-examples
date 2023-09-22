@@ -30,9 +30,9 @@ pub struct Error(pub NtStatus);
 impl Error {
     /// Converts an [`NTSTATUS`] into an `Error`.
     ///
-    /// Note that this treats anything that isn't `STATUS_SUCCESSFUL` as an error
+    /// Note that this treats anything that isn't `STATUS_SUCCESS` as an error
     pub fn to_err(status: NTSTATUS) -> Result<(), Error> {
-        if status == 0 {
+        if status == winresult::STATUS::SUCCESS.to_u32() {
             Ok(())
         } else {
             Err(Error(NtStatus::from(status)))
@@ -43,6 +43,18 @@ impl Error {
 impl From<core::alloc::AllocError> for Error {
     fn from(_: core::alloc::AllocError) -> Self {
         Self(result::STATUS::INSUFFICIENT_RESOURCES)
+    }
+}
+
+impl From<NtStatus> for Error {
+    fn from(err: NtStatus) -> Self {
+        Self(err)
+    }
+}
+
+impl From<core::convert::Infallible> for Error {
+    fn from(value: core::convert::Infallible) -> Self {
+        match value {}
     }
 }
 
