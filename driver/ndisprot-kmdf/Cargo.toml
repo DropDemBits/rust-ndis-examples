@@ -15,6 +15,7 @@ vtable.workspace = true
 once-arc.workspace = true
 pinned-init.workspace = true
 bitflags = "2.3.3"
+scopeguard = { version = "1.2.0", default-features = false }
 
 [build-dependencies]
 thiserror = "1.0.40"

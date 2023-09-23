@@ -11,16 +11,20 @@ mod send;
 mod recv;
 
 use core::{
-    mem::MaybeUninit,
+    mem::{ManuallyDrop, MaybeUninit},
     pin::Pin,
     ptr::addr_of_mut,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use once_arc::OnceArc;
 use pinned_init::{pin_data, pinned_drop, InPlaceInit, PinInit};
-use wdf_kmdf::{object::AsObjectHandle, sync::SpinMutex};
+use wdf_kmdf::{
+    driver::Driver,
+    object::{AsObjectHandle, GeneralObject},
+    sync::SpinMutex,
+};
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
     WDF_IO_QUEUE_DISPATCH_TYPE,
@@ -28,15 +32,18 @@ use wdf_kmdf_sys::{
 use windows_kernel_rs::{
     ioctl::{DeviceType, IoControlCode, RequiredAccess, TransferMethod},
     log::{self, debug, error, info, warn},
-    string::{nt_unicode_str, unicode_string::NtUnicodeStr},
+    string::{
+        nt_unicode_str,
+        unicode_string::{NtUnicodeStr, NtUnicodeString},
+    },
     DriverObject,
 };
 use windows_kernel_sys::{
-    result::STATUS, Error, KeInitializeEvent, KeWaitForSingleObject, NdisGeneratePartialCancelId,
-    KEVENT, LIST_ENTRY, NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS,
-    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
-    NDIS_REQUEST_TYPE, NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER,
-    PDRIVER_OBJECT, PUNICODE_STRING, ULONG, ULONG_PTR,
+    result::STATUS, Error, KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, NdisFreeMemory,
+    NdisFreeNetBufferListPool, NdisGeneratePartialCancelId, KEVENT, LIST_ENTRY, NDIS_HANDLE,
+    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_REQUEST_TYPE, NET_DEVICE_POWER_STATE,
+    NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT, PUNICODE_STRING, ULONG, ULONG_PTR,
 };
 
 #[allow(non_snake_case)]
@@ -167,7 +174,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                     ndis_protocol_handle: handle,
                     eth_type: NPROT_ETH_TYPE,
                     cancel_id_gen,
-                    open_list <- SpinMutex::new(ListEntry::new()),
+                    open_list <- SpinMutex::new(Vec::new()),
                     binds_complete <- KeEvent::new(EventType::Notification, false),
                 }? Error);
 
@@ -351,7 +358,7 @@ struct Globals {
     //   - EvtIoDeviceControl
     //     - Have access to FileObject.ContextSpace
     #[pin]
-    open_list: SpinMutex<ListEntry>,
+    open_list: SpinMutex<Vec<GeneralObject<OpenContext>>>,
     /// Notifiying when binding is complete (used in ioctl)
     // Used in
     // - ndisbind::PnPEventHandler
@@ -418,11 +425,9 @@ wdf_kmdf::impl_context_space!(ControlDevice);
 /// See <https://github.com/microsoft/Windows-driver-samples/blob/d9acf794c92ba2fb0525f6c794ef394709035ac3/network/ndis/ndisprot_kmdf/60/ndisprot.h#L54-L90>
 #[pin_data(PinnedDrop)]
 struct OpenContext {
-    globals: Pin<Arc<Globals>>,
+    driver: Driver<NdisProt>,
 
-    /// Link to the global `open_list`
     #[pin]
-    link: ListEntry,
     inner: SpinMutex<OpenContextInner>,
 
     /// Set in `OPEN_DEVICE`
@@ -433,28 +438,6 @@ struct OpenContext {
     // Essentially just used as debugging for figuring out the assoc'd file object
     file_object: WDFFILEOBJECT,
 
-    // Used in
-    // - EvtIoWrite (read)
-    // - ReceiveNBLs (read)
-    //   - Have access to a ProtocolBindingContext
-    //   - AllocateReceiveNBLs (read)
-    // - FreeReceiveNBLs (read)
-    //   - ServiceReads
-    //     - EvtNotifyReadQueue
-    //       - ReadQueue event, have access to ctx area but done before binding create?
-    //     - QueueReceiveNBL
-    //       - ReceiveNBLs
-    //   - ReceiveNBLs
-    //     - QueueReceiveNBL
-    //   - FlushReceiveQueue
-    //     - PnPEventHandler
-    //       - Have access to a ProtocolBindingContext
-    //     - ShutdownBinding
-    //       - CreateBinding
-    //       - UnbindAdapter
-    //         - Have access to a ProtocolBindingContext
-    //     - EvtFileCleanup
-    binding_handle: NDIS_HANDLE,
     // set on adapter create
     // Used in
     // - EvtIoWrite
@@ -531,7 +514,7 @@ struct OpenContext {
     // - recv::QueueReceiveNBL (write)
     // - recv::FlushReceiveQueue (write into_iter)
     // - BindAdapter (write)
-    recv_nbl_queue: LIST_ENTRY,
+    recv_nbl_queue: ListEntry,
     // protected by `lock`
     // - recv::ServiceReads (write dec)
     // - recv::QueueReceiveNBL (write inc + dec, read)
@@ -559,13 +542,14 @@ struct OpenContext {
     // Used in
     // - CreateBinding (read dbg, write)
     // - FreeBindResources (free)
-    device_name: NtUnicodeStr<'static>,
+    device_name: NtUnicodeString,
     /// device display name
     // Used in
     // - CreateBinding (write)
     // - FreeBindResources (free)
     // - QueryBinding (read)
-    device_desc: NtUnicodeStr<'static>,
+    // This is manually drop since the memory is allocated by NDIS
+    device_desc: ManuallyDrop<NtUnicodeString>,
 
     // For open/close_adapter
     // Used in
@@ -584,28 +568,6 @@ struct OpenContext {
 
     // structure signature, for sanity checking
     oc_sig: u32,
-    // protected by `lock`
-    // Used in
-    // - send::EvtIoWrite (unprotected read)
-    // - recv::ReceiveNBLs (read)
-    // - recv::QueueReceiveNBL (read)
-    // - BindAdapter (write, Initializing)
-    // - CreateBinding (write, Paused)
-    // - UnbindAdapter (unprotected write, Closing)
-    // - PnPEventHandler
-    //   - (write, Pausing)
-    //   - (unprotected write, Paused)
-    //   - (unprotected read dbg, Paused)
-    //   - (unprotected write, Restart)
-    state: OpenState,
-    // Used in
-    // - send::SendComplete (signal, write NULL)
-    // - ShutdownBinding (write NULL, write local event storage + init)
-    // - WaitForPendingIO (assert != NULL, wait forever)
-    // - ValidateOpenAndDoRequest (assert != NULL, signal, write NULL)
-    // - QueryOidValue (assert != NULL, signal, write NULL)
-    // - SetOidValue (assert != NULL, signal, write NULL)
-    closing_event: *mut KeEvent,
     // Used in
     // - send::EvtIoWrite (read)
     // - CreateBinding (write)
@@ -633,14 +595,79 @@ struct OpenContext {
 #[pinned_drop]
 impl PinnedDrop for OpenContext {
     fn drop(self: Pin<&mut Self>) {
-        debug_assert!(self.binding_handle.is_null());
-        debug_assert!(self.file_object.is_null());
+        // SAFETY: We're never going to replace the pinned data
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // we don't carry the binding handle here anymore
+        // debug_assert!(self.binding_handle.is_null());
+        debug_assert!(this.file_object.is_null());
+
+        let send_nbl_pool = core::mem::replace(&mut this.send_nbl_pool, core::ptr::null_mut());
+        if !send_nbl_pool.is_null() {
+            unsafe { NdisFreeNetBufferListPool(send_nbl_pool) }
+        }
+
+        let recv_nbl_pool = core::mem::replace(&mut this.recv_nbl_pool, core::ptr::null_mut());
+        if !recv_nbl_pool.is_null() {
+            unsafe { NdisFreeNetBufferListPool(recv_nbl_pool) }
+        }
+
+        // we allocated device_name so we don't need to explicitly drop it
+
+        let device_desc = core::mem::take(&mut this.device_desc);
+        {
+            // This memory was allocated by NDIS
+            let device_desc = unsafe {
+                core::mem::transmute::<
+                    ManuallyDrop<NtUnicodeString>,
+                    windows_kernel_sys::UNICODE_STRING,
+                >(device_desc)
+            };
+
+            unsafe { NdisFreeMemory(device_desc.Buffer.cast(), 0, 0) };
+        }
+
+        let read_queue = core::mem::replace(&mut this.read_queue, core::ptr::null_mut());
+        if !read_queue.is_null() {
+            unsafe { wdf_kmdf::raw::WdfObjectDelete(read_queue.cast()) }
+        }
+
+        let status_indication_queue =
+            core::mem::replace(&mut this.status_indication_queue, core::ptr::null_mut());
+        if !status_indication_queue.is_null() {
+            unsafe { wdf_kmdf::raw::WdfObjectDelete(status_indication_queue.cast()) }
+        }
     }
 }
+
+wdf_kmdf::impl_context_space!(OpenContext);
 
 struct OpenContextInner {
     /// State information
     flags: OpenContextFlags,
+    // protected by `lock`
+    // Used in
+    // - send::EvtIoWrite (unprotected read)
+    // - recv::ReceiveNBLs (read)
+    // - recv::QueueReceiveNBL (read)
+    // - BindAdapter (write, Initializing)
+    // - CreateBinding (write, Paused)
+    // - UnbindAdapter (unprotected write, Closing)
+    // - PnPEventHandler
+    //   - (write, Pausing)
+    //   - (unprotected write, Paused)
+    //   - (unprotected read dbg, Paused)
+    //   - (unprotected write, Restart)
+    state: OpenState,
+    // init & signal protected by `lock`
+    // Used in
+    // - send::SendComplete (signal, write NULL)
+    // - ShutdownBinding (write NULL, write local event storage + init)
+    // - ValidateOpenAndDoRequest (assert != NULL, signal, write NULL)
+    // - QueryOidValue (assert != NULL, signal, write NULL)
+    // - SetOidValue (assert != NULL, signal, write NULL)
+    // - WaitForPendingIO (assert != NULL, wait forever)
+    closing_event: *mut KeEvent,
 }
 
 enum OpenState {
@@ -695,7 +722,14 @@ const MAX_MULTICAST_ADDRESS: usize = 32;
 
 const OC_STRUCTURE_SIG: u32 = u32::from_be_bytes(['N' as u8, 'u' as u8, 'i' as u8, 'o' as u8]);
 
+#[derive(Default, Clone, Copy)]
 struct MACAddr([u8; 6]);
+
+impl MACAddr {
+    const fn zero() -> Self {
+        MACAddr([0; 6])
+    }
+}
 
 #[vtable::vtable]
 impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
@@ -731,7 +765,7 @@ pub struct KeEvent {
 }
 
 impl KeEvent {
-    pub fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self, Error> {
+    pub fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self> {
         unsafe {
             pinned_init::pin_init_from_closure(move |slot: *mut Self| {
                 KeInitializeEvent(
@@ -787,6 +821,10 @@ impl KeEvent {
                 timeout.cast(),
             )
         })
+    }
+
+    pub fn signal(&self) {
+        unsafe { KeSetEvent(core::ptr::addr_of!(self.event).cast_mut(), 1, 0) };
     }
 }
 
@@ -875,7 +913,7 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
 /// This is called in an arbitrary thread context, so any context that was created in `FileCreate` should be done in the
 /// cleanup callback.
 unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
-    let mut file_object =
+    let file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
     debug!("Close: FileObject {:#x?}", file_object);
@@ -888,7 +926,7 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
 /// ## Note
 /// This is called in the context of the thread which originally closed the handle
 unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
-    let mut file_object =
+    let file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
     // let open_context = file_object.get_context_mut().open_context.take();
@@ -1020,10 +1058,15 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
 
             if let Some(open_context) = open_context {
                 nt_status = match open_context
-                    .globals
-                    .binds_complete
-                    .wait(Timeout::relative_ms(5_000))
-                {
+                    .driver
+                    .get_context()
+                    .map_err(|err| err.into())
+                    .and_then(|driver| {
+                        driver
+                            .globals
+                            .binds_complete
+                            .wait(Timeout::relative_ms(5_000))
+                    }) {
                     Ok(()) => STATUS::SUCCESS,
                     Err(_) => STATUS::TIMEOUT,
                 };

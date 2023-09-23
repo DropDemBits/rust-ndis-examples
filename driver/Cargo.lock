@@ -233,6 +233,7 @@ dependencies = [
  "bitflags 2.3.3",
  "once-arc",
  "pinned-init",
+ "scopeguard",
  "thiserror",
  "vtable",
  "wdf-kmdf",
