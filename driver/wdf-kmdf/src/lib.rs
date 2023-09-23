@@ -999,12 +999,57 @@ pub mod driver {
     use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
     use crate::{
-        object::{self, default_object_attributes, IntoContextSpace},
+        object::{self, default_object_attributes, GetContextSpaceError, IntoContextSpace},
         raw,
     };
 
-    pub struct Driver<T: DriverCallbacks> {
+    pub struct Driver<T> {
+        handle: WDFDRIVER,
         _context: PhantomData<T>,
+    }
+
+    impl<T> Driver<T>
+    where
+        T: DriverCallbacks,
+    {
+        /// Wraps the handle in a raw driver object
+        ///
+        /// ## Safety
+        ///
+        /// Respect aliasing rules, since this can be used to
+        /// generate aliasing mutable references to the context space
+        pub unsafe fn wrap(handle: WDFDRIVER) -> Self {
+            Self {
+                handle,
+                _context: PhantomData,
+            }
+        }
+
+        /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
+        pub fn raw_handle(&mut self) -> WDFDRIVER {
+            self.handle
+        }
+    }
+
+    impl<T> object::AsObjectHandle for Driver<T> {
+        fn as_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.handle.cast()
+        }
+
+        fn as_handle_mut(&mut self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.handle.cast()
+        }
+    }
+
+    impl<T> Driver<T>
+    where
+        T: IntoContextSpace + DriverCallbacks,
+    {
+        pub fn get_context(
+            &self,
+        ) -> Result<object::ContextSpaceGuard<'_, T>, GetContextSpaceError> {
+            object::get_context(self)
+        }
     }
 
     /// Opaque driver handle used during the initialization of the driver's context space
@@ -1156,6 +1201,11 @@ pub mod driver {
             //   the default object attributes with T's context area
             // - The driver object was just created
             unsafe { object::context_pin_init(&mut handle, init_context) }
+        }
+
+        pub fn clone_ref(&self) -> Driver<T> {
+            // TODO: need WdfObjectDereferenceActual and WdfObjectReferenceActual
+            loop {}
         }
 
         unsafe extern "C" fn __dispatch_driver_device_add(
