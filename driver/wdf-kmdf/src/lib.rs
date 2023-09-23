@@ -79,16 +79,20 @@ pub mod file_object {
 pub mod object {
 
     use core::{
+        marker::PhantomData,
         mem::MaybeUninit,
         pin::Pin,
         sync::atomic::{AtomicU8, AtomicUsize, Ordering},
     };
 
+    use pinned_init::PinInit;
     use wdf_kmdf_sys::{
         WDFOBJECT, WDF_EXECUTION_LEVEL, WDF_OBJECT_ATTRIBUTES, WDF_OBJECT_CONTEXT_TYPE_INFO,
         WDF_SYNCHRONIZATION_SCOPE,
     };
     use windows_kernel_sys::{result::STATUS, Error};
+
+    use crate::raw;
 
     #[doc(hidden)]
     pub mod __macro_internals {
@@ -244,6 +248,181 @@ pub mod object {
         fn as_handle(&self) -> WDFOBJECT;
         fn as_handle_mut(&mut self) -> WDFOBJECT;
     }
+
+    /// Wraps a raw object pointer in a handle
+    pub struct RawObjectHandle(pub WDFOBJECT);
+
+    impl AsObjectHandle for RawObjectHandle {
+        fn as_handle(&self) -> WDFOBJECT {
+            self.0
+        }
+
+        fn as_handle_mut(&mut self) -> WDFOBJECT {
+            self.0
+        }
+    }
+
+    // Modes:
+    // - Wrapped (no drop)
+    // - Owned (need drop)
+    // - Parented (no need for drop)
+    // - Ref (need to deref)
+
+    pub struct GeneralObject<T> {
+        handle: WDFOBJECT,
+        _context: PhantomData<T>,
+    }
+
+    impl<T> GeneralObject<T>
+    where
+        T: IntoContextSpace,
+    {
+        /// Creates a new WDF General Object
+        ///
+        /// ## IRQL: <= `DISPATCH_LEVEL`
+        ///
+        /// ## Errors
+        ///
+        /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+        ///
+        /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+        /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+        #[cfg(any())] // need to figure out how to handle early drop
+        pub fn create<I>(
+            init_context: impl FnOnce(&mut Self) -> Result<I, Error>,
+        ) -> Result<Self, Error>
+        where
+            I: PinInit<T, Error>,
+        {
+            Self::_create(default_object_attributes::<T>(), init_context)
+        }
+
+        /// Creates a new WDF General Object attached to an object
+        ///
+        /// ## IRQL: <= `DISPATCH_LEVEL`
+        ///
+        /// ## Errors
+        ///
+        /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+        ///
+        /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+        /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+        pub fn with_parent<I>(
+            parent: &impl AsObjectHandle,
+            init_context: impl FnOnce(&mut Self) -> Result<I, Error>,
+        ) -> Result<Self, Error>
+        where
+            I: PinInit<T, Error>,
+        {
+            let mut object_attrs = default_object_attributes::<T>();
+            object_attrs.ParentObject = parent.as_handle();
+            Self::_create(object_attrs, init_context)
+        }
+
+        fn _create<I>(
+            mut object_attrs: wdf_kmdf_sys::WDF_OBJECT_ATTRIBUTES,
+            init_context: impl FnOnce(&mut Self) -> Result<I, Error>,
+        ) -> Result<Self, Error>
+        where
+            I: PinInit<T, Error>,
+        {
+            // Note: for now we always rely on the parent cleaning up the object
+
+            // Add the drop callback
+            object_attrs.EvtDestroyCallback = Some(Self::__dispatch_evt_destroy);
+
+            // Make the object!
+            let mut handle = {
+                let mut handle = core::ptr::null_mut();
+
+                // SAFETY:
+                // - Caller ensures that we're at the right IRQL
+                unsafe {
+                    Error::to_err(raw::WdfObjectCreate(Some(&mut object_attrs), &mut handle))
+                }?;
+
+                Self {
+                    handle,
+                    _context: PhantomData,
+                }
+            };
+
+            // SAFETY:
+            // - It's WDF's responsibility to insert the context area, since we create
+            //   the default object attributes with T's context area
+            // - The object was just created, and the context space has not been initialized yet
+            let status = unsafe { crate::object::context_pin_init(&mut handle, init_context) };
+
+            if let Err(err) = status {
+                // Delete the handle so that we clean up any resources allocated by `init_context`
+                unsafe { raw::WdfObjectDelete(handle.handle) };
+
+                Err(err)
+            } else {
+                Ok(handle)
+            }
+        }
+
+        /// Wraps the raw handle in a file object wrapper
+        ///
+        /// ## Safety
+        ///
+        /// Respect aliasing rules, since this can be used to
+        /// generate aliasing mutable references to the context space.
+        /// Also, the context space must be initialized.
+        // FIXME: Make a proper wrapper eventually
+        pub unsafe fn wrap(handle: WDFOBJECT) -> Self {
+            Self {
+                handle,
+                _context: PhantomData,
+            }
+        }
+
+        /// Gets the object handle for use with WDF functions that don't have clean wrappers yet
+        pub fn raw_handle(&self) -> WDFOBJECT {
+            self.handle
+        }
+
+        pub fn get_context(&self) -> Result<ContextSpaceGuard<'_, T>, GetContextSpaceError> {
+            crate::object::get_context(self)
+        }
+
+        pub fn clone_ref(&self) -> GeneralObject<T> {
+            // TODO: need WdfObjectDereferenceActual and WdfObjectReferenceActual
+            loop {}
+        }
+
+        unsafe extern "C" fn __dispatch_evt_destroy(object: wdf_kmdf_sys::WDFOBJECT) {
+            // SAFETY: EvtDestroy only gets called once, and once all other references are gone
+            let handle = unsafe { Self::wrap(object) };
+
+            // Drop the context area
+            let status = crate::object::drop_context_space::<T>(&handle, |_| ());
+
+            if let Err(err) = status {
+                // No (valid) context space to drop, nothing to do
+                windows_kernel_rs::log::warn!("No object context space to drop ({:x?})", err);
+            }
+        }
+    }
+
+    impl<T> AsObjectHandle for GeneralObject<T> {
+        fn as_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.handle.cast()
+        }
+
+        fn as_handle_mut(&mut self) -> wdf_kmdf_sys::WDFOBJECT {
+            self.handle.cast()
+        }
+    }
+
+    impl<T> PartialEq for GeneralObject<T> {
+        fn eq(&self, other: &Self) -> bool {
+            self.handle == other.handle
+        }
+    }
+
+    impl<T> Eq for GeneralObject<T> {}
 
     #[repr(C)]
     struct ContextSpaceWithDropLock<T> {
@@ -446,8 +625,7 @@ pub mod object {
         let handle = handle.as_handle();
 
         // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
-        let context_space =
-            unsafe { crate::raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
+        let context_space = unsafe { raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
 
         if context_space.is_null() {
             // `context_space` is only NULL if `T` doesnt't have a context on the object
@@ -572,14 +750,14 @@ pub mod object {
     where
         T: IntoContextSpace,
         Handle: AsObjectHandle,
-        I: pinned_init::PinInit<T, Err>,
+        I: PinInit<T, Err>,
     {
         let raw_handle = handle.as_handle_mut();
 
         // SAFETY: `raw_handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
         let context_space = unsafe {
             // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
-            crate::raw::WdfObjectGetTypedContextWorker(raw_handle, T::CONTEXT_INFO)
+            raw::WdfObjectGetTypedContextWorker(raw_handle, T::CONTEXT_INFO)
         };
         let context_space = context_space.cast::<T>();
 
