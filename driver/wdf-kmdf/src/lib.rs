@@ -105,18 +105,27 @@ pub mod object {
     #[macro_export]
     macro_rules! impl_context_space {
         ($ty:ty) => {
+            // Safety: We statically assert that $ty has the correct alignment,
+            // and we use `core::mem::size_of` on $ty to get the right size.
             unsafe impl $crate::object::IntoContextSpace for $ty {
                 const CONTEXT_INFO: &'static $crate::object::ContextInfo =
                     &$crate::object::ContextInfo {
-                        // Size is known to be small
+                        // Size of `ContextInfo` is known to be small
                         Size: ::core::mem::size_of::<$crate::object::ContextInfo>() as u32,
-                        ContextName: match ::core::ffi::CStr::from_bytes_until_nul(
-                            concat!(stringify!($ty), "\0").as_bytes(),
-                        ) {
-                            Ok(v) => v.as_ptr(),
-                            Err(_) => panic!("forgor nul byte 💀"),
+                        // Safety: We always concatenate a nul at the end
+                        ContextName: unsafe {
+                            ::core::ffi::CStr::from_bytes_with_nul_unchecked(
+                                concat!(stringify!($ty), "\0").as_bytes(),
+                            )
+                            .as_ptr()
                         },
                         ContextSize: ::core::mem::size_of::<$ty>(),
+                        // Set to null because this appears to only be used to
+                        // work around having multiple definitions of the same
+                        // context type info in the same translation unit. Also
+                        // since that consts can't refer to statics, which would
+                        // be required for `UniqueType` to point to the same
+                        // context info.
                         UniqueType: ::core::ptr::null(),
                         EvtDriverGetUniqueContextType: None,
                     };
