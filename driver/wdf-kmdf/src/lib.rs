@@ -6,6 +6,17 @@
     clippy::undocumented_unsafe_blocks
 )]
 
+#[macro_export]
+#[doc(hidden)]
+macro_rules! cstr {
+    ($str:expr) => {{
+        match ::core::ffi::CStr::from_bytes_with_nul(concat!($str, "\0").as_bytes()) {
+            Ok(it) => it,
+            Err(_) => panic!("unreachable code: always concat a nul terminator at the end"),
+        }
+    }};
+}
+
 pub mod raw;
 
 pub mod file_object {
@@ -96,6 +107,7 @@ pub mod object {
 
     #[doc(hidden)]
     pub mod __macro_internals {
+        pub use crate::cstr;
         pub use static_assertions::const_assert;
         pub use windows_kernel_sys::MEMORY_ALLOCATION_ALIGNMENT;
     }
@@ -113,12 +125,8 @@ pub mod object {
                         // Size of `ContextInfo` is known to be small
                         Size: ::core::mem::size_of::<$crate::object::ContextInfo>() as u32,
                         // Safety: We always concatenate a nul at the end
-                        ContextName: unsafe {
-                            ::core::ffi::CStr::from_bytes_with_nul_unchecked(
-                                concat!(stringify!($ty), "\0").as_bytes(),
-                            )
-                            .as_ptr()
-                        },
+                        ContextName: $crate::object::__macro_internals::cstr!(stringify!($ty))
+                            .as_ptr(),
                         ContextSize: ::core::mem::size_of::<$ty>(),
                         // Set to null because this appears to only be used to
                         // work around having multiple definitions of the same
@@ -272,13 +280,21 @@ pub mod object {
     }
 
     // Modes:
-    // - Wrapped (no drop)
-    // - Owned (need drop)
-    // - Parented (no need for drop)
+    // - Wrapped (nothing to do in drop)
+    // - Owned (need drop for delete)
+    // - Parented (need drop for delete so that it can be deleted sooner)
     // - Ref (need to deref)
+
+    pub(crate) enum HandleKind {
+        Wrapped,
+        Owned,
+        Parented,
+        Ref,
+    }
 
     pub struct GeneralObject<T> {
         handle: WDFOBJECT,
+        kind: HandleKind,
         _context: PhantomData<T>,
     }
 
@@ -296,7 +312,6 @@ pub mod object {
         ///
         /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
         /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
-        #[cfg(any())] // need to figure out how to handle early drop
         pub fn create<I>(
             init_context: impl FnOnce(&mut Self) -> Result<I, Error>,
         ) -> Result<Self, Error>
@@ -335,7 +350,11 @@ pub mod object {
         where
             I: PinInit<T, Error>,
         {
-            // Note: for now we always rely on the parent cleaning up the object
+            let kind = if object_attrs.ParentObject.is_null() {
+                HandleKind::Owned
+            } else {
+                HandleKind::Parented
+            };
 
             // Add the drop callback
             object_attrs.EvtDestroyCallback = Some(Self::__dispatch_evt_destroy);
@@ -352,6 +371,7 @@ pub mod object {
 
                 Self {
                     handle,
+                    kind,
                     _context: PhantomData,
                 }
             };
@@ -363,8 +383,8 @@ pub mod object {
             let status = unsafe { crate::object::context_pin_init(&mut handle, init_context) };
 
             if let Err(err) = status {
-                // Delete the handle so that we clean up any resources allocated by `init_context`
-                unsafe { raw::WdfObjectDelete(handle.handle) };
+                // Drop the handle so that we clean up any resources allocated by `init_context`
+                drop(handle);
 
                 Err(err)
             } else {
@@ -372,17 +392,17 @@ pub mod object {
             }
         }
 
-        /// Wraps the raw handle in a file object wrapper
+        /// Wraps the raw handle in a general object wrapper
         ///
         /// ## Safety
         ///
         /// Respect aliasing rules, since this can be used to
         /// generate aliasing mutable references to the context space.
         /// Also, the context space must be initialized.
-        // FIXME: Make a proper wrapper eventually
         pub unsafe fn wrap(handle: WDFOBJECT) -> Self {
             Self {
                 handle,
+                kind: HandleKind::Wrapped,
                 _context: PhantomData,
             }
         }
@@ -396,9 +416,24 @@ pub mod object {
             crate::object::get_context(self)
         }
 
+        /// Makes another shared reference to the general object
+        ///
+        /// ## IRQL: <= Dispatch
         pub fn clone_ref(&self) -> GeneralObject<T> {
-            // TODO: need WdfObjectDereferenceActual and WdfObjectReferenceActual
-            loop {}
+            // Safety: Caller ensures that we're at the right IRQL
+            unsafe {
+                raw::WdfObjectReferenceActual(
+                    self.handle,
+                    None,
+                    line!() as i32,
+                    Some(cstr!(file!()).as_ptr()),
+                )
+            }
+
+            GeneralObject {
+                kind: HandleKind::Ref,
+                ..*self
+            }
         }
 
         unsafe extern "C" fn __dispatch_evt_destroy(object: wdf_kmdf_sys::WDFOBJECT) {
@@ -411,6 +446,28 @@ pub mod object {
             if let Err(err) = status {
                 // No (valid) context space to drop, nothing to do
                 windows_kernel_rs::log::warn!("No object context space to drop ({:x?})", err);
+            }
+        }
+    }
+
+    impl<T> Drop for GeneralObject<T> {
+        fn drop(&mut self) {
+            // FIXME: Assert that this is at <= DISPATCH_LEVEL
+            match self.kind {
+                HandleKind::Wrapped => {}
+                // Safety: assertion that we're at the correct IRQL
+                HandleKind::Owned | HandleKind::Parented => unsafe {
+                    raw::WdfObjectDelete(self.handle)
+                },
+                // Safety: assertion that we're at the correct IRQL
+                HandleKind::Ref => unsafe {
+                    raw::WdfObjectDereferenceActual(
+                        self.handle,
+                        None,
+                        line!() as i32,
+                        Some(cstr!(file!()).as_ptr()),
+                    )
+                },
             }
         }
     }
@@ -1008,12 +1065,15 @@ pub mod driver {
     use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
     use crate::{
-        object::{self, default_object_attributes, GetContextSpaceError, IntoContextSpace},
+        object::{
+            self, default_object_attributes, GetContextSpaceError, HandleKind, IntoContextSpace,
+        },
         raw,
     };
 
     pub struct Driver<T> {
         handle: WDFDRIVER,
+        kind: HandleKind,
         _context: PhantomData<T>,
     }
 
@@ -1030,6 +1090,7 @@ pub mod driver {
         pub unsafe fn wrap(handle: WDFDRIVER) -> Self {
             Self {
                 handle,
+                kind: HandleKind::Wrapped,
                 _context: PhantomData,
             }
         }
@@ -1212,9 +1273,24 @@ pub mod driver {
             unsafe { object::context_pin_init(&mut handle, init_context) }
         }
 
+        /// Makes a shared reference to the driver
+        ///
+        /// ## IRQL: <= Dispatch
         pub fn clone_ref(&self) -> Driver<T> {
-            // TODO: need WdfObjectDereferenceActual and WdfObjectReferenceActual
-            loop {}
+            // Safety: Caller ensures that we're at the right IRQL
+            unsafe {
+                raw::WdfObjectReferenceActual(
+                    self.handle.cast(),
+                    None,
+                    line!() as i32,
+                    Some(cstr!(file!()).as_ptr()),
+                )
+            }
+
+            Driver {
+                kind: HandleKind::Ref,
+                ..*self
+            }
         }
 
         unsafe extern "C" fn __dispatch_driver_device_add(
@@ -1262,6 +1338,25 @@ pub mod driver {
 
         unsafe extern "C" fn __dispatch_evt_destroy(_driver: wdf_kmdf_sys::WDFOBJECT) {
             windows_kernel_rs::log::debug!("EvtDestroyCallback");
+        }
+    }
+
+    impl<T> Drop for Driver<T> {
+        fn drop(&mut self) {
+            // FIXME: Assert that this is at <= DISPATCH_LEVEL
+
+            // Only need to decrement ref counts, WDF takes care of deleting the driver object
+            if let HandleKind::Ref = self.kind {
+                // Safety: assertion that we're at the correct IRQL
+                unsafe {
+                    raw::WdfObjectDereferenceActual(
+                        self.handle.cast(),
+                        None,
+                        line!() as i32,
+                        Some(cstr!(file!()).as_ptr()),
+                    )
+                }
+            }
         }
     }
 }

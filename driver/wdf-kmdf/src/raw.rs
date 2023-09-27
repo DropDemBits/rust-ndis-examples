@@ -8,7 +8,7 @@ use wdf_kmdf_sys::{
     WDF_NO_CONTEXT, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
 };
 use windows_kernel_sys::{
-    KPROCESSOR_MODE, NTSTATUS, PCUNICODE_STRING, PDRIVER_OBJECT, PMDL, PVOID, ULONG_PTR,
+    KPROCESSOR_MODE, LONG, NTSTATUS, PCCH, PCUNICODE_STRING, PDRIVER_OBJECT, PMDL, PVOID, ULONG_PTR,
 };
 
 // we refer to this struct a lot, so bring it into scope
@@ -1106,7 +1106,39 @@ pub unsafe fn WdfObjectDelete(Object: WDFOBJECT) {
     dispatch!(WdfObjectDelete(Object))
 }
 
-// FIXME: WdfObjectDereferenceActual
+/// Decrements the reference count of the object, and assigns a tag and source location of the reference decrement
+///
+/// If the object's reference count reaches zero, it may be deleted before [`WdfObjectDereferenceActual`] returns.
+///
+/// The tag, line number, and file name history of reference count changes can be viewed using `wdftagtracker`.
+///
+/// ## See Also
+///
+/// - On reference counts and cleanup rules: [Framework Object Life Cycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-life-cycle)
+/// - `!wdftagtracker`: [Debugging a KMDF Driver](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/debugging-driver-installation)
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - IRQL: <= `DISPATCH_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+///
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+pub unsafe fn WdfObjectDereferenceActual(
+    Handle: WDFOBJECT,  // in
+    Tag: Option<PVOID>, // in, optional
+    Line: LONG,         // in
+    File: Option<PCCH>, // in, optional
+) {
+    dispatch!(WdfObjectDereferenceActual(
+        Handle,
+        Tag.unwrap_or(core::ptr::null_mut()),
+        Line,
+        File.unwrap_or(core::ptr::null())
+    ))
+}
 
 /// If `TypeInfo` has a context space associated with the object, returns a pointer to the context space.
 /// Otherwise, returns `NULL`
@@ -1122,7 +1154,39 @@ pub unsafe fn WdfObjectGetTypedContextWorker(
     dispatch!(WdfObjectGetTypedContextWorker(Handle, TypeInfo))
 }
 
-// FIXME: WdfObjectReferenceActual
+/// Increments the reference count of the object, and assigns a tag and source location of the reference increment
+///
+/// Calls to [`WdfObjectReferenceActual`] should always have a matching [`WdfObjectDereferenceActual`] to restore the reference count.
+///
+/// The tag, line number, and file name history of reference count changes can be viewed using `wdftagtracker`.
+///
+/// ## See Also
+///
+/// - On reference counts and cleanup rules: [Framework Object Life Cycle](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-life-cycle)
+/// - `!wdftagtracker`: [Debugging a KMDF Driver](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/debugging-driver-installation)
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - IRQL: <= `DISPATCH_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+///
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+pub unsafe fn WdfObjectReferenceActual(
+    Handle: WDFOBJECT,  // in
+    Tag: Option<PVOID>, // in, optional
+    Line: LONG,         // in
+    File: Option<PCCH>, // in, optional
+) {
+    dispatch!(WdfObjectReferenceActual(
+        Handle,
+        Tag.unwrap_or(core::ptr::null_mut()),
+        Line,
+        File.unwrap_or(core::ptr::null())
+    ))
+}
 
 // endregion: wdfobject
 
@@ -1242,10 +1306,10 @@ pub unsafe fn WdfObjectGetTypedContextWorker(
 /// [`EvtIoWrite`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_write
 /// [`EvtIoDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_device_control
 /// [`EvtIoInternalDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_internal_device_control
+/// [`WdfObjectReference`]: crate::raw::WdfObjectReferenceActual
 //
 // TODO: As proper-intra doc links
 /// [`WdfRequestGetStatus`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nc-wdfrequest-evt_wdf_request_completion_routine
-/// [`WdfObjectReference`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/wdfobjectreference
 /// [`WdfRequestCompleteWithPriorityBoost`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestcompletewithpriorityboost
 /// [`WdfRequestStopAcknowledge`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequeststopacknowledge
 /// [`WdfRequestMarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelable
@@ -1376,11 +1440,11 @@ pub unsafe fn WdfRequestComplete(Request: WDFREQUEST, Status: NTSTATUS) {
 /// [`EvtIoWrite`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_write
 /// [`EvtIoDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_device_control
 /// [`EvtIoInternalDeviceControl`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_internal_device_control
+/// [`WdfObjectReference`]: crate::raw::WdfObjectReferenceActual
 //
 // TODO: As proper-intra doc links
 /// [`WdfRequestSetInformation`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestsetinformation
 /// [`WdfRequestGetStatus`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nc-wdfrequest-evt_wdf_request_completion_routine
-/// [`WdfObjectReference`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/wdfobjectreference
 /// [`WdfRequestCompleteWithPriorityBoost`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestcompletewithpriorityboost
 /// [`WdfRequestStopAcknowledge`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequeststopacknowledge
 /// [`WdfRequestMarkCancelable`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfrequest/nf-wdfrequest-wdfrequestmarkcancelable
