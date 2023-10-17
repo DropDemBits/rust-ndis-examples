@@ -60,7 +60,7 @@ const SUPPORTED_SET_OIDS: &[NDIS_OID] = &[
     OID_802_3_MULTICAST_LIST,
 ];
 
-const NPROT_ALLOC_TAG: u32 = u32::from_be_bytes([b'N', b'u', b'i', b'o']);
+const NPROT_ALLOC_TAG: u32 = u32::from_be_bytes(*b"Nuio");
 
 #[pin_data]
 struct ProtocolBindingContext {

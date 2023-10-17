@@ -9,7 +9,7 @@ pub mod allocator {
 
     use windows_kernel_sys::{ExAllocatePool2, ExFreePool, POOL_FLAG_NON_PAGED};
 
-    const POOL_TAG: u32 = u32::from_ne_bytes(*b"tsuR");
+    const POOL_TAG: u32 = u32::from_be_bytes(*b"Rust");
 
     /// The global kernel allocator structure.
     pub struct KernelAlloc;

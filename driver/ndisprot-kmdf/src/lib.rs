@@ -721,7 +721,7 @@ bitflags::bitflags! {
 
 const MAX_MULTICAST_ADDRESS: usize = 32;
 
-const OC_STRUCTURE_SIG: u32 = u32::from_be_bytes(['N' as u8, 'u' as u8, 'i' as u8, 'o' as u8]);
+const OC_STRUCTURE_SIG: u32 = u32::from_be_bytes(*b"Nuio");
 
 #[derive(Default, Clone, Copy)]
 struct MACAddr([u8; 6]);
