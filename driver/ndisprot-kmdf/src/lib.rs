@@ -357,8 +357,9 @@ struct Globals {
     // - ndisbind::LookupDevice, iter
     //   - EvtIoDeviceControl
     //     - Have access to FileObject.ContextSpace
+    // Is an `Option<GeneralObject<OpenContext>>` so that we can pre-allocate space to put the open context in
     #[pin]
-    open_list: SpinMutex<Vec<GeneralObject<OpenContext>>>,
+    open_list: SpinMutex<Vec<Option<GeneralObject<OpenContext>>>>,
     /// Notifiying when binding is complete (used in ioctl)
     // Used in
     // - ndisbind::PnPEventHandler

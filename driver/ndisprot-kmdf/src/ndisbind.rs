@@ -147,6 +147,20 @@ pub(crate) unsafe extern "C" fn bind_adapter(
         Err(err) => return Error::from(err).0.to_u32(),
     };
 
+    // Reserve space for the open context in the global list
+    {
+        let mut open_list = globals.open_list.lock();
+        if let Err(err) = open_list.try_reserve(1) {
+            log::error!(
+                "reserving space for adding open context to list failed ({})",
+                err
+            );
+            return STATUS::INSUFFICIENT_RESOURCES.to_u32();
+        }
+
+        open_list.push(None);
+    }
+
     let adapter_name = unsafe { &*BindParameters.AdapterName };
     let adapter_name = unsafe {
         NtUnicodeStr::from_raw_parts(
@@ -539,19 +553,15 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
     match status {
         Ok(it) => {
-            // Reserve space for the open context
-            // Hold a lock to the open list so that we guarantee that we always have space
             let mut open_list = globals.open_list.lock();
-            if let Err(err) = open_list.try_reserve(1) {
-                log::error!(
-                    "reserving space for adding open context to list failed ({})",
-                    err
-                );
+
+            if let Some(awa) = open_list.iter_mut().find(|obj| obj.is_none()) {
+                *awa = Some(it)
+            } else {
+                // Should've always had a space from earlier
+                log::error!("putting open context into list failed",);
                 return STATUS::INSUFFICIENT_RESOURCES.to_u32();
             }
-
-            // Note: we already reserved enough space above, so this shouldn't fail
-            open_list.push(it);
 
             STATUS::SUCCESS.to_u32()
         }
@@ -843,6 +853,7 @@ pub(crate) fn ndisprot_lookup_device(
         .as_ref()
         .iter()
         .find_map(|open_obj| {
+            let open_obj = &open_obj.as_ref()?;
             let open_context = open_obj.get_context().ok()?;
             (open_context.device_name == adapter_name).then(|| open_obj.clone_ref())
         })
