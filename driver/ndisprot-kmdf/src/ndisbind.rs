@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::boxed::Box;
 use pinned_init::{pin_data, InPlaceInit, PinInit};
 use scopeguard::ScopeGuard;
 use wdf_kmdf::{object::GeneralObject, sync::SpinMutex};
@@ -16,19 +16,20 @@ use windows_kernel_rs::{
 };
 use windows_kernel_sys::{
     result::STATUS, Error, NdisAllocateNetBufferListPool, NdisCloseAdapterEx,
-    NdisDeregisterProtocolDriver, NdisFreeMemory, NdisFreeNetBufferListPool, NdisOpenAdapterEx,
-    NdisQueryAdapterInstanceName, NDIS_DEFAULT_PORT_NUMBER, NDIS_ETH_TYPE_802_1Q,
-    NDIS_ETH_TYPE_802_1X, NDIS_HANDLE, NDIS_MEDIUM, NDIS_OBJECT_TYPE_DEFAULT,
-    NDIS_OBJECT_TYPE_OPEN_PARAMETERS, NDIS_OID, NDIS_OPEN_PARAMETERS,
-    NDIS_OPEN_PARAMETERS_REVISION_1, NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX, NDIS_REQUEST_TYPE,
-    NET_BUFFER_LIST_POOL_PARAMETERS, NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NTSTATUS,
-    OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
+    NdisDeregisterProtocolDriver, NdisFreeMemory, NdisFreeNetBufferListPool, NdisOidRequest,
+    NdisOpenAdapterEx, NdisQueryAdapterInstanceName, NDIS_DEFAULT_PORT_NUMBER,
+    NDIS_ETH_TYPE_802_1Q, NDIS_ETH_TYPE_802_1X, NDIS_HANDLE, NDIS_MEDIUM, NDIS_OBJECT_TYPE_DEFAULT,
+    NDIS_OBJECT_TYPE_OID_REQUEST, NDIS_OBJECT_TYPE_OPEN_PARAMETERS, NDIS_OID, NDIS_OID_REQUEST,
+    NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS, NDIS_OPEN_PARAMETERS_REVISION_1,
+    NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX, NDIS_REQUEST_TYPE, NET_BUFFER_LIST_POOL_PARAMETERS,
+    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NTSTATUS, OID_802_11_ADD_WEP,
+    OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
     OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE,
     OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE,
     OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI, OID_802_11_SSID,
     OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
     OID_802_3_MULTICAST_LIST, OID_GEN_CURRENT_PACKET_FILTER, PNDIS_BIND_PARAMETERS,
-    PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION, PVOID,
+    PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION, PVOID, ULONG,
 };
 
 use crate::{
@@ -37,6 +38,14 @@ use crate::{
 };
 
 use super::NdisProt;
+
+#[pinned_init::pin_data]
+struct Request {
+    Request: NDIS_OID_REQUEST,
+    #[pin]
+    ReqEvent: KeEvent,
+    Status: ULONG,
+}
 
 const SUPPORTED_SET_OIDS: &[NDIS_OID] = &[
     OID_802_11_INFRASTRUCTURE_MODE,
@@ -191,6 +200,8 @@ pub(crate) unsafe extern "C" fn bind_adapter(
         return STATUS::UNSUCCESSFUL.to_u32();
     }
 
+    // Note: if we want to async-ify this, we need to somehow break the dependency loop between OpenContext and ProtocolBindingContext
+    // orrr we could just decouple open context & EvtIoDeviceControl
     let status = wdf_kmdf::object::GeneralObject::<OpenContext>::with_parent(
         &wdf_kmdf::object::RawObjectHandle(globals.control_device.cast()),
         |open_context| {
@@ -684,12 +695,13 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         // Set packet filter to 0 before closing the binding
         let mut packet_filter = 0u32;
         let status = do_request(
+            protocol_binding_context,
             &*open_context,
             NDIS_DEFAULT_PORT_NUMBER,
             NDIS_REQUEST_TYPE::NdisRequestSetInformation,
             OID_GEN_CURRENT_PACKET_FILTER,
-            &mut packet_filter as *mut _,
-            core::mem::size_of_val(&packet_filter),
+            core::ptr::addr_of_mut!(packet_filter).cast(),
+            core::mem::size_of_val(&packet_filter) as ULONG,
             &mut bytes_read,
         );
         if let Err(err) = status {
@@ -701,6 +713,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
 
         // clear multicast list before closing the binding
         let status = do_request(
+            protocol_binding_context,
             &*open_context,
             NDIS_DEFAULT_PORT_NUMBER,
             NDIS_REQUEST_TYPE::NdisRequestSetInformation,
@@ -763,7 +776,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         .globals
         .open_list
         .lock()
-        .retain(|e| e != &protocol_binding_context.open_context);
+        .retain(|e| e.as_ref() != Some(&protocol_binding_context.open_context));
 }
 
 pub(crate) unsafe extern "C" fn pnp_event_handler(
@@ -779,15 +792,30 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
 }
 
 pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NTSTATUS {
-    log::debug!("unload_handler",);
+    log::debug!("unload_handler");
     STATUS::SUCCESS.to_u32()
 }
 
+/// Entry point indicating completion of a pended NDIS_REQUEST
 pub(crate) unsafe extern "C" fn request_complete(
     ProtocolBindingContext: NDIS_HANDLE,
     OidRequest: PNDIS_OID_REQUEST,
     Status: NTSTATUS,
 ) {
+    // yayyyy container_of moment
+    let mut req_context = unsafe {
+        let containing_record = OidRequest
+            .cast::<u8>()
+            .sub(core::mem::offset_of!(Request, Request))
+            .cast::<Request>();
+        Pin::new_unchecked(&mut *containing_record)
+    };
+
+    // Stash the completion status
+    req_context.Status = Status;
+
+    // Wake up the thread blocked on this request being completed
+    req_context.as_ref().ReqEvent.signal();
 }
 
 pub(crate) unsafe extern "C" fn status_handler(
@@ -805,7 +833,7 @@ pub(crate) fn unload_protocol(mut context: Pin<&mut Globals>) {
 }
 
 pub(crate) fn validate_open_and_do_request(
-    open_context: &Arc<OpenContext>,
+    open_context: &OpenContext,
     request_type: NDIS_REQUEST_TYPE,
     oid: NDIS_OID,
     info_buffer: *const u8,
@@ -813,23 +841,101 @@ pub(crate) fn validate_open_and_do_request(
     bytes_processed: &mut u32,
     wait_for_power_on: bool,
 ) -> NTSTATUS {
-    loop {}
+    // ???: How do we bridge the gap from having a file open context to getting
+    // the protocol binding context with a handle in it?
+    //
+    // if we want to maintain a divide between the wdf side and the ndis side
+    // while also permitting non-blocking async (i.e. not needing to use
+    // KeWaitForSingleObject), there needs to be a way of passing messages
+    // between the two sides.
+    todo!()
 }
 
 fn do_request(
+    protocol_binding_context: &ProtocolBindingContext,
     open_context: &OpenContext,
     port_number: NDIS_PORT_NUMBER,
     request_type: NDIS_REQUEST_TYPE,
     oid: NDIS_OID,
-    information_buffer: *mut u32,
-    information_buffer_length: usize,
-    bytes_read: &mut u32,
+    information_buffer: PVOID,
+    information_buffer_length: ULONG,
+    bytes_processed: &mut ULONG,
 ) -> Result<(), Error> {
-    Ok(())
+    const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
+        (core::mem::offset_of!(NDIS_OID_REQUEST, Reserved2)
+            + core::mem::size_of::<windows_kernel_sys::USHORT>()) as u16;
+
+    let mut request = unsafe { core::mem::zeroed::<NDIS_OID_REQUEST>() };
+    request.Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST as u8;
+    request.Header.Revision = NDIS_OID_REQUEST_REVISION_1 as u8;
+    request.Header.Size = NDIS_SIZEOF_OID_REQUEST_REVISION_1;
+    request.RequestType = request_type;
+    request.PortNumber = port_number;
+
+    match request_type {
+        NDIS_REQUEST_TYPE::NdisRequestQueryInformation => {
+            request.DATA.QUERY_INFORMATION.Oid = oid;
+            request.DATA.QUERY_INFORMATION.InformationBuffer = information_buffer;
+            request.DATA.QUERY_INFORMATION.InformationBufferLength = information_buffer_length;
+        }
+        NDIS_REQUEST_TYPE::NdisRequestSetInformation => {
+            request.DATA.SET_INFORMATION.Oid = oid;
+            request.DATA.SET_INFORMATION.InformationBuffer = information_buffer;
+            request.DATA.SET_INFORMATION.InformationBufferLength = information_buffer_length;
+        }
+        _ => unreachable!(),
+    }
+
+    request.RequestId = open_context
+        .driver
+        .get_context()
+        .map_or(0, |ctx| ctx.globals.cancel_id_gen.next()) as PVOID;
+
+    pinned_init::stack_pin_init!(let req_context = pinned_init::pin_init!(Request {
+        Request: request,
+        ReqEvent <- KeEvent::new(EventType::Notification, false),
+        Status: 0x0,
+    }));
+
+    let mut status = unsafe {
+        Error::to_err(NdisOidRequest(
+            protocol_binding_context.binding_handle,
+            core::ptr::addr_of_mut!(req_context.as_mut().Request),
+        ))
+    };
+
+    if let Err(Error(STATUS::PENDING)) = status {
+        let _ = req_context.as_ref().ReqEvent.wait(Timeout::forever());
+        status = Error::to_err(req_context.as_ref().Status);
+    }
+
+    if status.is_ok() {
+        *bytes_processed = match request_type {
+            NDIS_REQUEST_TYPE::NdisRequestQueryInformation => unsafe {
+                req_context
+                    .as_ref()
+                    .Request
+                    .DATA
+                    .QUERY_INFORMATION
+                    .BytesWritten
+            },
+            NDIS_REQUEST_TYPE::NdisRequestSetInformation => unsafe {
+                req_context.as_ref().Request.DATA.SET_INFORMATION.BytesRead
+            },
+            _ => unreachable!(),
+        };
+
+        // The driver below should set the correct value to `BytesWritten` or `BytesRead`,
+        // but for now just trucate the value to the info buffer length.
+        *bytes_processed = (*bytes_processed).max(information_buffer_length);
+    }
+
+    status
 }
 
 pub(crate) fn flush_receive_queue(open_context: &OpenContext) {
-    loop {}
+    // FIXME: Fill in once we're adding NBLs to the recv list
+    log::error!("unimplemented");
 }
 
 /// Returns information about the specified binding
@@ -839,7 +945,8 @@ pub(crate) fn query_binding(
     output_length: usize,
     bytes_returned: &mut usize,
 ) -> NTSTATUS {
-    loop {}
+    log::error!("unimplemented");
+    todo!()
 }
 
 /// Searches the global bindings list for an open context which has a binding to the specified adapter, and return a reference to it
