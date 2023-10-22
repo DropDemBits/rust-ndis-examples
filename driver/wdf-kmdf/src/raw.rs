@@ -626,7 +626,7 @@ pub unsafe fn WdfGetDriver() -> Option<WDFDRIVER> {
 
     let driver = globals.Driver;
 
-    Some(driver).filter(|drv| drv.is_null())
+    Some(driver).filter(|drv| !drv.is_null())
 }
 
 // endregion: wdfdriver
