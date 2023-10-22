@@ -285,6 +285,7 @@ pub mod object {
     // - Parented (need drop for delete so that it can be deleted sooner)
     // - Ref (need to deref)
 
+    #[derive(Debug)]
     pub(crate) enum HandleKind {
         Wrapped,
         Owned,
@@ -296,6 +297,15 @@ pub mod object {
         handle: WDFOBJECT,
         kind: HandleKind,
         _context: PhantomData<T>,
+    }
+
+    impl<T> core::fmt::Debug for GeneralObject<T> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("GeneralObject")
+                .field("handle", &self.handle)
+                .field("kind", &self.kind)
+                .finish()
+        }
     }
 
     impl<T> GeneralObject<T>
