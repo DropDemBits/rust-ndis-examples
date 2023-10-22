@@ -9,7 +9,9 @@ from an IoQueue, FileObject, ChildList, IoTarget, DmaTransaction, Interrupt,
 WmiInstance and WmiProvider (we only care about the first 2 for ndisprot).
 
 Note that that accessing a driver from a device means that (driver) context access
-needs to be fallible (see below)
+needs to be fallible (see below).
+
+A protocol driver in some situations needs to access the driver globals but does not have a binding context present to get the driver handle from, so we'd need to use `WdfGetDriver` (with the safety invariant that the global driver object outlives the protocol driver) to get access to the driver globals.
 
 ## Keep Calm and Don't Panic
 
