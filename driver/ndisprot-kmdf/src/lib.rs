@@ -755,6 +755,12 @@ pub struct KeEvent {
     event: KEVENT,
 }
 
+impl core::fmt::Debug for KeEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("KeEvent").finish_non_exhaustive()
+    }
+}
+
 impl KeEvent {
     pub fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self> {
         unsafe {

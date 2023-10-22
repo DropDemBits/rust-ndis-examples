@@ -8,7 +8,7 @@ use core::{
 use alloc::boxed::Box;
 use pinned_init::{pin_data, InPlaceInit, PinInit};
 use scopeguard::ScopeGuard;
-use wdf_kmdf::{object::GeneralObject, sync::SpinMutex};
+use wdf_kmdf::{driver::Driver, object::GeneralObject, sync::SpinMutex};
 use wdf_kmdf_sys::WDF_IO_QUEUE_CONFIG;
 use windows_kernel_rs::{
     log,
@@ -22,7 +22,7 @@ use windows_kernel_sys::{
     NDIS_OBJECT_TYPE_OID_REQUEST, NDIS_OBJECT_TYPE_OPEN_PARAMETERS, NDIS_OID, NDIS_OID_REQUEST,
     NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS, NDIS_OPEN_PARAMETERS_REVISION_1,
     NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX, NDIS_REQUEST_TYPE, NET_BUFFER_LIST_POOL_PARAMETERS,
-    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NTSTATUS, OID_802_11_ADD_WEP,
+    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NET_PNP_EVENT_CODE, NTSTATUS, OID_802_11_ADD_WEP,
     OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
     OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE,
     OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE,
@@ -71,6 +71,7 @@ const SUPPORTED_SET_OIDS: &[NDIS_OID] = &[
 
 const NPROT_ALLOC_TAG: u32 = u32::from_be_bytes(*b"Nuio");
 
+#[derive(Debug)]
 #[pin_data]
 struct ProtocolBindingContext {
     // The actual open context
@@ -785,15 +786,74 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
     ProtocolBindingContext: NDIS_HANDLE,
     NetPnPEventNotification: PNET_PNP_EVENT_NOTIFICATION,
 ) -> NTSTATUS {
+    let event_notif = unsafe { &*NetPnPEventNotification };
+    // Note: `ProtocolBindingContext` can be `NULL`, which means that it applies to all bindings,
+    // which is true for
+    // - NetEventBindList
+    // - NetEventBindsComplete
+    // - NetEventReconfigure (sometimes)
+    let protocol_binding_context = ProtocolBindingContext
+        .cast::<ProtocolBindingContext>()
+        .as_ref();
+
+    let mut status = STATUS::UNSUCCESSFUL;
+
+    match event_notif.NetPnPEvent.NetEvent {
+        NET_PNP_EVENT_CODE::NetEventSetPower => {
+            // TODO: fill out
+        }
+        NET_PNP_EVENT_CODE::NetEventQueryPower => {
+            status = STATUS::SUCCESS;
+        }
+        NET_PNP_EVENT_CODE::NetEventBindsComplete => {
+            // manifest a driver handle, since for binds complete we don't get a specific context
+            if let Some(driver) = unsafe { wdf_kmdf::raw::WdfGetDriver() } {
+                let driver = unsafe { Driver::<crate::NdisProt>::wrap(driver) };
+
+                if let Ok(globals) = driver.get_context() {
+                    globals.binds_complete.signal();
+                }
+                // Note: we do not register an ExCallback right now, since we're only focused on getting NdisProt up
+
+                status = STATUS::SUCCESS;
+            } else {
+                // Driver not initialized yet
+                status = STATUS::UNSUCCESSFUL;
+            };
+        }
+        NET_PNP_EVENT_CODE::NetEventPause => {
+            // TODO: fill out
+        }
+        NET_PNP_EVENT_CODE::NetEventRestart => {
+            // TODO: fill out
+        }
+        NET_PNP_EVENT_CODE::NetEventQueryRemoveDevice
+        | NET_PNP_EVENT_CODE::NetEventCancelRemoveDevice
+        | NET_PNP_EVENT_CODE::NetEventReconfigure
+        | NET_PNP_EVENT_CODE::NetEventBindList
+        | NET_PNP_EVENT_CODE::NetEventPnPCapabilities => {
+            status = STATUS::SUCCESS;
+        }
+        _ => {
+            // Translation note: Would return NDIS_STATUS_NOT_SUPPORTED, but
+            // NDIS 6.x drivers aren't supposed to return that
+            status = STATUS::UNSUCCESSFUL;
+        }
+    }
+
     log::debug!(
-        "pnp_event_handler: {:#x?} {:#x?}",
-        ProtocolBindingContext,
-        NetPnPEventNotification
+        "pnp_event_handler: Open {:#x?}, Event Ptr {:#x?}, Event {:x?}, Status {:x}",
+        protocol_binding_context,
+        NetPnPEventNotification,
+        event_notif.NetPnPEvent.NetEvent.0,
+        status.to_u32()
     );
-    STATUS::UNSUCCESSFUL.to_u32()
+
+    status.to_u32()
 }
 
 pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NTSTATUS {
+    // Note: no-one calls this, instead the driver unload callback is used
     log::debug!("unload_handler");
     STATUS::SUCCESS.to_u32()
 }
