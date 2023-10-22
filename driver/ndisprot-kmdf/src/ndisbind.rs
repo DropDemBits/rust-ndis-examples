@@ -33,8 +33,8 @@ use windows_kernel_sys::{
 };
 
 use crate::{
-    EventType, Globals, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags,
-    OpenContextInner, OpenState, Timeout, MAX_MULTICAST_ADDRESS,
+    EventType, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags, OpenContextInner,
+    OpenState, Timeout, MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;
@@ -152,7 +152,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     let driver =
         unsafe { wdf_kmdf::driver::Driver::<NdisProt>::wrap(ProtocolDriverContext.cast()) };
     let globals = match driver.get_context() {
-        Ok(ctx) => ctx.globals.clone(),
+        Ok(ctx) => ctx,
         Err(err) => return Error::from(err).0.to_u32(),
     };
 
@@ -190,7 +190,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     //     could've come in
     //
     // so this seems to be just for checking if we're leaking bindings
-    if let Some(other_context) = ndisprot_lookup_device(globals.as_ref(), adapter_name) {
+    if let Some(other_context) = ndisprot_lookup_device(Pin::new(&*globals), adapter_name) {
         log::warn!(
             "bind_adapter: binding to {} already exists on binding {:#x?}",
             adapter_name,
@@ -205,6 +205,9 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     let status = wdf_kmdf::object::GeneralObject::<OpenContext>::with_parent(
         &wdf_kmdf::object::RawObjectHandle(globals.control_device.cast()),
         |open_context| {
+            // capture rules moment, need to borrow driver so as to not accidentally move it
+            let driver = &driver;
+
             // initialize the binding context helper
             let protocol_open_context = open_context.clone_ref();
             let protocol_binding_context = Box::pin_init(pinned_init::pin_init! {
@@ -773,7 +776,6 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         .driver
         .get_context()
         .expect("driver context should be available")
-        .globals
         .open_list
         .lock()
         .retain(|e| e.as_ref() != Some(&protocol_binding_context.open_context));
@@ -824,8 +826,9 @@ pub(crate) unsafe extern "C" fn status_handler(
 ) {
 }
 
-pub(crate) fn unload_protocol(mut context: Pin<&mut Globals>) {
-    let proto_handle = core::mem::replace(&mut context.ndis_protocol_handle, core::ptr::null_mut());
+pub(crate) fn unload_protocol(context: Pin<&NdisProt>) {
+    // let proto_handle = core::mem::replace(&mut context.ndis_protocol_handle, core::ptr::null_mut());
+    let proto_handle = context.ndis_protocol_handle;
 
     if !proto_handle.is_null() {
         unsafe { NdisDeregisterProtocolDriver(proto_handle) };
@@ -889,7 +892,7 @@ fn do_request(
     request.RequestId = open_context
         .driver
         .get_context()
-        .map_or(0, |ctx| ctx.globals.cancel_id_gen.next()) as PVOID;
+        .map_or(0, |ctx| ctx.cancel_id_gen.next()) as PVOID;
 
     pinned_init::stack_pin_init!(let req_context = pinned_init::pin_init!(Request {
         Request: request,
@@ -951,7 +954,7 @@ pub(crate) fn query_binding(
 
 /// Searches the global bindings list for an open context which has a binding to the specified adapter, and return a reference to it
 pub(crate) fn ndisprot_lookup_device(
-    globals: Pin<&Globals>,
+    globals: Pin<&NdisProt>,
     adapter_name: NtUnicodeStr<'_>,
 ) -> Option<GeneralObject<OpenContext>> {
     globals

@@ -19,7 +19,7 @@ use core::{
 
 use alloc::{sync::Arc, vec::Vec};
 use once_arc::OnceArc;
-use pinned_init::{pin_data, pinned_drop, InPlaceInit, PinInit};
+use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
     driver::Driver,
     object::{AsObjectHandle, GeneralObject},
@@ -168,18 +168,14 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                 cancel_id_gen.partial_id
             );
 
-            let globals = pinned_init::try_pin_init!(Globals {
-                control_device,
-                ndis_protocol_handle: handle,
-                eth_type: NPROT_ETH_TYPE,
-                cancel_id_gen,
-                open_list <- SpinMutex::new(Vec::new()),
-                binds_complete <- KeEvent::new(EventType::Notification, false),
-            }? Error);
-
             Ok(pinned_init::try_pin_init! {
                 NdisProt {
-                    globals: Arc::try_pin_init(globals)?
+                    control_device,
+                    ndis_protocol_handle: handle,
+                    eth_type: NPROT_ETH_TYPE,
+                    cancel_id_gen,
+                    open_list <- SpinMutex::new(Vec::new()),
+                    binds_complete <- KeEvent::new(EventType::Notification, false),
                 }? Error
             })
         },
@@ -303,21 +299,8 @@ const DOS_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Global??\Ndisp
 const NPROT_ETH_TYPE: u16 = 0x8e88;
 const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
 
-#[pin_data]
-struct NdisProt {
-    globals: Pin<Arc<Globals>>,
-}
-
-wdf_kmdf::impl_context_space!(NdisProt);
-
-// Pretty much the only viable way to pass stuff via `ProtocolDriverContext`
-// while also being able to free it is to stuff it in a WdfObj parented to the driver
-//
-// Alternatively could do `ProtocolHandle<DriverContext>` storing a `Box<DriverContext>`
-// and then manifesting a reference in `BindAdapter`.
-
 #[pin_data(PinnedDrop)]
-struct Globals {
+struct NdisProt {
     // Only used by BindAdapter to create the WDFIOQUEUEs for the adapter
     control_device: WDFDEVICE,
     // Used in
@@ -369,16 +352,19 @@ struct Globals {
     binds_complete: KeEvent,
 }
 
+wdf_kmdf::impl_context_space!(NdisProt);
+
+// Pretty much the only viable way to pass stuff via `ProtocolDriverContext`
+// while also being able to free it is to stuff it in a WdfObj parented to the driver
+//
+// Alternatively could do `ProtocolHandle<DriverContext>` storing a `Box<DriverContext>`
+// and then manifesting a reference in `BindAdapter`.
+
 #[pinned_drop]
-impl PinnedDrop for Globals {
-    fn drop(mut self: Pin<&mut Self>) {
+impl PinnedDrop for NdisProt {
+    fn drop(self: Pin<&mut Self>) {
         debug!("Globals Drop Enter");
-        // UnregisterExCallback
-
-        ndisbind::unload_protocol(self.as_mut());
-
-        // the framework handles deleting of the control object
-        self.control_device = core::ptr::null_mut();
+        // can't do resource cleanup here because the context space is considered uninitialized at this point
         debug!("Globals Drop Exit");
     }
 }
@@ -732,9 +718,15 @@ impl MACAddr {
 
 #[vtable::vtable]
 impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
-    // This will also drop the (hopefully last remaining) reference to the globals
-    fn unload(self: Pin<&mut Self>) {
+    // Need to cleanup resources here because doing it in drop means that we're just freeing memory
+    fn unload(self: Pin<&Self>) {
         debug!("Unload Enter");
+        // UnregisterExCallback
+
+        ndisbind::unload_protocol(self.as_ref());
+
+        // the framework handles deleting of the control object
+        // self.control_device = core::ptr::null_mut();
         debug!("Unload Exit");
     }
 }
@@ -1060,12 +1052,8 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                     .driver
                     .get_context()
                     .map_err(|err| err.into())
-                    .and_then(|driver| {
-                        driver
-                            .globals
-                            .binds_complete
-                            .wait(Timeout::relative_ms(5_000))
-                    }) {
+                    .and_then(|driver| driver.binds_complete.wait(Timeout::relative_ms(5_000)))
+                {
                     Ok(()) => STATUS::SUCCESS,
                     Err(_) => STATUS::TIMEOUT,
                 };

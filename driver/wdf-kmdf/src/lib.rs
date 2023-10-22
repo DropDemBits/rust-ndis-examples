@@ -1200,7 +1200,7 @@ pub mod driver {
         ///
         /// Most ownership-related unload tasks should instead be done via the fields
         /// implementing `Drop`, rather than being manually deallocated here.
-        fn unload(self: Pin<&mut Self>) {}
+        fn unload(self: Pin<&Self>) {}
     }
 
     impl<T: DriverCallbacks> Driver<T> {
@@ -1325,16 +1325,29 @@ pub mod driver {
         }
 
         unsafe extern "C" fn __dispatch_driver_unload(driver: WDFDRIVER) {
-            // SAFETY: Driver unload only gets called once, and after everything?
-            let handle = unsafe { DriverHandle::wrap(driver) };
+            // SAFETY: Driver unload only gets called once, and drop waits for exclusive access
+            let handle = unsafe { Driver::<T>::wrap(driver) };
+
+            if T::HAS_UNLOAD {
+                if let Ok(context_space) = handle.get_context() {
+                    // SAFETY: `get_context` should be returning pinned guards
+                    let context_space = unsafe { Pin::new_unchecked(&*context_space) };
+
+                    T::unload(context_space);
+                } else {
+                    // No (valid) context space to unload with, nothing to do
+                    windows_kernel_rs::log::warn!("No driver context space to unload");
+                    return;
+                }
+            }
 
             // Drop the context area
-            let status = object::drop_context_space::<T>(&handle, |context_space| {
-                if T::HAS_UNLOAD {
-                    // Do the unload callback...
-                    context_space.unload();
-                }
-            });
+            //
+            // Needs to happen after calling unload but not in EvtDestroy
+            // because unload could call functions which depend on the driver
+            // context area being initialized, while also allowing manually
+            // deleting owned WDF objects without accessing freed memory
+            let status = object::drop_context_space::<T>(&handle, |_| ());
 
             if let Err(err) = status {
                 // No (valid) context space to drop, nothing to do
