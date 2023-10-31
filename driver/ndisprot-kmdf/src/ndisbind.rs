@@ -43,7 +43,7 @@ use windows_kernel_sys::{
 
 use crate::{
     recv, EventType, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags, OpenContextInner,
-    OpenState, QueryBinding, Timeout, MAX_MULTICAST_ADDRESS,
+    OpenState, QueryBinding, QueryOid, SetOid, Timeout, MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;
@@ -1392,27 +1392,204 @@ pub(crate) fn ndisprot_lookup_device(
         })
 }
 
+/// Query an arbitrary OID value from the miniport
 pub(crate) fn query_oid_value(
     open_context: &OpenContext,
     data_buffer: PVOID,
-    buffer_length: ULONG,
+    buffer_length: usize,
     bytes_written: &mut usize,
 ) -> NTSTATUS {
-    log::error!("unimplemented");
-    todo!()
+    let status;
+    let mut oid = 0;
+
+    'out: {
+        if buffer_length < core::mem::size_of::<QueryOid>() {
+            status = STATUS::BUFFER_TOO_SMALL;
+            break 'out;
+        }
+
+        let header = unsafe { *data_buffer.cast::<QueryOid>() };
+        oid = header.oid;
+
+        let data = unsafe {
+            data_buffer
+                .cast::<u8>()
+                .add(core::mem::offset_of!(QueryOid, data))
+        };
+        let data_len = buffer_length.saturating_sub(core::mem::offset_of!(QueryOid, data));
+        let Ok(data_len) = u32::try_from(data_len) else {
+            status = STATUS::BUFFER_OVERFLOW;
+            break 'out;
+        };
+
+        {
+            let inner = open_context.inner.lock();
+
+            if !inner.flags.contains(OpenContextFlags::BIND_ACTIVE) {
+                log::warn!(
+                    "query_oid: open of {:x?}/{:x?} is in an invalid state",
+                    open_context.device_name,
+                    inner.flags
+                );
+                status = STATUS::UNSUCCESSFUL;
+                break 'out;
+            }
+
+            // Make sure the binding doesn't go away
+            open_context
+                .pended_send_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        let mut bytes_processed = 0;
+
+        if let Err(err) = do_request(
+            open_context,
+            header.port_number,
+            NDIS_REQUEST_TYPE::NdisRequestQueryInformation,
+            oid,
+            data.cast(),
+            data_len,
+            &mut bytes_processed,
+        ) {
+            status = err.0
+        } else {
+            status = STATUS::SUCCESS;
+        }
+
+        *bytes_written = bytes_processed as usize;
+
+        {
+            let mut inner = open_context.inner.lock();
+
+            // Let go of the binding
+            let pended_send_count = open_context
+                .pended_send_count
+                .fetch_sub(1, Ordering::Relaxed);
+
+            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
+                assert!(!inner.closing_event.is_null());
+                let closing_event = unsafe { &*inner.closing_event };
+
+                closing_event.signal();
+                inner.closing_event = core::ptr::null_mut();
+            }
+        }
+
+        if status == STATUS::SUCCESS {
+            *bytes_written = bytes_written.saturating_add(core::mem::offset_of!(QueryOid, data));
+        }
+    }
+
+    log::debug!(
+        "query_oid: open {:x?}, OID {:x?}, Status {:x?}",
+        open_context.inner.lock().flags,
+        oid,
+        status
+    );
+
+    status.to_u32()
 }
 
 pub(crate) fn set_oid_value(
     open_context: &OpenContext,
     data_buffer: PVOID,
-    buffer_length: ULONG,
+    buffer_length: usize,
 ) -> NTSTATUS {
-    log::error!("unimplemented");
-    todo!()
+    let status;
+    let mut oid = 0;
+
+    'out: {
+        if buffer_length < core::mem::size_of::<SetOid>() {
+            status = STATUS::BUFFER_TOO_SMALL;
+            break 'out;
+        }
+
+        let header = unsafe { *data_buffer.cast::<SetOid>() };
+        oid = header.oid;
+
+        // Check if this is settable by usermode apps
+        if !valid_settable_oid(oid) {
+            log::warn!("set_oid: oid {oid:x?} cannot be set");
+            status = STATUS::INVALID_PARAMETER;
+            break 'out;
+        }
+
+        let data = unsafe {
+            data_buffer
+                .cast::<u8>()
+                .add(core::mem::offset_of!(SetOid, data))
+        };
+        let data_len = buffer_length.saturating_sub(core::mem::offset_of!(SetOid, data));
+        let Ok(data_len) = u32::try_from(data_len) else {
+            status = STATUS::BUFFER_OVERFLOW;
+            break 'out;
+        };
+
+        {
+            let inner = open_context.inner.lock();
+
+            if !inner.flags.contains(OpenContextFlags::BIND_ACTIVE) {
+                log::warn!(
+                    "set_oid: open of {:x?}/{:x?} is in an invalid state",
+                    open_context.device_name,
+                    inner.flags
+                );
+                status = STATUS::UNSUCCESSFUL;
+                break 'out;
+            }
+
+            // Make sure the binding doesn't go away
+            open_context
+                .pended_send_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        let mut bytes_processed = 0;
+
+        if let Err(err) = do_request(
+            open_context,
+            header.port_number,
+            NDIS_REQUEST_TYPE::NdisRequestSetInformation,
+            oid,
+            data.cast(),
+            data_len,
+            &mut bytes_processed,
+        ) {
+            status = err.0
+        } else {
+            status = STATUS::SUCCESS;
+        }
+
+        {
+            let mut inner = open_context.inner.lock();
+
+            // Let go of the binding
+            let pended_send_count = open_context
+                .pended_send_count
+                .fetch_sub(1, Ordering::Relaxed);
+
+            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
+                assert!(!inner.closing_event.is_null());
+                let closing_event = unsafe { &*inner.closing_event };
+
+                closing_event.signal();
+                inner.closing_event = core::ptr::null_mut();
+            }
+        }
+    }
+
+    log::debug!(
+        "set_oid: open {:x?}, OID {:x?}, Status {:x?}",
+        open_context.inner.lock().flags,
+        oid,
+        status
+    );
+
+    status.to_u32()
 }
 
 /// Validate whether the given set OID is settable or not.
-fn valid_oid_value(oid: NDIS_OID) -> bool {
+fn valid_settable_oid(oid: NDIS_OID) -> bool {
     SUPPORTED_SET_OIDS.contains(&oid)
 }
 

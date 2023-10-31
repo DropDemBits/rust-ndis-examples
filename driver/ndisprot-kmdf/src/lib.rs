@@ -1185,7 +1185,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                     let status = ndisbind::query_oid_value(
                         &*open_context,
                         sys_buffer,
-                        buf_size as ULONG,
+                        buf_size,
                         &mut bytes_returned,
                     );
                     nt_status = ndis_status_to_nt_status(status).0;
@@ -1222,8 +1222,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                         break 'out;
                     };
 
-                    let status =
-                        ndisbind::set_oid_value(&*open_context, sys_buffer, buf_size as ULONG);
+                    let status = ndisbind::set_oid_value(&*open_context, sys_buffer, buf_size);
 
                     bytes_returned = 0;
 
@@ -1410,6 +1409,7 @@ fn open_device(
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct QueryOid {
     oid: NDIS_OID,
     port_number: NDIS_PORT_NUMBER,
@@ -1418,6 +1418,7 @@ struct QueryOid {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct SetOid {
     oid: NDIS_OID,
     port_number: NDIS_PORT_NUMBER,
