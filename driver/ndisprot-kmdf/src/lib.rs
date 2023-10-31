@@ -1426,6 +1426,7 @@ struct SetOid {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct QueryBinding {
     binding_index: u32,
     device_name_offset: u32,

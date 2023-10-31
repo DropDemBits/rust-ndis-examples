@@ -38,12 +38,12 @@ use windows_kernel_sys::{
     OID_802_11_SSID, OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
     OID_802_3_MULTICAST_LIST, OID_GEN_CURRENT_PACKET_FILTER, OID_GEN_MINIPORT_RESTART_ATTRIBUTES,
     PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
-    PUCHAR, PVOID, UINT, ULONG,
+    PUCHAR, PVOID, UINT, ULONG, WCHAR,
 };
 
 use crate::{
     recv, EventType, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags, OpenContextInner,
-    OpenState, Timeout, MAX_MULTICAST_ADDRESS,
+    OpenState, QueryBinding, Timeout, MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;
@@ -159,8 +159,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
     let BindParameters = unsafe { &*BindParameters };
 
-    let driver =
-        unsafe { wdf_kmdf::driver::Driver::<NdisProt>::wrap(ProtocolDriverContext.cast()) };
+    let driver = unsafe { Driver::<NdisProt>::wrap(ProtocolDriverContext.cast()) };
     let globals = match driver.get_context() {
         Ok(ctx) => ctx,
         Err(err) => return Error::from(err).0.to_u32(),
@@ -1256,7 +1255,112 @@ pub(crate) fn query_binding(
     bytes_returned: &mut usize,
 ) -> NTSTATUS {
     log::error!("unimplemented");
-    todo!()
+
+    let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
+        // Driver not initialized yet
+        return STATUS::UNSUCCESSFUL.to_u32();
+    };
+    let driver = unsafe { Driver::<NdisProt>::wrap(driver) };
+    let globals = match driver.get_context() {
+        Ok(ctx) => ctx,
+        Err(err) => return Error::from(err).0.to_u32(),
+    };
+
+    let mut status;
+
+    'out: {
+        if input_length < core::mem::size_of::<QueryBinding>() {
+            status = STATUS::INSUFFICIENT_RESOURCES;
+            break 'out;
+        }
+
+        if output_length < core::mem::size_of::<QueryBinding>() {
+            status = STATUS::INSUFFICIENT_RESOURCES;
+            break 'out;
+        }
+
+        let remaining = output_length - core::mem::size_of::<QueryBinding>();
+        let mut binding_index = unsafe { *buffer.cast::<QueryBinding>() }.binding_index;
+
+        status = STATUS::NO_MORE_ENTRIES;
+
+        let open_list = globals.open_list.lock();
+
+        for open in open_list.iter() {
+            // Skip placeholders
+            let Some(open) = open.as_ref() else {
+                continue;
+            };
+            let Ok(open_context) = open.get_context() else {
+                continue;
+            };
+
+            // ... or if not bound.
+            if !open_context
+                .inner
+                .lock()
+                .flags
+                .contains(OpenContextFlags::BIND_ACTIVE)
+            {
+                continue;
+            }
+
+            if binding_index == 0 {
+                log::info!("query_binding: found open {open:x?}");
+                // found the binding context we are looking for, copy device
+                // name & description to the output buffer
+
+                let name_len = (open_context.device_name.len() as usize)
+                    .saturating_add(core::mem::size_of::<WCHAR>());
+                let desc_len = (open_context.device_desc.len() as usize)
+                    .saturating_add(core::mem::size_of::<WCHAR>());
+
+                let name_offset = core::mem::size_of::<QueryBinding>();
+                let desc_offset = name_offset.saturating_add(name_len);
+
+                let required_size = name_len.saturating_add(desc_len);
+
+                if remaining < required_size {
+                    status = STATUS::BUFFER_TOO_SMALL;
+                    break 'out;
+                }
+
+                let header = unsafe { &mut *buffer.cast::<u8>().add(0).cast::<QueryBinding>() };
+
+                let name_bytes = unsafe { buffer.cast::<u8>().add(name_offset) };
+                unsafe { name_bytes.write_bytes(0, name_len) };
+                unsafe {
+                    name_bytes.copy_from_nonoverlapping(
+                        open_context.device_name.as_slice().as_ptr().cast(),
+                        open_context.device_name.len().into(),
+                    )
+                };
+
+                let desc_bytes = unsafe { buffer.cast::<u8>().add(desc_offset) };
+                unsafe { desc_bytes.write_bytes(0, desc_len) };
+                unsafe {
+                    desc_bytes.copy_from_nonoverlapping(
+                        open_context.device_desc.as_slice().as_ptr().cast(),
+                        open_context.device_desc.len().into(),
+                    );
+                }
+
+                header.device_name_offset = name_offset as u32;
+                header.device_descr_offset = desc_offset as u32;
+                header.device_name_length = open_context.device_name.len().into();
+                header.device_descr_length = open_context.device_desc.len().into();
+
+                *bytes_returned =
+                    core::mem::size_of::<QueryBinding>().saturating_add(required_size);
+
+                status = STATUS::SUCCESS;
+            }
+
+            binding_index -= 1;
+        }
+    }
+
+    status.to_u32()
 }
 
 /// Searches the global bindings list for an open context which has a binding to the specified adapter, and return a reference to it
