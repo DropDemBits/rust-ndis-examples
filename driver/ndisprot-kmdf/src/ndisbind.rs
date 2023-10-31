@@ -24,18 +24,20 @@ use windows_kernel_sys::{
     result::STATUS, Error, NdisAllocateNetBufferListPool, NdisCloseAdapterEx,
     NdisDeregisterProtocolDriver, NdisFreeMemory, NdisFreeNetBufferListPool, NdisOidRequest,
     NdisOpenAdapterEx, NdisQueryAdapterInstanceName, NDIS_DEFAULT_PORT_NUMBER,
-    NDIS_ETH_TYPE_802_1Q, NDIS_ETH_TYPE_802_1X, NDIS_HANDLE, NDIS_MEDIUM, NDIS_OBJECT_HEADER,
-    NDIS_OBJECT_TYPE_DEFAULT, NDIS_OBJECT_TYPE_OID_REQUEST, NDIS_OBJECT_TYPE_OPEN_PARAMETERS,
-    NDIS_OID, NDIS_OID_REQUEST, NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS,
+    NDIS_ETH_TYPE_802_1Q, NDIS_ETH_TYPE_802_1X, NDIS_HANDLE, NDIS_LINK_STATE, NDIS_MEDIUM,
+    NDIS_OBJECT_HEADER, NDIS_OBJECT_TYPE_DEFAULT, NDIS_OBJECT_TYPE_OID_REQUEST,
+    NDIS_OBJECT_TYPE_OPEN_PARAMETERS, NDIS_OBJECT_TYPE_STATUS_INDICATION, NDIS_OID,
+    NDIS_OID_REQUEST, NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS,
     NDIS_OPEN_PARAMETERS_REVISION_1, NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX,
     NDIS_PROTOCOL_RESTART_PARAMETERS, NDIS_REQUEST_TYPE, NDIS_RESTART_ATTRIBUTES,
-    NDIS_RESTART_GENERAL_ATTRIBUTES, NET_BUFFER_LIST_POOL_PARAMETERS,
-    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NET_DEVICE_POWER_STATE, NET_IFINDEX, NET_LUID,
-    NET_PNP_EVENT_CODE, NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE,
-    OID_802_11_BSSID, OID_802_11_BSSID_LIST, OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION,
-    OID_802_11_DISASSOCIATE, OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE,
-    OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI,
-    OID_802_11_SSID, OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
+    NDIS_RESTART_GENERAL_ATTRIBUTES, NDIS_STATUS_INDICATION, NET_BUFFER_LIST_POOL_PARAMETERS,
+    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NET_DEVICE_POWER_STATE, NET_IFINDEX,
+    NET_IF_MEDIA_CONNECT_STATE, NET_LUID, NET_PNP_EVENT_CODE, NTSTATUS, OID_802_11_ADD_WEP,
+    OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
+    OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE,
+    OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE,
+    OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI, OID_802_11_SSID,
+    OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
     OID_802_3_MULTICAST_LIST, OID_GEN_CURRENT_PACKET_FILTER, OID_GEN_MINIPORT_RESTART_ATTRIBUTES,
     PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
     PUCHAR, PVOID, UINT, ULONG, WCHAR,
@@ -1238,13 +1240,109 @@ fn service_indicate_status_irp(
     status_buffer: PVOID,
     status_buffer_size: UINT,
 ) {
+    // FIXME: fill out
     log::error!("unimplemented");
+
+    // Note: this is needed so that we can notify user-mode clients interested in status
+    // indications of what is going on. we don't need this for bringing up ndisprot though,
+    // as prottest doesn't send status indication requests
 }
 
+/// Protocol entry point called by NDIS to indicate a change in status at the miniport.
+///
+/// We make not of reset and media connect status indications.
 pub(crate) unsafe extern "C" fn status_handler(
     ProtocolBindingContext: NDIS_HANDLE,
     StatusIndication: PNDIS_STATUS_INDICATION,
 ) {
+    let protocol_binding_context =
+        unsafe { &*ProtocolBindingContext.cast::<ProtocolBindingContext>() };
+    let status_indication = unsafe { &*StatusIndication };
+
+    let open = &protocol_binding_context.open_context;
+    let Ok(open_context) = open.get_context() else {
+        log::error!(
+            "status: invalid open context for {:x?}",
+            protocol_binding_context.binding_handle
+        );
+        return;
+    };
+
+    const NDIS_SIZEOF_STATUS_INDICATION_REVISION_1: u16 =
+        (core::mem::offset_of!(NDIS_STATUS_INDICATION, NdisReserved)
+            + core::mem::size_of::<[PVOID; 4]>()) as u16;
+
+    if status_indication.Header.Type != NDIS_OBJECT_TYPE_STATUS_INDICATION as u8
+        || status_indication.Header.Size != NDIS_SIZEOF_STATUS_INDICATION_REVISION_1
+    {
+        log::info!(
+            "status: received an invalid status indication: {open:x?}, status indication {:x?}",
+            core::ptr::addr_of!(*status_indication)
+        );
+    }
+
+    let general_status = status_indication.StatusCode;
+
+    log::info!("status: open {open:x?}, status {general_status:x?}");
+
+    service_indicate_status_irp(
+        &open_context,
+        general_status,
+        status_indication.StatusBuffer,
+        status_indication.StatusBufferSize,
+    );
+
+    {
+        let mut inner = open_context.inner.lock();
+
+        if open_context.power_state.load() != NET_DEVICE_POWER_STATE::NetDeviceStateD0 {
+            // The device is in a lower power state
+            // We still continue to acknowledge status indications
+
+            // NOTE: any actions we take based on these status indications
+            // should take into accout the current device power state
+        }
+
+        const NDIS_STATUS_RESET_START: u32 = 0x40010004;
+        const NDIS_STATUS_RESET_END: u32 = 0x40010005;
+        const NDIS_STATUS_LINK_STATE: u32 = 0x40010017;
+
+        match general_status {
+            NDIS_STATUS_RESET_START => {
+                assert!(!inner.flags.contains(OpenContextFlags::RESET_IN_PROGRESS));
+                inner.flags.remove(OpenContextFlags::RESET_FLAGS);
+                inner.flags.set(OpenContextFlags::RESET_IN_PROGRESS, true);
+            }
+            NDIS_STATUS_RESET_END => {
+                assert!(inner.flags.contains(OpenContextFlags::RESET_IN_PROGRESS));
+                inner.flags.remove(OpenContextFlags::RESET_FLAGS);
+                inner.flags.set(OpenContextFlags::NOT_RESETTING, true);
+            }
+            NDIS_STATUS_LINK_STATE => {
+                const NDIS_SIZEOF_LINK_STATE_REVISION_1: u16 =
+                    (core::mem::offset_of!(NDIS_LINK_STATE, AutoNegotiationFlags)
+                        + core::mem::size_of::<ULONG>()) as u16;
+
+                assert!(
+                    status_indication.StatusBufferSize >= NDIS_SIZEOF_LINK_STATE_REVISION_1.into()
+                );
+
+                let link_state =
+                    unsafe { &*status_indication.StatusBuffer.cast::<NDIS_LINK_STATE>() };
+
+                if link_state.MediaConnectState
+                    == NET_IF_MEDIA_CONNECT_STATE::MediaConnectStateConnected
+                {
+                    inner.flags.remove(OpenContextFlags::MEDIA_FLAGS);
+                    inner.flags.set(OpenContextFlags::MEDIA_CONNECTED, true);
+                } else {
+                    inner.flags.remove(OpenContextFlags::MEDIA_FLAGS);
+                    inner.flags.set(OpenContextFlags::MEDIA_DISCONNECTED, true);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Returns information about the specified binding
