@@ -990,7 +990,7 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         }
 
         // Cleanup the receive packet queue
-        ndisbind::flush_receive_queue(&open_context);
+        recv::flush_receive_queue(&open_context);
     }
 
     debug!("Cleanup");

@@ -1,4 +1,5 @@
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
+use windows_kernel_rs::log;
 use windows_kernel_sys::{LIST_ENTRY, NDIS_HANDLE, NDIS_PORT_NUMBER, PNET_BUFFER_LIST, ULONG};
 
 use crate::OpenContext;
@@ -33,5 +34,6 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
 }
 
 pub(crate) fn flush_receive_queue(open_context: &OpenContext) {
-    // TODO: fill out
+    // FIXME: Fill in once we're adding NBLs to the recv list
+    log::error!("unimplemented");
 }

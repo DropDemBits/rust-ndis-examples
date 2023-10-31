@@ -38,7 +38,7 @@ use windows_kernel_sys::{
     OID_802_11_SSID, OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
     OID_802_3_MULTICAST_LIST, OID_GEN_CURRENT_PACKET_FILTER, OID_GEN_MINIPORT_RESTART_ATTRIBUTES,
     PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
-    PUCHAR, PVOID, ULONG,
+    PUCHAR, PVOID, UINT, ULONG,
 };
 
 use crate::{
@@ -751,7 +751,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         }
 
         // discard any queued recieves
-        flush_receive_queue(&*open_context);
+        recv::flush_receive_queue(&open_context);
 
         // close the binding now
         log::info!(
@@ -1015,34 +1015,6 @@ fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
     }
 }
 
-/// Entry point indicating completion of a pended NDIS_REQUEST
-pub(crate) unsafe extern "C" fn request_complete(
-    ProtocolBindingContext: NDIS_HANDLE,
-    OidRequest: PNDIS_OID_REQUEST,
-    Status: NTSTATUS,
-) {
-    // yayyyy container_of moment
-    let mut req_context = unsafe {
-        let containing_record = OidRequest
-            .cast::<u8>()
-            .sub(core::mem::offset_of!(Request, Request))
-            .cast::<Request>();
-        Pin::new_unchecked(&mut *containing_record)
-    };
-
-    // Stash the completion status
-    req_context.Status = Status;
-
-    // Wake up the thread blocked on this request being completed
-    req_context.as_ref().ReqEvent.signal();
-}
-
-pub(crate) unsafe extern "C" fn status_handler(
-    ProtocolBindingContext: NDIS_HANDLE,
-    StatusIndication: PNDIS_STATUS_INDICATION,
-) {
-}
-
 pub(crate) fn unload_protocol(context: Pin<&NdisProt>) {
     // let proto_handle = core::mem::replace(&mut context.ndis_protocol_handle, core::ptr::null_mut());
     let proto_handle = context.ndis_protocol_handle;
@@ -1050,6 +1022,92 @@ pub(crate) fn unload_protocol(context: Pin<&NdisProt>) {
     if !proto_handle.is_null() {
         unsafe { NdisDeregisterProtocolDriver(proto_handle) };
     }
+}
+
+fn do_request(
+    // protocol_binding_context: &ProtocolBindingContext,
+    open_context: &OpenContext,
+    port_number: NDIS_PORT_NUMBER,
+    request_type: NDIS_REQUEST_TYPE,
+    oid: NDIS_OID,
+    information_buffer: PVOID,
+    information_buffer_length: ULONG,
+    bytes_processed: &mut ULONG,
+) -> Result<(), Error> {
+    // FIXME: required because OID requests via WDFREQUESTs go via
+    // `OpenContext`, not `ProtocolBindingContext`
+    let binding_handle = open_context.binding_handle.load();
+
+    const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
+        (core::mem::offset_of!(NDIS_OID_REQUEST, Reserved2)
+            + core::mem::size_of::<windows_kernel_sys::USHORT>()) as u16;
+
+    let mut request = unsafe { core::mem::zeroed::<NDIS_OID_REQUEST>() };
+    request.Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST as u8;
+    request.Header.Revision = NDIS_OID_REQUEST_REVISION_1 as u8;
+    request.Header.Size = NDIS_SIZEOF_OID_REQUEST_REVISION_1;
+    request.RequestType = request_type;
+    request.PortNumber = port_number;
+
+    match request_type {
+        NDIS_REQUEST_TYPE::NdisRequestQueryInformation => {
+            request.DATA.QUERY_INFORMATION.Oid = oid;
+            request.DATA.QUERY_INFORMATION.InformationBuffer = information_buffer;
+            request.DATA.QUERY_INFORMATION.InformationBufferLength = information_buffer_length;
+        }
+        NDIS_REQUEST_TYPE::NdisRequestSetInformation => {
+            request.DATA.SET_INFORMATION.Oid = oid;
+            request.DATA.SET_INFORMATION.InformationBuffer = information_buffer;
+            request.DATA.SET_INFORMATION.InformationBufferLength = information_buffer_length;
+        }
+        _ => unreachable!(),
+    }
+
+    request.RequestId = open_context
+        .driver
+        .get_context()
+        .map_or(0, |ctx| ctx.cancel_id_gen.next()) as PVOID;
+
+    pinned_init::stack_pin_init!(let req_context = pinned_init::pin_init!(Request {
+        Request: request,
+        ReqEvent <- KeEvent::new(EventType::Notification, false),
+        Status: 0x0,
+    }));
+
+    let mut status = unsafe {
+        Error::to_err(NdisOidRequest(
+            binding_handle,
+            core::ptr::addr_of_mut!(req_context.as_mut().Request),
+        ))
+    };
+
+    if let Err(Error(STATUS::PENDING)) = status {
+        let _ = req_context.as_ref().ReqEvent.wait(Timeout::forever());
+        status = Error::to_err(req_context.as_ref().Status);
+    }
+
+    if status.is_ok() {
+        *bytes_processed = match request_type {
+            NDIS_REQUEST_TYPE::NdisRequestQueryInformation => unsafe {
+                req_context
+                    .as_ref()
+                    .Request
+                    .DATA
+                    .QUERY_INFORMATION
+                    .BytesWritten
+            },
+            NDIS_REQUEST_TYPE::NdisRequestSetInformation => unsafe {
+                req_context.as_ref().Request.DATA.SET_INFORMATION.BytesRead
+            },
+            _ => unreachable!(),
+        };
+
+        // The driver below should set the correct value to `BytesWritten` or `BytesRead`,
+        // but for now just trucate the value to the info buffer length.
+        *bytes_processed = (*bytes_processed).max(information_buffer_length);
+    }
+
+    status
 }
 
 /// Pre-validates and holds a reference to an open context before calling `do_request`.
@@ -1153,95 +1211,41 @@ pub(crate) fn validate_open_and_do_request(
     status.to_u32()
 }
 
-fn do_request(
-    // protocol_binding_context: &ProtocolBindingContext,
-    open_context: &OpenContext,
-    port_number: NDIS_PORT_NUMBER,
-    request_type: NDIS_REQUEST_TYPE,
-    oid: NDIS_OID,
-    information_buffer: PVOID,
-    information_buffer_length: ULONG,
-    bytes_processed: &mut ULONG,
-) -> Result<(), Error> {
-    // FIXME: required because OID requests via WDFREQUESTs go via
-    // `OpenContext`, not `ProtocolBindingContext`
-    let binding_handle = open_context.binding_handle.load();
-
-    const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
-        (core::mem::offset_of!(NDIS_OID_REQUEST, Reserved2)
-            + core::mem::size_of::<windows_kernel_sys::USHORT>()) as u16;
-
-    let mut request = unsafe { core::mem::zeroed::<NDIS_OID_REQUEST>() };
-    request.Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST as u8;
-    request.Header.Revision = NDIS_OID_REQUEST_REVISION_1 as u8;
-    request.Header.Size = NDIS_SIZEOF_OID_REQUEST_REVISION_1;
-    request.RequestType = request_type;
-    request.PortNumber = port_number;
-
-    match request_type {
-        NDIS_REQUEST_TYPE::NdisRequestQueryInformation => {
-            request.DATA.QUERY_INFORMATION.Oid = oid;
-            request.DATA.QUERY_INFORMATION.InformationBuffer = information_buffer;
-            request.DATA.QUERY_INFORMATION.InformationBufferLength = information_buffer_length;
-        }
-        NDIS_REQUEST_TYPE::NdisRequestSetInformation => {
-            request.DATA.SET_INFORMATION.Oid = oid;
-            request.DATA.SET_INFORMATION.InformationBuffer = information_buffer;
-            request.DATA.SET_INFORMATION.InformationBufferLength = information_buffer_length;
-        }
-        _ => unreachable!(),
-    }
-
-    request.RequestId = open_context
-        .driver
-        .get_context()
-        .map_or(0, |ctx| ctx.cancel_id_gen.next()) as PVOID;
-
-    pinned_init::stack_pin_init!(let req_context = pinned_init::pin_init!(Request {
-        Request: request,
-        ReqEvent <- KeEvent::new(EventType::Notification, false),
-        Status: 0x0,
-    }));
-
-    let mut status = unsafe {
-        Error::to_err(NdisOidRequest(
-            binding_handle,
-            core::ptr::addr_of_mut!(req_context.as_mut().Request),
-        ))
+/// Entry point indicating completion of a pended NDIS_REQUEST
+pub(crate) unsafe extern "C" fn request_complete(
+    ProtocolBindingContext: NDIS_HANDLE,
+    OidRequest: PNDIS_OID_REQUEST,
+    Status: NTSTATUS,
+) {
+    // yayyyy container_of moment
+    let mut req_context = unsafe {
+        let containing_record = OidRequest
+            .cast::<u8>()
+            .sub(core::mem::offset_of!(Request, Request))
+            .cast::<Request>();
+        Pin::new_unchecked(&mut *containing_record)
     };
 
-    if let Err(Error(STATUS::PENDING)) = status {
-        let _ = req_context.as_ref().ReqEvent.wait(Timeout::forever());
-        status = Error::to_err(req_context.as_ref().Status);
-    }
+    // Stash the completion status
+    req_context.Status = Status;
 
-    if status.is_ok() {
-        *bytes_processed = match request_type {
-            NDIS_REQUEST_TYPE::NdisRequestQueryInformation => unsafe {
-                req_context
-                    .as_ref()
-                    .Request
-                    .DATA
-                    .QUERY_INFORMATION
-                    .BytesWritten
-            },
-            NDIS_REQUEST_TYPE::NdisRequestSetInformation => unsafe {
-                req_context.as_ref().Request.DATA.SET_INFORMATION.BytesRead
-            },
-            _ => unreachable!(),
-        };
-
-        // The driver below should set the correct value to `BytesWritten` or `BytesRead`,
-        // but for now just trucate the value to the info buffer length.
-        *bytes_processed = (*bytes_processed).max(information_buffer_length);
-    }
-
-    status
+    // Wake up the thread blocked on this request being completed
+    req_context.as_ref().ReqEvent.signal();
 }
 
-pub(crate) fn flush_receive_queue(open_context: &OpenContext) {
-    // FIXME: Fill in once we're adding NBLs to the recv list
+fn service_indicate_status_irp(
+    open_context: &OpenContext,
+    general_status: NTSTATUS,
+    status_buffer: PVOID,
+    status_buffer_size: UINT,
+) {
     log::error!("unimplemented");
+}
+
+pub(crate) unsafe extern "C" fn status_handler(
+    ProtocolBindingContext: NDIS_HANDLE,
+    StatusIndication: PNDIS_STATUS_INDICATION,
+) {
 }
 
 /// Returns information about the specified binding
@@ -1270,6 +1274,30 @@ pub(crate) fn ndisprot_lookup_device(
             let open_context = open_obj.get_context().ok()?;
             (open_context.device_name == adapter_name).then(|| open_obj.clone_ref())
         })
+}
+
+pub(crate) fn query_oid_value(
+    open_context: &OpenContext,
+    data_buffer: PVOID,
+    buffer_length: ULONG,
+    bytes_written: &mut usize,
+) -> NTSTATUS {
+    log::error!("unimplemented");
+    todo!()
+}
+
+pub(crate) fn set_oid_value(
+    open_context: &OpenContext,
+    data_buffer: PVOID,
+    buffer_length: ULONG,
+) -> NTSTATUS {
+    log::error!("unimplemented");
+    todo!()
+}
+
+/// Validate whether the given set OID is settable or not.
+fn valid_oid_value(oid: NDIS_OID) -> bool {
+    SUPPORTED_SET_OIDS.contains(&oid)
 }
 
 /// Handle restart attribute changes.
