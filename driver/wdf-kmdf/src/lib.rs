@@ -130,10 +130,11 @@ pub mod object {
                         ContextSize: ::core::mem::size_of::<$ty>(),
                         // Set to null because this appears to only be used to
                         // work around having multiple definitions of the same
-                        // context type info in the same translation unit. Also
-                        // since that consts can't refer to statics, which would
-                        // be required for `UniqueType` to point to the same
-                        // context info.
+                        // context type info in the same translation unit.
+                        //
+                        // We also don't use `UniqueType` as as consts can't
+                        // refer to statics, which would be required for
+                        // `UniqueType` to point to the same context info.
                         UniqueType: ::core::ptr::null(),
                         EvtDriverGetUniqueContextType: None,
                     };
