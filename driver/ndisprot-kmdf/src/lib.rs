@@ -18,6 +18,7 @@ use core::{
 };
 
 use alloc::{sync::Arc, vec::Vec};
+use crossbeam_utils::atomic::AtomicCell;
 use once_arc::OnceArc;
 use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
@@ -445,12 +446,12 @@ struct OpenContext {
     // Used in
     // - CreateBinding (write)
     // - Restart (write)
-    mac_options: u32,
+    mac_options: AtomicCell<u32>,
     // Used in
     // - EvtIoWrite (read)
     // - CreateBinding (write)
     // - Restart (write)
-    max_frame_size: u32,
+    max_frame_size: AtomicCell<u32>,
     // Used in
     // - CreateBinding (write)
     data_backfill_size: u32,
@@ -492,7 +493,7 @@ struct OpenContext {
     // - recv::ServiceReads (write dec)
     // - WaitForPendingIO (read)
     // oh no (no inc)
-    pending_read_count: u32,
+    pended_read_count: u32,
     #[pin]
     // Used in
     // - recv::ServiceReads (read, technically write into_iter)
@@ -512,7 +513,7 @@ struct OpenContext {
     // - CreateBinding (write)
     // - ValidateOpenAndDoRequest (read)
     // - Status (read)
-    power_state: NET_DEVICE_POWER_STATE,
+    power_state: AtomicCell<NET_DEVICE_POWER_STATE>,
     /// signaled if PowerState is D0
     // Used in
     // - CreateBinding (write init, signal)
@@ -655,6 +656,7 @@ struct OpenContextInner {
     closing_event: *mut KeEvent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenState {
     Initializing,
     Running,

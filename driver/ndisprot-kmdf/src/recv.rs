@@ -1,6 +1,8 @@
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_sys::{LIST_ENTRY, NDIS_HANDLE, NDIS_PORT_NUMBER, PNET_BUFFER_LIST, ULONG};
 
+use crate::OpenContext;
+
 /// `ProtocolReserved` in received packets: we link these packets up in a queue waiting for read io requests.
 pub(crate) struct NprotRecvNblRsvd {
     link: LIST_ENTRY,
@@ -28,4 +30,8 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
     NumberOfNetBufferLists: ULONG,
     ReceiveFlags: ULONG,
 ) {
+}
+
+pub(crate) fn flush_receive_queue(open_context: &OpenContext) {
+    // TODO: fill out
 }

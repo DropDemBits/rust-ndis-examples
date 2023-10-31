@@ -1,11 +1,17 @@
 //! NDIS protocol entry points as well as handling binding and unbinding from adapters
 use core::{
+    marker::PhantomData,
     mem::ManuallyDrop,
     pin::Pin,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use alloc::boxed::Box;
+use crossbeam_utils::atomic::AtomicCell;
+use nt_list::{
+    single_list::{NtSingleList, NtSingleListEntry, NtSingleListHead},
+    NtListElement,
+};
 use pinned_init::{pin_data, InPlaceInit, PinInit};
 use scopeguard::ScopeGuard;
 use wdf_kmdf::{driver::Driver, object::GeneralObject, sync::SpinMutex};
@@ -18,22 +24,25 @@ use windows_kernel_sys::{
     result::STATUS, Error, NdisAllocateNetBufferListPool, NdisCloseAdapterEx,
     NdisDeregisterProtocolDriver, NdisFreeMemory, NdisFreeNetBufferListPool, NdisOidRequest,
     NdisOpenAdapterEx, NdisQueryAdapterInstanceName, NDIS_DEFAULT_PORT_NUMBER,
-    NDIS_ETH_TYPE_802_1Q, NDIS_ETH_TYPE_802_1X, NDIS_HANDLE, NDIS_MEDIUM, NDIS_OBJECT_TYPE_DEFAULT,
-    NDIS_OBJECT_TYPE_OID_REQUEST, NDIS_OBJECT_TYPE_OPEN_PARAMETERS, NDIS_OID, NDIS_OID_REQUEST,
-    NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS, NDIS_OPEN_PARAMETERS_REVISION_1,
-    NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX, NDIS_REQUEST_TYPE, NET_BUFFER_LIST_POOL_PARAMETERS,
-    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NET_PNP_EVENT_CODE, NTSTATUS, OID_802_11_ADD_WEP,
-    OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
-    OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE,
-    OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE,
-    OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI, OID_802_11_SSID,
-    OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
-    OID_802_3_MULTICAST_LIST, OID_GEN_CURRENT_PACKET_FILTER, PNDIS_BIND_PARAMETERS,
-    PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION, PVOID, ULONG,
+    NDIS_ETH_TYPE_802_1Q, NDIS_ETH_TYPE_802_1X, NDIS_HANDLE, NDIS_MEDIUM, NDIS_OBJECT_HEADER,
+    NDIS_OBJECT_TYPE_DEFAULT, NDIS_OBJECT_TYPE_OID_REQUEST, NDIS_OBJECT_TYPE_OPEN_PARAMETERS,
+    NDIS_OID, NDIS_OID_REQUEST, NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS,
+    NDIS_OPEN_PARAMETERS_REVISION_1, NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX,
+    NDIS_PROTOCOL_RESTART_PARAMETERS, NDIS_REQUEST_TYPE, NDIS_RESTART_ATTRIBUTES,
+    NDIS_RESTART_GENERAL_ATTRIBUTES, NET_BUFFER_LIST_POOL_PARAMETERS,
+    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NET_DEVICE_POWER_STATE, NET_IFINDEX, NET_LUID,
+    NET_PNP_EVENT_CODE, NTSTATUS, OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE,
+    OID_802_11_BSSID, OID_802_11_BSSID_LIST, OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION,
+    OID_802_11_DISASSOCIATE, OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE,
+    OID_802_11_POWER_MODE, OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI,
+    OID_802_11_SSID, OID_802_11_STATISTICS, OID_802_11_SUPPORTED_RATES, OID_802_11_WEP_STATUS,
+    OID_802_3_MULTICAST_LIST, OID_GEN_CURRENT_PACKET_FILTER, OID_GEN_MINIPORT_RESTART_ATTRIBUTES,
+    PNDIS_BIND_PARAMETERS, PNDIS_OID_REQUEST, PNDIS_STATUS_INDICATION, PNET_PNP_EVENT_NOTIFICATION,
+    PUCHAR, PVOID, ULONG,
 };
 
 use crate::{
-    EventType, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags, OpenContextInner,
+    recv, EventType, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags, OpenContextInner,
     OpenState, Timeout, MAX_MULTICAST_ADDRESS,
 };
 
@@ -392,7 +401,8 @@ pub(crate) unsafe extern "C" fn bind_adapter(
             };
 
             // assume that the device is powered up
-            let power_state = windows_kernel_sys::NET_DEVICE_POWER_STATE::NetDeviceStateD0;
+            let power_state =
+                AtomicCell::new(windows_kernel_sys::NET_DEVICE_POWER_STATE::NetDeviceStateD0);
 
             let mut medium_array = [NDIS_MEDIUM::NdisMedium802_3];
             let mut frame_type_array = [NDIS_ETH_TYPE_802_1X as u16, NDIS_ETH_TYPE_802_1Q as u16];
@@ -549,7 +559,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
                     recv_nbl_pool: ScopeGuard::into_inner(recv_nbl_pool),
                     read_queue: ScopeGuard::into_inner(read_queue),
-                    pending_read_count: 0,
+                    pended_read_count: 0,
                     recv_nbl_queue <- ListEntry::new(),
                     recv_nbl_len: 0,
 
@@ -557,8 +567,8 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
                     current_address,
                     multicast_address: [{MACAddr::zero()}; MAX_MULTICAST_ADDRESS],
-                    mac_options,
-                    max_frame_size,
+                    mac_options: AtomicCell::new(mac_options),
+                    max_frame_size: AtomicCell::new(max_frame_size),
                     data_backfill_size,
                     context_backfill_size,
                 }? Error
@@ -800,7 +810,48 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
 
     match event_notif.NetPnPEvent.NetEvent {
         NET_PNP_EVENT_CODE::NetEventSetPower => {
-            // TODO: fill out
+            if let Some(binding_ctx) = protocol_binding_context {
+                if let Ok(open_context) = binding_ctx.open_context.get_context() {
+                    let power_state = unsafe {
+                        event_notif
+                            .NetPnPEvent
+                            .Buffer
+                            .cast::<NET_DEVICE_POWER_STATE>()
+                            .read()
+                    };
+                    open_context.power_state.store(power_state);
+
+                    if open_context.power_state.load().0
+                        > NET_DEVICE_POWER_STATE::NetDeviceStateD0.0
+                    {
+                        // ???: So we write to the open context, but the object context area holding open context is supposed
+                        // to only have thread-safe references. How do we get mut access to clear the waiters but also retain
+                        // shared access so as to not block the mut access?
+                        //
+                        // Seems like we can signal the event after setting the power state?
+
+                        // The device below is transitioning into a low power state.
+                        // We wake-up any thread attempting to query the device so that they can see the new power state.
+                        open_context.powered_up_event.signal();
+
+                        // Wait for any IO in-progress to complete
+                        wait_for_pending_io(&open_context, false);
+
+                        // Return any receives taht we have queued up
+                        recv::flush_receive_queue(&open_context);
+
+                        log::info!(
+                            "pnp_event: SetPower to {}",
+                            open_context.power_state.load().0
+                        );
+                    } else {
+                        // The device below is powered up
+                        log::info!("pnp_event: SetPower to ON");
+
+                        open_context.powered_up_event.signal();
+                    }
+                }
+            }
         }
         NET_PNP_EVENT_CODE::NetEventQueryPower => {
             status = STATUS::SUCCESS;
@@ -822,10 +873,74 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
             };
         }
         NET_PNP_EVENT_CODE::NetEventPause => {
-            // TODO: fill out
+            if let Some(binding_ctx) = protocol_binding_context {
+                if let Ok(open_context) = binding_ctx.open_context.get_context() {
+                    // Wait for all sends to complete
+                    let mut open_context_inner = open_context.inner.lock();
+                    open_context_inner.state = OpenState::Pausing;
+
+                    // Note: could also complete the PnP event asynchronously (would need NdisCompleteNetPnPEvent)
+                    loop {
+                        if open_context.pended_send_count == 0 {
+                            break;
+                        }
+
+                        drop(open_context_inner);
+                        {
+                            log::info!(
+                                "pnp_event: outstanding send count is {}",
+                                open_context.pended_send_count
+                            );
+
+                            // Sleep for 1 second!
+                            pinned_init::stack_pin_init!(let sleep_event = KeEvent::new(EventType::Notification, false));
+                            let _ = sleep_event.wait(Timeout::relative_ms(1_000));
+                        }
+                        open_context_inner = open_context.inner.lock();
+                    }
+                    drop(open_context_inner);
+
+                    // Return all queued receives
+                    recv::flush_receive_queue(&open_context);
+
+                    open_context.inner.lock().state = OpenState::Paused;
+                }
+            }
         }
         NET_PNP_EVENT_CODE::NetEventRestart => {
-            // TODO: fill out
+            if let Some(binding_ctx) = protocol_binding_context {
+                if let Ok(open_context) = binding_ctx.open_context.get_context() {
+                    debug_assert_eq!(
+                        open_context.inner.lock().state,
+                        OpenState::Paused,
+                        "trying to restart binding while adapter isn't paused"
+                    );
+
+                    // Get the updated attributes, if there are any
+                    let updated_attributes = 'updated_attributes: {
+                        let buffer = event_notif.NetPnPEvent.Buffer;
+                        if buffer.is_null() {
+                            break 'updated_attributes None;
+                        }
+
+                        let buffer_length = event_notif.NetPnPEvent.BufferLength;
+                        assert_eq!(
+                            buffer_length as usize,
+                            core::mem::size_of::<ProtocolRestartParameters>()
+                        );
+
+                        Some(unsafe { &*buffer.cast::<ProtocolRestartParameters>() })
+                    };
+
+                    if let Some(updated_attributes) = updated_attributes {
+                        restart(&open_context, updated_attributes)
+                    }
+
+                    // Translation note: in the original code, if there are no updated attributes,
+                    // the binding isn't sent back into the open state.
+                    open_context.inner.lock().state = OpenState::Running;
+                }
+            }
         }
         NET_PNP_EVENT_CODE::NetEventQueryRemoveDevice
         | NET_PNP_EVENT_CODE::NetEventCancelRemoveDevice
@@ -856,6 +971,44 @@ pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NTSTATUS {
     // Note: no-one calls this, instead the driver unload callback is used
     log::debug!("unload_handler");
     STATUS::SUCCESS.to_u32()
+}
+
+/// Wait for all outstanding IO to complete on an open context.
+/// Since we're given a `&OpenContext`, we can assume that the open context won't go away.
+///
+/// If `cancel_reads` is `true`, we also wait for pending reads to be completed/cancelled.
+fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
+    // Wait for any pending sends or requests on the binding to complete
+    if open_context.pended_send_count == 0 {
+        debug_assert!(open_context.inner.lock().closing_event.is_null());
+    } else {
+        let closing_event = open_context.inner.lock().closing_event;
+        debug_assert!(!closing_event.is_null());
+
+        log::warn!(
+            "wait_for_pending_io: {} pended sends",
+            open_context.pended_send_count
+        );
+
+        let _ = unsafe { (*closing_event).wait(Timeout::forever()) };
+    }
+
+    if cancel_reads {
+        // Wait for any pended reads to complete/cancel
+        while open_context.pended_read_count != 0 {
+            log::info!(
+                "wait_for_pending_io: {} pended reads",
+                open_context.pended_read_count
+            );
+
+            // Cancel any pending reads
+            unsafe { wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.read_queue) };
+
+            // Sleep for 1 second!
+            pinned_init::stack_pin_init!(let sleep_event = KeEvent::new(EventType::Notification, false));
+            let _ = sleep_event.wait(Timeout::relative_ms(1_000));
+        }
+    }
 }
 
 /// Entry point indicating completion of a pended NDIS_REQUEST
@@ -1029,6 +1182,37 @@ pub(crate) fn ndisprot_lookup_device(
         })
 }
 
+/// Handle restart attribute changes.
+fn restart(open_context: &OpenContext, updated_attributes: &ProtocolRestartParameters) {
+    // Check for filter stack changes
+    for filter_module in updated_attributes.filter_module_names() {
+        log::info!("Filter: {}", filter_module);
+    }
+
+    // Check for updated attributes
+    if let Some(restart_attr) = updated_attributes
+        .restart_attributes()
+        .find(|attr| attr.Oid == OID_GEN_MINIPORT_RESTART_ATTRIBUTES)
+    {
+        let general_attributes = unsafe {
+            &*restart_attr
+                .data()
+                .as_ptr()
+                .cast::<NDIS_RESTART_GENERAL_ATTRIBUTES>()
+        };
+
+        // Pickup new attributes of interest
+
+        open_context
+            .mac_options
+            .store(general_attributes.MacOptions);
+
+        open_context
+            .max_frame_size
+            .store(general_attributes.MtuSize);
+    }
+}
+
 /// Note: always adds a nul-terminator
 fn try_from_unicode_str(unicode_str: NtUnicodeStr<'_>) -> Result<NtUnicodeString, Error> {
     use windows_kernel_rs::string::NtStringError;
@@ -1062,4 +1246,124 @@ fn try_from_unicode_str(unicode_str: NtUnicodeStr<'_>) -> Result<NtUnicodeString
     }
 
     Ok(string)
+}
+
+// Helpers for navigating the fields of NDIS_PROTOCOL_RESTART_PARAMETERS easier
+
+#[repr(C)]
+struct ProtocolRestartParameters {
+    _Header: NDIS_OBJECT_HEADER,
+    FilterModuleNameBuffer: PUCHAR,
+    FilterModuleNameBufferLength: ULONG,
+    RestartAttributes: NtSingleListHead<RestartAttributes, RestartAttributesList>,
+    BoundIfIndex: NET_IFINDEX,
+    BoundIfNetLuid: NET_LUID,
+    _Flags: ULONG,
+}
+
+// Should be the same as NDIS_PROTOCOL_RESTART_PARAMETERS
+static_assertions::assert_eq_align!(ProtocolRestartParameters, NDIS_PROTOCOL_RESTART_PARAMETERS);
+static_assertions::assert_eq_size!(ProtocolRestartParameters, NDIS_PROTOCOL_RESTART_PARAMETERS);
+
+impl ProtocolRestartParameters {
+    fn filter_module_names(&self) -> impl Iterator<Item = NtUnicodeStr<'_>> {
+        unsafe {
+            FilterModuleNameIter::new(
+                self.FilterModuleNameBuffer,
+                self.FilterModuleNameBufferLength,
+            )
+        }
+    }
+
+    fn restart_attributes(&self) -> impl Iterator<Item = &RestartAttributes> {
+        unsafe { self.RestartAttributes.iter() }
+    }
+}
+
+struct FilterModuleNameIter<'a> {
+    _restart_parameters: PhantomData<&'a ()>,
+    current: PUCHAR,
+    end: PUCHAR,
+}
+
+impl<'a> FilterModuleNameIter<'a> {
+    unsafe fn new(buffer: PUCHAR, length: ULONG) -> Self {
+        let current = buffer;
+
+        let end = if buffer.is_null() {
+            // No entries, so we make end to be the same as the current
+            current
+        } else {
+            unsafe { current.add(length as usize) }
+        };
+
+        FilterModuleNameIter {
+            _restart_parameters: PhantomData,
+            current,
+            end,
+        }
+    }
+}
+
+impl<'a> Iterator for FilterModuleNameIter<'a> {
+    type Item = NtUnicodeStr<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        #[repr(C)]
+        struct NameElement {
+            len: u16,
+            buffer: [u16; 1],
+        }
+
+        if self.current == self.end {
+            None
+        } else {
+            // Format of the buffer elements:
+            // | byte_len: USHORT | buffer: [u8; byte_len] |
+
+            let element = self.current.cast::<NameElement>();
+            let buffer_len = unsafe { (*element).len };
+            let buffer = unsafe { core::ptr::addr_of!((*element).buffer) }.cast();
+
+            self.current = unsafe { self.current.add(buffer_len.into()) };
+
+            let str = unsafe { NtUnicodeStr::from_raw_parts(buffer, buffer_len, buffer_len) };
+
+            Some(str)
+        }
+    }
+}
+
+#[derive(NtSingleList)]
+enum RestartAttributesList {}
+
+#[derive(NtListElement)]
+#[repr(C, align(16))]
+struct RestartAttributes {
+    /// Next set of restart attributes
+    Next: NtSingleListEntry<Self, RestartAttributesList>,
+    /// NDIS object identifer of what `Data` contains
+    Oid: NDIS_OID,
+    /// Length (in bytes) of `Data`
+    DataLength: ULONG,
+    // Impl Note: This cannot be a [u8] since that'd mean that pointers to restart attributes
+    // become wide-pointers, whereas the original definition of `NDIS_RESTART_ATTRIBUTES` uses
+    // thin-pointers for the `Next` pointer.
+    Data: [u8; 1],
+}
+
+// Should be the same as NDIS_RESTART_ATTRIBUTES
+static_assertions::assert_eq_align!(RestartAttributes, NDIS_RESTART_ATTRIBUTES);
+static_assertions::assert_eq_size!(RestartAttributes, NDIS_RESTART_ATTRIBUTES);
+
+impl RestartAttributes {
+    fn data(&self) -> &[u8] {
+        let data = core::ptr::addr_of!(self.Data).cast::<u8>();
+        // SAFETY:
+        // - We assume that NDIS contains the full `DataLength` bytes of `Data` in a single allocation
+        // - Since the alignment of `u8` is 1, `Data` is already aligned
+        // - NDIS owns the allocation containing `Data`, so it is okay to assume that it won't mutate `Data`
+        // - on x86_64, ULONG::MAX (u32::MAX) is less than isize::MAX
+        unsafe { core::slice::from_raw_parts(data, self.DataLength as usize) }
+    }
 }
