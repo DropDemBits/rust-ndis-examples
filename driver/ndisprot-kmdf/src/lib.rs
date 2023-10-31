@@ -42,11 +42,11 @@ use windows_kernel_rs::{
 use windows_kernel_sys::{
     result::STATUS, Error, KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, NdisFreeMemory,
     NdisFreeNetBufferListPool, NdisGeneratePartialCancelId, KEVENT, LIST_ENTRY, NDIS_HANDLE,
-    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PACKET_TYPE_BROADCAST,
-    NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
-    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_REQUEST_TYPE, NDIS_STATUS,
-    NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT,
-    PUNICODE_STRING, ULONG, ULONG_PTR,
+    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_OID, NDIS_PACKET_TYPE_BROADCAST,
+    NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST, NDIS_PORT_NUMBER,
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
+    NDIS_REQUEST_TYPE, NDIS_STATUS, NET_DEVICE_POWER_STATE, NTSTATUS,
+    OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT, PUNICODE_STRING, ULONG, ULONG_PTR,
 };
 
 #[allow(non_snake_case)]
@@ -1053,7 +1053,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
 
     let control_code = IoControlCode::from(IoControlCode);
 
-    let mut nt_status = STATUS::UNSUCCESSFUL;
+    let mut nt_status;
 
     match control_code {
         IOCTL_NDISPROT_BIND_WAIT => {
@@ -1154,9 +1154,111 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                 }
             }
         }
-        IOCTL_NDISPROT_QUERY_OID_VALUE => {}
-        IOCTL_NDISPROT_SET_OID_VALUE => {}
-        IOCTL_NDISPROT_INDICATE_STATUS => {}
+        IOCTL_NDISPROT_QUERY_OID_VALUE => {
+            assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
+
+            'out: {
+                let mut sys_buffer = core::ptr::null_mut();
+                let mut buf_size = 0;
+
+                nt_status = unsafe {
+                    wdf_kmdf::raw::WdfRequestRetrieveOutputBuffer(
+                        Request,
+                        core::mem::size_of::<QueryOid>(),
+                        &mut sys_buffer,
+                        Some(&mut buf_size),
+                    )
+                    .into()
+                };
+
+                if !nt_status.is_success() {
+                    log::warn!("WdfRequestRetrieveOutputBuffer failed {:x?}", nt_status);
+                    break 'out;
+                }
+
+                if let Some(open_context) = open_context {
+                    let Ok(open_context) = open_context.get_context() else {
+                        nt_status = STATUS::UNSUCCESSFUL;
+                        break 'out;
+                    };
+
+                    let status = ndisbind::query_oid_value(
+                        &*open_context,
+                        sys_buffer,
+                        buf_size as ULONG,
+                        &mut bytes_returned,
+                    );
+                    nt_status = ndis_status_to_nt_status(status).0;
+                } else {
+                    nt_status = STATUS::DEVICE_NOT_CONNECTED;
+                }
+            }
+        }
+        IOCTL_NDISPROT_SET_OID_VALUE => {
+            assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
+
+            'out: {
+                let mut sys_buffer = core::ptr::null_mut();
+                let mut buf_size = 0;
+
+                nt_status = unsafe {
+                    wdf_kmdf::raw::WdfRequestRetrieveInputBuffer(
+                        Request,
+                        core::mem::size_of::<SetOid>(),
+                        &mut sys_buffer,
+                        Some(&mut buf_size),
+                    )
+                    .into()
+                };
+
+                if !nt_status.is_success() {
+                    log::warn!("WdfRequestRetrieveInputBuffer failed {:x?}", nt_status);
+                    break 'out;
+                }
+
+                if let Some(open_context) = open_context {
+                    let Ok(open_context) = open_context.get_context() else {
+                        nt_status = STATUS::UNSUCCESSFUL;
+                        break 'out;
+                    };
+
+                    let status =
+                        ndisbind::set_oid_value(&*open_context, sys_buffer, buf_size as ULONG);
+
+                    bytes_returned = 0;
+
+                    nt_status = ndis_status_to_nt_status(status).0;
+                } else {
+                    nt_status = STATUS::DEVICE_NOT_CONNECTED;
+                }
+            }
+        }
+        IOCTL_NDISPROT_INDICATE_STATUS => {
+            assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
+
+            'out: {
+                if let Some(open_context) = open_context {
+                    let Ok(open_context) = open_context.get_context() else {
+                        nt_status = STATUS::UNSUCCESSFUL;
+                        break 'out;
+                    };
+
+                    let status = Error::to_err(unsafe {
+                        wdf_kmdf::raw::WdfRequestForwardToIoQueue(
+                            Request,
+                            open_context.status_indication_queue,
+                        )
+                    });
+
+                    nt_status = match status {
+                        Ok(_) => STATUS::PENDING,
+                        Err(err) => err.0,
+                    };
+                } else {
+                    nt_status = STATUS::DEVICE_NOT_CONNECTED;
+                }
+            }
+        }
         _ => nt_status = STATUS::NOT_SUPPORTED,
     }
 
@@ -1308,6 +1410,22 @@ fn open_device(
 }
 
 #[repr(C)]
+struct QueryOid {
+    oid: NDIS_OID,
+    port_number: NDIS_PORT_NUMBER,
+    // variable length, minimum 4 bytes
+    data: [u8; core::mem::size_of::<ULONG>()],
+}
+
+#[repr(C)]
+struct SetOid {
+    oid: NDIS_OID,
+    port_number: NDIS_PORT_NUMBER,
+    // variable length, minimum 4 bytes
+    data: [u8; core::mem::size_of::<ULONG>()],
+}
+
+#[repr(C)]
 struct QueryBinding {
     binding_index: u32,
     device_name_offset: u32,
@@ -1317,7 +1435,31 @@ struct QueryBinding {
 }
 
 fn ndis_status_to_nt_status(status: NDIS_STATUS) -> Error {
-    Error(status.into())
+    // handle the status codes which map to NT status codes first
+    use windows_kernel_sys::result::{NtStatus, ERROR::NDIS};
+
+    let status = match NtStatus::from(status) {
+        same @ (STATUS::SUCCESS
+        | STATUS::PENDING
+        | STATUS::BUFFER_OVERFLOW
+        | STATUS::UNSUCCESSFUL
+        | STATUS::INSUFFICIENT_RESOURCES
+        | STATUS::NOT_SUPPORTED) => same,
+        not_same => {
+            let status = windows_kernel_sys::result::HResultError::from(not_same.to_u32());
+
+            match status {
+                NDIS::BUFFER_TOO_SHORT => STATUS::BUFFER_TOO_SMALL,
+                NDIS::INVALID_LENGTH => STATUS::INVALID_BUFFER_SIZE,
+                NDIS::INVALID_DATA => STATUS::INVALID_PARAMETER,
+                NDIS::ADAPTER_NOT_FOUND => STATUS::NO_MORE_ENTRIES,
+                NDIS::ADAPTER_NOT_READY => STATUS::DEVICE_NOT_READY,
+                _ => STATUS::UNSUCCESSFUL,
+            }
+        }
+    };
+
+    Error(status)
 }
 
 // unfortunately we need to declare _fltused
