@@ -24,7 +24,7 @@ use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
     driver::Driver,
     object::{AsObjectHandle, GeneralObject},
-    sync::SpinMutex,
+    sync::SpinPinMutex,
 };
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
@@ -175,7 +175,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                     ndis_protocol_handle: handle,
                     eth_type: NPROT_ETH_TYPE,
                     cancel_id_gen,
-                    open_list <- SpinMutex::new(Vec::new()),
+                    open_list <- SpinPinMutex::new(Vec::new()),
                     binds_complete <- KeEvent::new(EventType::Notification, false),
                 }? Error
             })
@@ -341,7 +341,7 @@ struct NdisProt {
     //     - Have access to FileObject.ContextSpace
     // Is an `Option<GeneralObject<OpenContext>>` so that we can pre-allocate space to put the open context in
     #[pin]
-    open_list: SpinMutex<Vec<Option<GeneralObject<OpenContext>>>>,
+    open_list: SpinPinMutex<Vec<Option<GeneralObject<OpenContext>>>>,
     /// Notifiying when binding is complete (used in ioctl)
     // Used in
     // - ndisbind::PnPEventHandler
@@ -414,7 +414,7 @@ struct OpenContext {
     driver: Driver<NdisProt>,
 
     #[pin]
-    inner: SpinMutex<OpenContextInner>,
+    inner: SpinPinMutex<OpenContextInner>,
 
     // for `validate_open_and_do_request`
     binding_handle: AtomicCell<NDIS_HANDLE>,

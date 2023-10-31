@@ -14,7 +14,7 @@ use nt_list::{
 };
 use pinned_init::{pin_data, InPlaceInit, PinInit};
 use scopeguard::ScopeGuard;
-use wdf_kmdf::{driver::Driver, object::GeneralObject, sync::SpinMutex};
+use wdf_kmdf::{driver::Driver, object::GeneralObject, sync::SpinPinMutex};
 use wdf_kmdf_sys::WDF_IO_QUEUE_CONFIG;
 use windows_kernel_rs::{
     log,
@@ -536,7 +536,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     oc_sig: 0x030EE030,
                     driver: driver.clone_ref(),
 
-                    inner <- SpinMutex::new(OpenContextInner {
+                    inner <- SpinPinMutex::new(OpenContextInner {
                         flags,
                         state,
                         closing_event: core::ptr::null_mut(),
