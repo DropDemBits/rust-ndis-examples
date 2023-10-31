@@ -172,6 +172,22 @@ pub mod ioctl {
                 transfer_method,
             }
         }
+
+        pub fn device_type(self) -> DeviceType {
+            self.device_type
+        }
+
+        pub fn required_access(self) -> RequiredAccess {
+            self.required_access
+        }
+
+        pub fn function_code(self) -> u16 {
+            self.function_code
+        }
+
+        pub fn transfer_method(self) -> TransferMethod {
+            self.transfer_method
+        }
     }
 
     impl From<u32> for IoControlCode {

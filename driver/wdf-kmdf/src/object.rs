@@ -203,6 +203,7 @@ pub(crate) enum HandleKind {
 }
 
 pub struct GeneralObject<T> {
+    // FIXME: Make pointer-sized
     handle: WDFOBJECT,
     kind: HandleKind,
     _context: PhantomData<T>,

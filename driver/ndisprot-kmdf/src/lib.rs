@@ -19,12 +19,12 @@ use core::{
 
 use alloc::{sync::Arc, vec::Vec};
 use crossbeam_utils::atomic::AtomicCell;
-use once_arc::OnceArc;
 use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
     driver::Driver,
+    file_object::FileObject,
     object::{AsObjectHandle, GeneralObject},
-    sync::SpinPinMutex,
+    sync::{SpinMutex, SpinPinMutex},
 };
 use wdf_kmdf_sys::{
     WDFDEVICE, WDFFILEOBJECT, WDFQUEUE, WDFREQUEST, WDF_FILEOBJECT_CONFIG, WDF_IO_QUEUE_CONFIG,
@@ -42,9 +42,11 @@ use windows_kernel_rs::{
 use windows_kernel_sys::{
     result::STATUS, Error, KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, NdisFreeMemory,
     NdisFreeNetBufferListPool, NdisGeneratePartialCancelId, KEVENT, LIST_ENTRY, NDIS_HANDLE,
-    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
-    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_REQUEST_TYPE, NET_DEVICE_POWER_STATE,
-    NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT, PUNICODE_STRING, ULONG, ULONG_PTR,
+    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PACKET_TYPE_BROADCAST,
+    NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_REQUEST_TYPE, NDIS_STATUS,
+    NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT,
+    PUNICODE_STRING, ULONG, ULONG_PTR,
 };
 
 #[allow(non_snake_case)]
@@ -300,6 +302,9 @@ const DOS_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Global??\Ndisp
 const NPROT_ETH_TYPE: u16 = 0x8e88;
 const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
 
+const NPROTO_PACKET_FILTER: u32 =
+    NDIS_PACKET_TYPE_DIRECTED | NDIS_PACKET_TYPE_MULTICAST | NDIS_PACKET_TYPE_BROADCAST;
+
 #[pin_data(PinnedDrop)]
 struct NdisProt {
     // Only used by BindAdapter to create the WDFIOQUEUEs for the adapter
@@ -391,16 +396,15 @@ impl CancelIdGen {
 }
 
 struct FileObjectContext {
-    open_context: OnceArc<OpenContext>,
+    open_context: SpinMutex<Option<GeneralObject<OpenContext>>>,
 }
 
 wdf_kmdf::impl_context_space!(FileObjectContext);
 
 impl FileObjectContext {
-    fn open_context(&self) -> Option<Pin<Arc<OpenContext>>> {
-        self.open_context
-            .get()
-            .map(|arc| unsafe { Pin::new_unchecked(arc) })
+    fn open_context(&self) -> Option<GeneralObject<OpenContext>> {
+        let guard = self.open_context.lock();
+        guard.as_ref().map(|it| it.clone_ref())
     }
 }
 
@@ -418,14 +422,6 @@ struct OpenContext {
 
     // for `validate_open_and_do_request`
     binding_handle: AtomicCell<NDIS_HANDLE>,
-
-    /// Set in `OPEN_DEVICE`
-    // Used in
-    // - EvtFileCleanup (breaking assoc)
-    // - OpenDevice (setting up assoc, breaking assoc in error case of setting filter)
-    //
-    // Essentially just used as debugging for figuring out the assoc'd file object
-    file_object: WDFFILEOBJECT,
 
     // set on adapter create
     // Used in
@@ -581,6 +577,8 @@ struct OpenContext {
     status_indication_queue: WDFQUEUE,
 }
 
+wdf_kmdf::impl_context_space!(OpenContext);
+
 #[pinned_drop]
 impl PinnedDrop for OpenContext {
     fn drop(self: Pin<&mut Self>) {
@@ -588,8 +586,9 @@ impl PinnedDrop for OpenContext {
         let this = unsafe { self.get_unchecked_mut() };
 
         // we don't carry the binding handle here anymore
-        // debug_assert!(self.binding_handle.is_null());
-        debug_assert!(this.file_object.is_null());
+        // FIXME: we temporarily do
+        debug_assert!(this.binding_handle.load().is_null());
+        debug_assert!(this.inner.get_mut().file_object.is_none());
 
         let send_nbl_pool = core::mem::replace(&mut this.send_nbl_pool, core::ptr::null_mut());
         if !send_nbl_pool.is_null() {
@@ -629,8 +628,6 @@ impl PinnedDrop for OpenContext {
     }
 }
 
-wdf_kmdf::impl_context_space!(OpenContext);
-
 struct OpenContextInner {
     /// State information
     flags: OpenContextFlags,
@@ -657,6 +654,13 @@ struct OpenContextInner {
     // - SetOidValue (assert != NULL, signal, write NULL)
     // - WaitForPendingIO (assert != NULL, wait forever)
     closing_event: *mut KeEvent,
+    /// Set in `OPEN_DEVICE`
+    // Used in
+    // - EvtFileCleanup (breaking assoc)
+    // - OpenDevice (setting up assoc, breaking assoc in error case of setting filter)
+    //
+    // Essentially just used as debugging for figuring out the assoc'd file object
+    file_object: Option<FileObject<FileObjectContext>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -897,7 +901,7 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
 
     let status = unsafe {
         file_object.init_context_space(pinned_init::try_init!(FileObjectContext {
-            open_context: OnceArc::new(None)
+            open_context <- SpinMutex::new(None),
         }? Error))
     };
 
@@ -1042,7 +1046,8 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
     let file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(file_object) };
 
-    let open_context = file_object.get_context().open_context();
+    let file_object_ctx = file_object.get_context();
+    let open_context = file_object_ctx.open_context();
 
     let mut bytes_returned = 0;
 
@@ -1058,9 +1063,11 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             //
             // Wait a max of 5 seconds to see if this is the case
 
-            if let Some(open_context) = open_context {
-                nt_status = match open_context
-                    .driver
+            let driver = unsafe { wdf_kmdf::raw::WdfGetDriver() }
+                .map(|driver| unsafe { wdf_kmdf::driver::Driver::<NdisProt>::wrap(driver) });
+
+            if let Some(driver) = driver {
+                nt_status = match driver
                     .get_context()
                     .map_err(|err| err.into())
                     .and_then(|driver| driver.binds_complete.wait(Timeout::relative_ms(5_000)))
@@ -1076,6 +1083,8 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             debug!("IoControl: BindWait returning {:#x?}", nt_status);
         }
         IOCTL_NDISPROT_QUERY_BINDING => {
+            assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
+
             let mut sys_buffer = core::ptr::null_mut();
             let mut buf_size = 0;
 
@@ -1100,7 +1109,50 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             }
         }
         IOCTL_NDISPROT_OPEN_DEVICE => {
-            // calls open_device
+            assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
+
+            'out: {
+                if open_context.is_some() {
+                    log::warn!(
+                        "IoControl: OPEN_DEVICE: FileObj {:x?} already associated with an open",
+                        file_object.as_handle()
+                    );
+                    nt_status = STATUS::DEVICE_BUSY;
+                    break 'out;
+                }
+
+                let mut sys_buffer = core::ptr::null_mut();
+                let mut buf_size = 0;
+
+                nt_status = unsafe {
+                    wdf_kmdf::raw::WdfRequestRetrieveInputBuffer(
+                        Request,
+                        0,
+                        &mut sys_buffer,
+                        Some(&mut buf_size),
+                    )
+                    .into()
+                };
+
+                if !nt_status.is_success() {
+                    log::warn!("WdfRequestRetrieveInputBuffer failed {:x?}", nt_status);
+                    break 'out;
+                }
+
+                let device_name =
+                    unsafe { core::slice::from_raw_parts(sys_buffer.cast(), buf_size) };
+
+                match open_device(device_name, file_object.clone_ref()) {
+                    Ok(open_context) => {
+                        log::trace!(
+                            "IoControl OPEN_DEVICE: Open {:x?} <-> FileObject {:x?}",
+                            open_context,
+                            file_object
+                        )
+                    }
+                    Err(err) => nt_status = err.0,
+                }
+            }
         }
         IOCTL_NDISPROT_QUERY_OID_VALUE => {}
         IOCTL_NDISPROT_SET_OID_VALUE => {}
@@ -1119,11 +1171,140 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
     }
 }
 
+/// Helper function called to process IOCTL_NDISPROT_OPEN_DEVICE.
+/// Check if there is a binding to the specified device and is not associated with a file object already.
+/// If so, make an association between the binding and this file object.
 fn open_device(
     device_name: &[u8],
-    FileObject: WDFFILEOBJECT,
-) -> Result<Pin<Arc<OpenContext>>, Error> {
-    loop {}
+    file_object: FileObject<FileObjectContext>,
+) -> Result<GeneralObject<OpenContext>, Error> {
+    let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
+        // Driver not initialized yet
+        return Err(STATUS::UNSUCCESSFUL.into());
+    };
+    let driver = unsafe { wdf_kmdf::driver::Driver::<NdisProt>::wrap(driver) };
+    let Ok(globals) = driver.get_context() else {
+        // Invalid context area
+        return Err(STATUS::UNSUCCESSFUL.into());
+    };
+    let globals = Pin::new(&*globals);
+
+    let file_context = file_object.get_context();
+
+    let status = 'out: {
+        let device_name = unsafe {
+            NtUnicodeStr::from_raw_parts(
+                device_name.as_ptr().cast(),
+                device_name.len() as u16,
+                device_name.len() as u16,
+            )
+        };
+
+        let Some(open_context_obj) = ndisbind::ndisprot_lookup_device(globals, device_name) else {
+            log::warn!("open_device: couldn't find device {:?}", device_name);
+            break 'out Err(Error(STATUS::OBJECT_NAME_NOT_FOUND));
+        };
+
+        let Ok(open_context) = open_context_obj.get_context() else {
+            log::warn!("open_device: open context is invalid");
+            break 'out Err(Error(STATUS::UNSUCCESSFUL));
+        };
+
+        let mut inner = open_context.inner.lock();
+
+        if inner.flags.contains(OpenContextFlags::OPEN_IDLE) {
+            log::warn!(
+                "open_device: open {:x?}/{:x?} already associated with another file object {:x?}",
+                open_context_obj,
+                inner.flags,
+                inner.file_object
+            );
+            break 'out Err(Error(STATUS::DEVICE_BUSY));
+        }
+
+        let old_open = {
+            let mut inner = file_context.open_context.lock();
+
+            match inner.as_ref() {
+                Some(old) => Err(old.clone_ref()),
+                None => {
+                    *inner = Some(open_context_obj.clone_ref());
+                    Ok(())
+                }
+            }
+        };
+
+        if let Err(current) = old_open {
+            // already used by another open
+            let flags = if let Ok(current) = current.get_context() {
+                current.inner.lock().flags
+            } else {
+                OpenContextFlags::empty()
+            };
+
+            log::warn!(
+                "open_device: file object {:x?} already associated with open {:x?}/{:x?}",
+                file_object,
+                current,
+                flags
+            );
+            break 'out Err(Error(STATUS::INVALID_DEVICE_REQUEST));
+        }
+        inner.file_object = Some(file_object.clone_ref());
+
+        // Start the queus as they may have been in a purged state if someone
+        // else has previously opened the device
+        unsafe { wdf_kmdf::raw::WdfIoQueueStart(open_context.read_queue) };
+        unsafe { wdf_kmdf::raw::WdfIoQueueStart(open_context.status_indication_queue) };
+
+        inner.flags.remove(OpenContextFlags::OPEN_FLAGS);
+        inner.flags.set(OpenContextFlags::OPEN_ACTIVE, true);
+
+        drop(inner);
+
+        // Set the packet filter now
+        let packet_filter = NPROTO_PACKET_FILTER.to_ne_bytes();
+        let mut bytes_processed = 0u32;
+        let status = ndisbind::validate_open_and_do_request(
+            &open_context,
+            NDIS_REQUEST_TYPE::NdisRequestSetInformation,
+            OID_GEN_CURRENT_PACKET_FILTER,
+            packet_filter.as_ptr().cast_mut().cast(),
+            packet_filter.len() as u32,
+            &mut bytes_processed,
+            true,
+        );
+        if let Err(err) = Error::to_err(status) {
+            let err = ndis_status_to_nt_status(err.0.to_u32());
+
+            log::warn!(
+                "open_device: open {:x?}: set packet filter ({:x?}) failed: {:x?}",
+                open_context_obj,
+                packet_filter,
+                err
+            );
+
+            // undo everything we did above
+            let mut inner = open_context.inner.lock();
+
+            // Need to set OpenContext to null again, so others can open for this file object later
+            let current_open_context_obj = file_context.open_context.lock().take();
+            assert_eq!(current_open_context_obj.as_ref(), Some(&open_context_obj));
+
+            inner.flags.remove(OpenContextFlags::OPEN_FLAGS);
+            inner.flags.set(OpenContextFlags::OPEN_IDLE, true);
+
+            inner.file_object = None;
+
+            break 'out Err(err);
+        }
+
+        drop(open_context);
+
+        Ok(open_context_obj)
+    };
+
+    status
 }
 
 #[repr(C)]
@@ -1133,6 +1314,10 @@ struct QueryBinding {
     device_name_length: u32,
     device_descr_offset: u32,
     device_descr_length: u32,
+}
+
+fn ndis_status_to_nt_status(status: NDIS_STATUS) -> Error {
+    Error(status.into())
 }
 
 // unfortunately we need to declare _fltused

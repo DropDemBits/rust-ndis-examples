@@ -12,7 +12,6 @@ wdf-kmdf = { path = "../wdf-kmdf" }
 windows-kernel-sys = { path = "../windows-kernel-sys" }
 windows-kernel-rs = { path = "../windows-kernel-rs" }
 vtable.workspace = true
-once-arc.workspace = true
 pinned-init.workspace = true
 bitflags = "2.3.3"
 scopeguard = { version = "1.2.0", default-features = false }

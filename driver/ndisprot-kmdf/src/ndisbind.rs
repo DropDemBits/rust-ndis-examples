@@ -539,12 +539,11 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     inner <- SpinPinMutex::new(OpenContextInner {
                         flags,
                         state,
+                        file_object: None,
                         closing_event: core::ptr::null_mut(),
                     }),
 
                     binding_handle: AtomicCell::new(unsafe { (*protocol_binding_context).binding_handle }),
-
-                    file_object: core::ptr::null_mut(),
 
                     device_name,
                     device_desc: ScopeGuard::into_inner(device_desc),
@@ -1132,10 +1131,12 @@ pub(crate) fn validate_open_and_do_request(
         inner = open_context.inner.lock();
 
         // let go of the binding
-        let pended_send_count = open_context.pended_send_count.fetch_sub(1, Ordering::Relaxed);
+        let pended_send_count = open_context
+            .pended_send_count
+            .fetch_sub(1, Ordering::Relaxed);
         if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
             assert!(!inner.closing_event.is_null());
-            let closing_event = unsafe {&*inner.closing_event};
+            let closing_event = unsafe { &*inner.closing_event };
 
             closing_event.signal();
             inner.closing_event = core::ptr::null_mut();

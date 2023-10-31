@@ -248,7 +248,6 @@ dependencies = [
  "bitflags 2.3.3",
  "crossbeam-utils",
  "nt-list",
- "once-arc",
  "pinned-init",
  "scopeguard",
  "static_assertions",
@@ -301,10 +300,6 @@ dependencies = [
  "displaydoc",
  "widestring",
 ]
-
-[[package]]
-name = "once-arc"
-version = "0.1.0"
 
 [[package]]
 name = "once_cell"
