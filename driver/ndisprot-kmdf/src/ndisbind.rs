@@ -1275,7 +1275,7 @@ pub(crate) fn query_binding(
         }
 
         if output_length < core::mem::size_of::<QueryBinding>() {
-            status = STATUS::INSUFFICIENT_RESOURCES;
+            status = STATUS::BUFFER_TOO_SMALL;
             break 'out;
         }
 
@@ -1327,6 +1327,20 @@ pub(crate) fn query_binding(
 
                 let header = unsafe { &mut *buffer.cast::<u8>().add(0).cast::<QueryBinding>() };
 
+                if let Ok(offset) = u32::try_from(name_offset) {
+                    header.device_name_offset = offset;
+                } else {
+                    status = STATUS::BUFFER_OVERFLOW;
+                    break 'out;
+                }
+
+                if let Ok(offset) = u32::try_from(desc_offset) {
+                    header.device_descr_offset = offset;
+                } else {
+                    status = STATUS::BUFFER_OVERFLOW;
+                    break 'out;
+                }
+
                 let name_bytes = unsafe { buffer.cast::<u8>().add(name_offset) };
                 unsafe { name_bytes.write_bytes(0, name_len) };
                 unsafe {
@@ -1345,8 +1359,6 @@ pub(crate) fn query_binding(
                     );
                 }
 
-                header.device_name_offset = name_offset as u32;
-                header.device_descr_offset = desc_offset as u32;
                 header.device_name_length = open_context.device_name.len().into();
                 header.device_descr_length = open_context.device_desc.len().into();
 
