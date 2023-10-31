@@ -14,7 +14,7 @@ use core::{
     mem::{ManuallyDrop, MaybeUninit},
     pin::Pin,
     ptr::addr_of_mut,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
 use alloc::{sync::Arc, vec::Vec};
@@ -416,6 +416,9 @@ struct OpenContext {
     #[pin]
     inner: SpinMutex<OpenContextInner>,
 
+    // for `validate_open_and_do_request`
+    binding_handle: AtomicCell<NDIS_HANDLE>,
+
     /// Set in `OPEN_DEVICE`
     // Used in
     // - EvtFileCleanup (breaking assoc)
@@ -470,7 +473,7 @@ struct OpenContext {
     // - QueryOidValue (read, write)
     //
     // Also used to not make the binding go away
-    pended_send_count: u32,
+    pended_send_count: AtomicU32,
 
     // Used in
     // - OpenDevice (QueueStart)
@@ -493,7 +496,7 @@ struct OpenContext {
     // - recv::ServiceReads (write dec)
     // - WaitForPendingIO (read)
     // oh no (no inc)
-    pended_read_count: u32,
+    pended_read_count: AtomicU32,
     #[pin]
     // Used in
     // - recv::ServiceReads (read, technically write into_iter)
@@ -953,8 +956,8 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
             &open_context,
             NDIS_REQUEST_TYPE::NdisRequestSetInformation,
             OID_GEN_CURRENT_PACKET_FILTER,
-            packet_filter.as_ptr(),
-            packet_filter.len(),
+            packet_filter.as_ptr().cast_mut().cast(),
+            packet_filter.len() as u32,
             &mut bytes_processed,
             false,
         );

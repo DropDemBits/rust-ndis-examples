@@ -542,6 +542,8 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                         closing_event: core::ptr::null_mut(),
                     }),
 
+                    binding_handle: AtomicCell::new(unsafe { (*protocol_binding_context).binding_handle }),
+
                     file_object: core::ptr::null_mut(),
 
                     device_name,
@@ -555,11 +557,11 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     power_state,
 
                     send_nbl_pool: ScopeGuard::into_inner(send_nbl_pool),
-                    pended_send_count: 0,
+                    pended_send_count: AtomicU32::new(0),
 
                     recv_nbl_pool: ScopeGuard::into_inner(recv_nbl_pool),
                     read_queue: ScopeGuard::into_inner(read_queue),
-                    pended_read_count: 0,
+                    pended_read_count: AtomicU32::new(0),
                     recv_nbl_queue <- ListEntry::new(),
                     recv_nbl_len: 0,
 
@@ -695,7 +697,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
             inner.flags.remove(OpenContextFlags::BIND_FLAGS);
             inner.flags.insert(OpenContextFlags::BIND_CLOSING);
 
-            if open_context.pended_send_count != 0 {
+            if open_context.pended_send_count.load(Ordering::Relaxed) != 0 {
                 inner.closing_event = unsafe { closing_event.get_unchecked_mut() } as *mut _;
             }
 
@@ -709,7 +711,6 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         // Set packet filter to 0 before closing the binding
         let mut packet_filter = 0u32;
         let status = do_request(
-            protocol_binding_context,
             &*open_context,
             NDIS_DEFAULT_PORT_NUMBER,
             NDIS_REQUEST_TYPE::NdisRequestSetInformation,
@@ -727,7 +728,6 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
 
         // clear multicast list before closing the binding
         let status = do_request(
-            protocol_binding_context,
             &*open_context,
             NDIS_DEFAULT_PORT_NUMBER,
             NDIS_REQUEST_TYPE::NdisRequestSetInformation,
@@ -775,6 +775,8 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         }
 
         assert!(status == Ok(()) || status == Err(Error(STATUS::PENDING)));
+
+        open_context.binding_handle.store(core::ptr::null_mut());
 
         let mut inner = open_context.inner.lock();
         inner.flags.remove(OpenContextFlags::BIND_FLAGS);
@@ -881,7 +883,10 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
 
                     // Note: could also complete the PnP event asynchronously (would need NdisCompleteNetPnPEvent)
                     loop {
-                        if open_context.pended_send_count == 0 {
+                        let pended_send_count =
+                            open_context.pended_send_count.load(Ordering::Relaxed);
+
+                        if pended_send_count == 0 {
                             break;
                         }
 
@@ -889,7 +894,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                         {
                             log::info!(
                                 "pnp_event: outstanding send count is {}",
-                                open_context.pended_send_count
+                                pended_send_count
                             );
 
                             // Sleep for 1 second!
@@ -979,7 +984,7 @@ pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NTSTATUS {
 /// If `cancel_reads` is `true`, we also wait for pending reads to be completed/cancelled.
 fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
     // Wait for any pending sends or requests on the binding to complete
-    if open_context.pended_send_count == 0 {
+    if open_context.pended_send_count.load(Ordering::Relaxed) == 0 {
         debug_assert!(open_context.inner.lock().closing_event.is_null());
     } else {
         let closing_event = open_context.inner.lock().closing_event;
@@ -987,7 +992,7 @@ fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
 
         log::warn!(
             "wait_for_pending_io: {} pended sends",
-            open_context.pended_send_count
+            open_context.pended_send_count.load(Ordering::Relaxed)
         );
 
         let _ = unsafe { (*closing_event).wait(Timeout::forever()) };
@@ -995,10 +1000,10 @@ fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
 
     if cancel_reads {
         // Wait for any pended reads to complete/cancel
-        while open_context.pended_read_count != 0 {
+        while open_context.pended_read_count.load(Ordering::Relaxed) != 0 {
             log::info!(
                 "wait_for_pending_io: {} pended reads",
-                open_context.pended_read_count
+                open_context.pended_read_count.load(Ordering::Relaxed)
             );
 
             // Cancel any pending reads
@@ -1048,27 +1053,107 @@ pub(crate) fn unload_protocol(context: Pin<&NdisProt>) {
     }
 }
 
+/// Pre-validates and holds a reference to an open context before calling `do_request`.
+/// This also makes sure we have a valid binding.
 pub(crate) fn validate_open_and_do_request(
     open_context: &OpenContext,
     request_type: NDIS_REQUEST_TYPE,
     oid: NDIS_OID,
-    info_buffer: *const u8,
-    info_len: usize,
+    info_buffer: PVOID,
+    info_len: ULONG,
     bytes_processed: &mut u32,
     wait_for_power_on: bool,
 ) -> NTSTATUS {
     // ???: How do we bridge the gap from having a file open context to getting
     // the protocol binding context with a handle in it?
     //
-    // if we want to maintain a divide between the wdf side and the ndis side
-    // while also permitting non-blocking async (i.e. not needing to use
-    // KeWaitForSingleObject), there needs to be a way of passing messages
-    // between the two sides.
-    todo!()
+    // if we want to maintain a divide between the wdf side and the ndis
+    // side while also permitting non-blocking async (i.e. not needing to use
+    // KeWaitForSingleObject on the current thread), there needs to be a way of
+    // passing messages between the two sides.
+    //
+    // for now: just use the binding_handle we got from the protocol binding
+    // context, we'll deal with WDF -> Binding communication later
+    let mut status = STATUS::UNSUCCESSFUL;
+
+    'out: {
+        let mut inner = open_context.inner.lock();
+
+        // Proceed only if this is bound
+        if !inner.flags.contains(OpenContextFlags::BIND_ACTIVE) {
+            status = STATUS::INVALID_PARAMETER;
+            break 'out;
+        }
+
+        assert!(!open_context.binding_handle.load().is_null());
+
+        // Make sure the binding doesn't go away until we're finished with the request
+        open_context
+            .pended_send_count
+            .fetch_add(1, Ordering::Relaxed);
+
+        drop(inner);
+
+        if wait_for_power_on {
+            // Wait for the device below to be powered up.
+            //
+            // We don't wait forever here to avoid a `PROCESS_HAS_LOCKED_PAGES` bugcheck
+            // in the event of the calling process terminating and this request not completing
+            // within a reasonable amount of time.
+            //
+            // An alternative would be to explicitly handle cancellation of this request.
+            //
+            // ???: Is this still true with WDFREQUESTs?
+            let _ = open_context
+                .powered_up_event
+                .wait(Timeout::relative_ms(4_500));
+        }
+
+        if open_context.power_state.load() == NET_DEVICE_POWER_STATE::NetDeviceStateD0 {
+            let err = do_request(
+                open_context,
+                NDIS_DEFAULT_PORT_NUMBER,
+                request_type,
+                oid,
+                info_buffer,
+                info_len,
+                bytes_processed,
+            );
+
+            if let Err(err) = err {
+                status = err.0;
+            }
+        } else {
+            status = windows_kernel_sys::result::ERROR::NDIS::ADAPTER_NOT_READY
+                .to_u32()
+                .into();
+        }
+
+        inner = open_context.inner.lock();
+
+        // let go of the binding
+        let pended_send_count = open_context.pended_send_count.fetch_sub(1, Ordering::Relaxed);
+        if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
+            assert!(!inner.closing_event.is_null());
+            let closing_event = unsafe {&*inner.closing_event};
+
+            closing_event.signal();
+            inner.closing_event = core::ptr::null_mut();
+        }
+    }
+
+    log::debug!(
+        "validate_open_and_do_request: Open {:x?}, OID {:x?}, Status {:x?}",
+        open_context.inner.lock().flags,
+        oid,
+        status
+    );
+
+    status.to_u32()
 }
 
 fn do_request(
-    protocol_binding_context: &ProtocolBindingContext,
+    // protocol_binding_context: &ProtocolBindingContext,
     open_context: &OpenContext,
     port_number: NDIS_PORT_NUMBER,
     request_type: NDIS_REQUEST_TYPE,
@@ -1077,6 +1162,10 @@ fn do_request(
     information_buffer_length: ULONG,
     bytes_processed: &mut ULONG,
 ) -> Result<(), Error> {
+    // FIXME: required because OID requests via WDFREQUESTs go via
+    // `OpenContext`, not `ProtocolBindingContext`
+    let binding_handle = open_context.binding_handle.load();
+
     const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
         (core::mem::offset_of!(NDIS_OID_REQUEST, Reserved2)
             + core::mem::size_of::<windows_kernel_sys::USHORT>()) as u16;
@@ -1115,7 +1204,7 @@ fn do_request(
 
     let mut status = unsafe {
         Error::to_err(NdisOidRequest(
-            protocol_binding_context.binding_handle,
+            binding_handle,
             core::ptr::addr_of_mut!(req_context.as_mut().Request),
         ))
     };
