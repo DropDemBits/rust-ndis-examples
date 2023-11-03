@@ -1,4 +1,5 @@
 //! NDIS protocol entry points as well as handling binding and unbinding from adapters
+// FIXME: Use NDIS_STATUS where it's actually an NDIS_STATUS
 use core::{
     marker::PhantomData,
     mem::ManuallyDrop,
@@ -44,8 +45,8 @@ use windows_kernel_sys::{
 };
 
 use crate::{
-    recv, EventType, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags, OpenContextInner,
-    OpenState, QueryBinding, QueryOid, SetOid, Timeout, MAX_MULTICAST_ADDRESS,
+    recv, EventType, IndicateStatus, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags,
+    OpenContextInner, OpenState, QueryBinding, QueryOid, SetOid, Timeout, MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;
@@ -1234,18 +1235,95 @@ pub(crate) unsafe extern "C" fn request_complete(
     req_context.as_ref().ReqEvent.signal();
 }
 
+/// Processes the request based on the input arguments and completes it.
+/// If the request was cancelled we'll let the cancel routine do the request completion (?)
 fn service_indicate_status_irp(
     open_context: &OpenContext,
     general_status: NTSTATUS,
     status_buffer: PVOID,
     status_buffer_size: UINT,
 ) {
-    // FIXME: fill out
-    log::error!("unimplemented");
+    log::debug!("--> ndisbind::service_indicate_status_irp");
 
-    // Note: this is needed so that we can notify user-mode clients interested in status
-    // indications of what is going on. we don't need this for bringing up ndisprot though,
-    // as prottest doesn't send status indication requests
+    // Translation Note: original code acquires the open context lock, but doesn't
+    // access anything fields that needs to be protected by the lock.
+    // let mut inner = open_context.inner.lock();
+
+    let mut request = core::ptr::null_mut();
+    let mut nt_status;
+    let mut bytes = 0;
+
+    'out: {
+        // Get the first pended read request
+        nt_status = unsafe {
+            wdf_kmdf::raw::WdfIoQueueRetrieveNextRequest(
+                open_context.status_indication_queue,
+                &mut request,
+            )
+        };
+        if let Err(err) = Error::to_err(nt_status) {
+            assert_eq!(
+                err.0,
+                STATUS::NO_MORE_ENTRIES,
+                "WdfIoQueeuRetrieveNextRequest failed unexpectedly"
+            );
+            break 'out;
+        }
+
+        let mut indicate_status = core::ptr::null_mut();
+        let mut out_buf_len = 0;
+
+        nt_status = unsafe {
+            wdf_kmdf::raw::WdfRequestRetrieveOutputBuffer(
+                request,
+                core::mem::size_of::<IndicateStatus>(),
+                &mut indicate_status,
+                Some(&mut out_buf_len),
+            )
+        };
+        if let Err(err) = Error::to_err(nt_status) {
+            log::error!("WdfRequestRetrieveOutputBuffer failed {:x?}", err);
+            break 'out;
+        }
+
+        // Check if the buffer is large enough to accomodate the status buffer data.
+        if out_buf_len.saturating_sub(core::mem::size_of::<IndicateStatus>())
+            >= status_buffer_size as usize
+        {
+            let indicate_status = indicate_status.cast::<IndicateStatus>();
+
+            unsafe {
+                (*indicate_status).indicated_status = general_status;
+                (*indicate_status).status_buffer_length = status_buffer_size;
+                (*indicate_status).status_buffer_offset =
+                    core::mem::size_of::<IndicateStatus>() as u32;
+            }
+
+            let data = unsafe {
+                indicate_status
+                    .cast::<u8>()
+                    .add(core::mem::size_of::<IndicateStatus>())
+            };
+
+            unsafe {
+                data.copy_from_nonoverlapping(status_buffer.cast(), status_buffer_size as usize)
+            };
+
+            nt_status = STATUS::SUCCESS.to_u32();
+        } else {
+            nt_status = STATUS::BUFFER_OVERFLOW.to_u32();
+        }
+
+        // number of bytes copied or number of bytes required.
+        bytes = core::mem::size_of::<IndicateStatus>().saturating_add(status_buffer_size as usize)
+            as u64;
+    }
+
+    if !request.is_null() {
+        unsafe { wdf_kmdf::raw::WdfRequestCompleteWithInformation(request, nt_status, bytes) };
+    }
+
+    log::debug!("<-- ndisbind::service_indicate_status_irp");
 }
 
 /// Protocol entry point called by NDIS to indicate a change in status at the miniport.

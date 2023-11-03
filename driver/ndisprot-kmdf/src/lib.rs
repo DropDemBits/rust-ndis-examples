@@ -1436,6 +1436,17 @@ struct QueryBinding {
     device_descr_length: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IndicateStatus {
+    /// NDIS_STATUS
+    indicated_status: u32,
+    /// offset from the start of this struct
+    status_buffer_offset: u32,
+    /// length in bytes
+    status_buffer_length: u32,
+}
+
 fn ndis_status_to_nt_status(status: NDIS_STATUS) -> Error {
     // handle the status codes which map to NT status codes first
     use windows_kernel_sys::result::{NtStatus, ERROR::NDIS};
