@@ -31,10 +31,10 @@ use windows_kernel_sys::{
     NDIS_OID_REQUEST, NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS,
     NDIS_OPEN_PARAMETERS_REVISION_1, NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX,
     NDIS_PROTOCOL_RESTART_PARAMETERS, NDIS_REQUEST_TYPE, NDIS_RESTART_ATTRIBUTES,
-    NDIS_RESTART_GENERAL_ATTRIBUTES, NDIS_STATUS_INDICATION, NET_BUFFER_LIST_POOL_PARAMETERS,
-    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NET_DEVICE_POWER_STATE, NET_IFINDEX,
-    NET_IF_MEDIA_CONNECT_STATE, NET_LUID, NET_PNP_EVENT_CODE, NTSTATUS, OID_802_11_ADD_WEP,
-    OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
+    NDIS_RESTART_GENERAL_ATTRIBUTES, NDIS_STATUS, NDIS_STATUS_INDICATION,
+    NET_BUFFER_LIST_POOL_PARAMETERS, NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1,
+    NET_DEVICE_POWER_STATE, NET_IFINDEX, NET_IF_MEDIA_CONNECT_STATE, NET_LUID, NET_PNP_EVENT_CODE,
+    OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
     OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE,
     OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE,
     OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI, OID_802_11_SSID,
@@ -147,7 +147,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     ProtocolDriverContext: NDIS_HANDLE,
     BindContext: NDIS_HANDLE,
     BindParameters: PNDIS_BIND_PARAMETERS,
-) -> NTSTATUS {
+) -> NDIS_STATUS {
     log::debug!(
         "bind_adapter: {:#x?} {:#x?} {:#x?}",
         ProtocolDriverContext,
@@ -608,7 +608,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 /// Wakes up the thread creating the binding.
 pub(crate) unsafe extern "C" fn open_adapter_complete(
     ProtocolBindingContext: NDIS_HANDLE,
-    Status: NTSTATUS,
+    Status: NDIS_STATUS,
 ) {
     // The thread that's waiting on this won't see the changes until we signal the event
     let protocol_binding_context =
@@ -627,7 +627,7 @@ pub(crate) unsafe extern "C" fn open_adapter_complete(
 pub(crate) unsafe extern "C" fn unbind_adapter(
     UnbindContext: NDIS_HANDLE,
     ProtocolBindingContext: NDIS_HANDLE,
-) -> NTSTATUS {
+) -> NDIS_STATUS {
     log::debug!(
         "unbind_adapter: {:#x?} {:#x?}",
         UnbindContext,
@@ -798,7 +798,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
 pub(crate) unsafe extern "C" fn pnp_event_handler(
     ProtocolBindingContext: NDIS_HANDLE,
     NetPnPEventNotification: PNET_PNP_EVENT_NOTIFICATION,
-) -> NTSTATUS {
+) -> NDIS_STATUS {
     let event_notif = unsafe { &*NetPnPEventNotification };
     // Note: `ProtocolBindingContext` can be `NULL`, which means that it applies to all bindings,
     // which is true for
@@ -973,7 +973,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
     status.to_u32()
 }
 
-pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NTSTATUS {
+pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NDIS_STATUS {
     // Note: no-one calls this, instead the driver unload callback is used
     log::debug!("unload_handler");
     STATUS::SUCCESS.to_u32()
@@ -1122,7 +1122,7 @@ pub(crate) fn validate_open_and_do_request(
     info_len: ULONG,
     bytes_processed: &mut u32,
     wait_for_power_on: bool,
-) -> NTSTATUS {
+) -> NDIS_STATUS {
     // ???: How do we bridge the gap from having a file open context to getting
     // the protocol binding context with a handle in it?
     //
@@ -1217,7 +1217,7 @@ pub(crate) fn validate_open_and_do_request(
 pub(crate) unsafe extern "C" fn request_complete(
     ProtocolBindingContext: NDIS_HANDLE,
     OidRequest: PNDIS_OID_REQUEST,
-    Status: NTSTATUS,
+    Status: NDIS_STATUS,
 ) {
     // yayyyy container_of moment
     let mut req_context = unsafe {
@@ -1239,7 +1239,7 @@ pub(crate) unsafe extern "C" fn request_complete(
 /// If the request was cancelled we'll let the cancel routine do the request completion (?)
 fn service_indicate_status_irp(
     open_context: &OpenContext,
-    general_status: NTSTATUS,
+    general_status: NDIS_STATUS,
     status_buffer: PVOID,
     status_buffer_size: UINT,
 ) {
@@ -1429,7 +1429,7 @@ pub(crate) fn query_binding(
     input_length: usize,
     output_length: usize,
     bytes_returned: &mut usize,
-) -> NTSTATUS {
+) -> NDIS_STATUS {
     log::error!("unimplemented");
 
     let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
@@ -1574,7 +1574,7 @@ pub(crate) fn query_oid_value(
     data_buffer: PVOID,
     buffer_length: usize,
     bytes_written: &mut usize,
-) -> NTSTATUS {
+) -> NDIS_STATUS {
     let status;
     let mut oid = 0;
 
@@ -1670,7 +1670,7 @@ pub(crate) fn set_oid_value(
     open_context: &OpenContext,
     data_buffer: PVOID,
     buffer_length: usize,
-) -> NTSTATUS {
+) -> NDIS_STATUS {
     let status;
     let mut oid = 0;
 
