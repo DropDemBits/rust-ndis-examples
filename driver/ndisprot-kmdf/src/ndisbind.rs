@@ -1506,14 +1506,14 @@ pub(crate) fn query_binding(
                 if let Ok(offset) = u32::try_from(name_offset) {
                     header.device_name_offset = offset;
                 } else {
-                    status = STATUS::BUFFER_OVERFLOW;
+                    status = STATUS::BUFFER_TOO_SMALL;
                     break 'out;
                 }
 
                 if let Ok(offset) = u32::try_from(desc_offset) {
                     header.device_descr_offset = offset;
                 } else {
-                    status = STATUS::BUFFER_OVERFLOW;
+                    status = STATUS::BUFFER_TOO_SMALL;
                     break 'out;
                 }
 
@@ -1594,7 +1594,7 @@ pub(crate) fn query_oid_value(
         };
         let data_len = buffer_length.saturating_sub(core::mem::offset_of!(QueryOid, data));
         let Ok(data_len) = u32::try_from(data_len) else {
-            status = STATUS::BUFFER_OVERFLOW;
+            status = STATUS::BUFFER_TOO_SMALL;
             break 'out;
         };
 
@@ -1697,7 +1697,7 @@ pub(crate) fn set_oid_value(
         };
         let data_len = buffer_length.saturating_sub(core::mem::offset_of!(SetOid, data));
         let Ok(data_len) = u32::try_from(data_len) else {
-            status = STATUS::BUFFER_OVERFLOW;
+            status = STATUS::BUFFER_TOO_SMALL;
             break 'out;
         };
 
