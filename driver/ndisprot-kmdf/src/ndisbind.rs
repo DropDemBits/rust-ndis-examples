@@ -1481,7 +1481,9 @@ pub(crate) fn query_binding(
                 continue;
             }
 
-            if binding_index == 0 {
+            if let Some(next_index) = binding_index.checked_sub(1) {
+                binding_index = next_index;
+            } else {
                 log::info!("query_binding: found open {open:x?}");
                 // found the binding context we are looking for, copy device
                 // name & description to the output buffer
@@ -1542,9 +1544,8 @@ pub(crate) fn query_binding(
                     core::mem::size_of::<QueryBinding>().saturating_add(required_size);
 
                 status = STATUS::SUCCESS;
+                break;
             }
-
-            binding_index -= 1;
         }
     }
 
