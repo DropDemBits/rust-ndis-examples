@@ -241,6 +241,9 @@ fn create_control_device(
     let mut file_object_attribs =
         wdf_kmdf::object::default_object_attributes::<FileObjectContext>();
 
+    file_object_attribs.EvtDestroyCallback =
+        Some(wdf_kmdf::file_object::FileObject::<FileObjectContext>::__dispatch_evt_destroy);
+
     unsafe {
         wdf_kmdf::raw::WdfDeviceInitSetFileObjectConfig(
             device_init.0,

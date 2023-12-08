@@ -24,7 +24,10 @@ impl<T> core::fmt::Debug for FileObject<T> {
     }
 }
 
-impl<T> FileObject<T> {
+impl<T> FileObject<T>
+where
+    T: IntoContextSpace,
+{
     /// Wraps the raw handle in a file object wrapper
     ///
     /// ## Safety
@@ -44,6 +47,21 @@ impl<T> FileObject<T> {
     /// Gets the file object handle for use with WDF functions that don't have clean wrappers yet
     pub fn raw_handle(&mut self) -> WDFFILEOBJECT {
         self.handle
+    }
+
+    /// FIXME: Temporarily pub, figure out a proper way of hiding this
+    #[doc(hidden)]
+    pub unsafe extern "C" fn __dispatch_evt_destroy(object: wdf_kmdf_sys::WDFOBJECT) {
+        // SAFETY: EvtDestroy only gets called once, and once all other references are gone
+        let handle = unsafe { Self::wrap(object.cast()) };
+
+        // Drop the context area
+        let status = crate::object::drop_context_space::<T>(&handle, |_| ());
+
+        if let Err(err) = status {
+            // No (valid) context space to drop, nothing to do
+            windows_kernel_rs::log::warn!("No object context space to drop ({:x?})", err);
+        }
     }
 }
 
