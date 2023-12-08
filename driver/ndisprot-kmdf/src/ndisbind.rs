@@ -1913,9 +1913,12 @@ impl<'a> Iterator for FilterModuleNameIter<'a> {
             let buffer_len = unsafe { (*element).len };
             let buffer = unsafe { core::ptr::addr_of!((*element).buffer) }.cast();
 
-            self.current = unsafe { self.current.add(buffer_len.into()) };
-
             let str = unsafe { NtUnicodeStr::from_raw_parts(buffer, buffer_len, buffer_len) };
+
+            // Bump by the element length, which is the buffer length plus the size at the front.
+            // `buffer_len` is only for the size of the buffer and not the offset to bump by.
+            let element_len = usize::from(buffer_len).saturating_add(2);
+            self.current = unsafe { self.current.add(element_len) };
 
             Some(str)
         }
