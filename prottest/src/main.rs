@@ -75,13 +75,10 @@ struct EthHeader {
 
 #[derive(clap::Parser)]
 struct Options {
-    #[arg(help = "device name (usually {DEFAULT_NDISPROT_DEVICE})", default_value_t = DEFAULT_NDISPROT_DEVICE.to_string())]
-    device_name: String,
-    /// enumerate devices
-    #[arg(short = 'e', default_value_t)]
-    enumerate_devices: bool,
     /// mode
     mode: Mode,
+    #[arg(help = "device name (usually {DEFAULT_NDISPROT_DEVICE})", default_value_t = DEFAULT_NDISPROT_DEVICE.to_string())]
+    device_name: String,
     #[arg(
         help = "length of each packet (default: {DEFAULT_PACKET_LENGTH})",
         short = 'l',
@@ -103,6 +100,7 @@ struct Options {
 enum Mode {
     Read,
     Write,
+    Enumerate,
 }
 
 fn main() -> Result<()> {
@@ -120,7 +118,7 @@ fn main() -> Result<()> {
         device_handle,
     };
 
-    if state.opts.enumerate_devices {
+    if matches!(state.opts.mode, Mode::Enumerate) {
         return state.enumerate_devices();
     }
 
@@ -147,6 +145,7 @@ fn main() -> Result<()> {
             state.do_write();
             state.do_read();
         }
+        _ => unreachable!(),
     }
 
     Ok(())
