@@ -69,6 +69,9 @@ pub unsafe trait IntoContextSpace {
     const CONTEXT_INFO: &'static ContextInfo;
 }
 
+pub(crate) const OWN_TAG: usize = u32::from_le_bytes(*b"Own ") as usize;
+pub(crate) const REF_TAG: usize = u32::from_le_bytes(*b"Ref ") as usize;
+
 /// The maximum IRQL the object's event callback functions will be called at
 ///
 /// Execution levels can only be specified for:
@@ -287,6 +290,17 @@ where
             // - Caller ensures that we're at the right IRQL
             unsafe { Error::to_err(raw::WdfObjectCreate(Some(&mut object_attrs), &mut handle)) }?;
 
+            // SAFETY:
+            // - Caller ensures that we're at the right IRQL
+            unsafe {
+                raw::WdfObjectReferenceActual(
+                    handle,
+                    Some(OWN_TAG as *mut _),
+                    line!() as i32,
+                    Some(cstr!(file!()).as_ptr()),
+                )
+            }
+
             Self {
                 handle,
                 kind,
@@ -342,7 +356,7 @@ where
         unsafe {
             raw::WdfObjectReferenceActual(
                 self.handle,
-                None,
+                Some(REF_TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             )
@@ -355,7 +369,7 @@ where
     }
 
     unsafe extern "C" fn __dispatch_evt_destroy(object: wdf_kmdf_sys::WDFOBJECT) {
-        // SAFETY: EvtDestroy only gets called once, and once all other references are gone
+        // SAFETY: EvtDestroy is only called once, and when there are no other references to the object
         let handle = unsafe { Self::wrap(object) };
 
         // Drop the context area
@@ -370,22 +384,38 @@ where
 
 impl<T> Drop for GeneralObject<T> {
     fn drop(&mut self) {
-        // FIXME: Assert that this is at <= DISPATCH_LEVEL
+        // FIXME: Assert that this is at ..=DISPATCH_LEVEL
         match self.kind {
             HandleKind::Wrapped => {}
-            // Safety: assertion that we're at the correct IRQL
-            HandleKind::Owned | HandleKind::Parented => unsafe {
-                raw::WdfObjectDelete(self.handle)
-            },
-            // Safety: assertion that we're at the correct IRQL
-            HandleKind::Ref => unsafe {
-                raw::WdfObjectDereferenceActual(
-                    self.handle,
-                    None,
-                    line!() as i32,
-                    Some(cstr!(file!()).as_ptr()),
-                )
-            },
+            HandleKind::Owned | HandleKind::Parented => {
+                if matches!(self.kind, HandleKind::Owned) {
+                    // SAFETY:
+                    // - assertion that we're at the correct IRQL (..=DISPATCH_LEVEL)
+                    // - is a valid WDFOBJECT
+                    unsafe { raw::WdfObjectDelete(self.handle) };
+                }
+
+                // SAFETY: assertion that we're at the correct IRQL (..=DISPATCH_LEVEL)
+                unsafe {
+                    raw::WdfObjectDereferenceActual(
+                        self.handle,
+                        Some(OWN_TAG as *mut _),
+                        line!() as i32,
+                        Some(cstr!(file!()).as_ptr()),
+                    )
+                };
+            }
+            HandleKind::Ref => {
+                // SAFETY: assertion that we're at the correct IRQL (..=DISPATCH_LEVEL)
+                unsafe {
+                    raw::WdfObjectDereferenceActual(
+                        self.handle,
+                        Some(REF_TAG as *mut _),
+                        line!() as i32,
+                        Some(cstr!(file!()).as_ptr()),
+                    )
+                }
+            }
         }
     }
 }

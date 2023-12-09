@@ -52,7 +52,7 @@ where
     /// FIXME: Temporarily pub, figure out a proper way of hiding this
     #[doc(hidden)]
     pub unsafe extern "C" fn __dispatch_evt_destroy(object: wdf_kmdf_sys::WDFOBJECT) {
-        // SAFETY: EvtDestroy only gets called once, and once all other references are gone
+        // SAFETY: EvtDestroy is only called once, and when there are no other references to the object
         let handle = unsafe { Self::wrap(object.cast()) };
 
         // Drop the context area

@@ -219,7 +219,7 @@ impl<T: DriverCallbacks> Driver<T> {
         unsafe {
             raw::WdfObjectReferenceActual(
                 self.handle.cast(),
-                None,
+                Some(object::REF_TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             )
@@ -253,7 +253,7 @@ impl<T: DriverCallbacks> Driver<T> {
     }
 
     unsafe extern "C" fn __dispatch_driver_unload(driver: WDFDRIVER) {
-        // SAFETY: Driver unload only gets called once, and drop waits for exclusive access
+        // SAFETY: Driver unload only gets called once
         let handle = unsafe { Driver::<T>::wrap(driver) };
 
         if T::HAS_UNLOAD {
@@ -268,19 +268,6 @@ impl<T: DriverCallbacks> Driver<T> {
                 return;
             }
         }
-
-        // Drop the context area
-        //
-        // Needs to happen after calling unload but not in EvtDestroy
-        // because unload could call functions which depend on the driver
-        // context area being initialized, while also allowing manually
-        // deleting owned WDF objects without accessing freed memory
-        let status = object::drop_context_space::<T>(&handle, |_| ());
-
-        if let Err(err) = status {
-            // No (valid) context space to drop, nothing to do
-            windows_kernel_rs::log::warn!("No driver context space to drop ({:x?})", err);
-        }
     }
 
     unsafe extern "C" fn __dispatch_evt_cleanup(_driver: wdf_kmdf_sys::WDFOBJECT) {
@@ -289,6 +276,27 @@ impl<T: DriverCallbacks> Driver<T> {
 
     unsafe extern "C" fn __dispatch_evt_destroy(_driver: wdf_kmdf_sys::WDFOBJECT) {
         windows_kernel_rs::log::debug!("EvtDestroyCallback");
+
+        // SAFETY: EvtDestroy is only called once, and when there are no other references to the object
+        let handle = unsafe { Driver::<T>::wrap(_driver.cast()) };
+
+        // Drop the context area
+        //
+        // Dropping the driver object context area is special because all objects
+        // without an explicitly set parent get parented to the driver, and by the
+        // time we get to `EvtDestroy` any child objects with a refcount of 1 are
+        // deleted. This is an issue as some of those objects may be in the driver
+        // object context area, and trying to delete an already fully deleted object
+        // results in a use-after-free.
+        //
+        // Thankfully, by adding an initial refcount bump when creating unparented
+        // objects, they stay alive until it's time to delete them.
+        let status = object::drop_context_space::<T>(&handle, |_| ());
+
+        if let Err(err) = status {
+            // No (valid) context space to drop, nothing to do
+            windows_kernel_rs::log::warn!("No object context space to drop ({:x?})", err);
+        }
     }
 }
 
@@ -302,7 +310,7 @@ impl<T> Drop for Driver<T> {
             unsafe {
                 raw::WdfObjectDereferenceActual(
                     self.handle.cast(),
-                    None,
+                    Some(object::REF_TAG as *mut _),
                     line!() as i32,
                     Some(cstr!(file!()).as_ptr()),
                 )

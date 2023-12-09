@@ -265,8 +265,24 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     return Err(STATUS::UNSUCCESSFUL.into());
                 }
 
+                unsafe {
+                    wdf_kmdf::raw::WdfObjectReferenceActual(
+                        io_queue.cast(),
+                        None,
+                        line!() as i32,
+                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
+                    )
+                };
+
                 scopeguard::guard(io_queue, |io_queue| unsafe {
-                    wdf_kmdf::raw::WdfObjectDelete(io_queue.cast())
+                    wdf_kmdf::raw::WdfObjectDelete(io_queue.cast());
+
+                    wdf_kmdf::raw::WdfObjectDereferenceActual(
+                        io_queue.cast(),
+                        None,
+                        line!() as i32,
+                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
+                    );
                 })
             };
 
@@ -308,8 +324,24 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     return Err(STATUS::UNSUCCESSFUL.into());
                 }
 
+                unsafe {
+                    wdf_kmdf::raw::WdfObjectReferenceActual(
+                        io_queue.cast(),
+                        None,
+                        line!() as i32,
+                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
+                    )
+                };
+
                 scopeguard::guard(io_queue, |io_queue| unsafe {
-                    wdf_kmdf::raw::WdfObjectDelete(io_queue.cast())
+                    wdf_kmdf::raw::WdfObjectDelete(io_queue.cast());
+
+                    wdf_kmdf::raw::WdfObjectDereferenceActual(
+                        io_queue.cast(),
+                        None,
+                        line!() as i32,
+                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
+                    );
                 })
             };
 

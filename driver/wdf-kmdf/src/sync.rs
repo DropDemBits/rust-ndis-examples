@@ -11,7 +11,7 @@ use pinned_init::{pin_data, Init, PinInit};
 use wdf_kmdf_sys::WDFSPINLOCK;
 use windows_kernel_sys::Error;
 
-use crate::raw;
+use crate::{object, raw};
 
 pub trait LockBackend: Sized {
     type Guard<'a>
@@ -283,6 +283,17 @@ impl SpinLock {
         // - We're manually managing the lifetime of the spinlock (easier that way)
         Error::to_err(unsafe { raw::WdfSpinLockCreate(None, &mut lock) })?;
 
+        // SAFETY:
+        // - Caller ensures that we're at the right IRQL
+        unsafe {
+            raw::WdfObjectReferenceActual(
+                lock.cast(),
+                Some(object::OWN_TAG as *mut _),
+                line!() as i32,
+                Some(cstr!(file!()).as_ptr()),
+            )
+        }
+
         Ok(Self(lock))
     }
 
@@ -319,6 +330,17 @@ impl Drop for SpinLock {
         // - Cleanup callbacks are always called at either `DISPATCH_LEVEL` or `PASSIVE_LEVEL`
         // - We're always deleting a spin lock, which has no special deletion requirements
         unsafe { raw::WdfObjectDelete(self.0.cast()) }
+
+        // SAFETY:
+        // - Cleanup callbacks are always called at either `DISPATCH_LEVEL` or `PASSIVE_LEVEL`
+        unsafe {
+            raw::WdfObjectDereferenceActual(
+                self.0.cast(),
+                Some(object::OWN_TAG as *mut _),
+                line!() as i32,
+                Some(cstr!(file!()).as_ptr()),
+            )
+        }
     }
 }
 

@@ -620,13 +620,31 @@ impl PinnedDrop for OpenContext {
 
         let read_queue = core::mem::replace(&mut this.read_queue, core::ptr::null_mut());
         if !read_queue.is_null() {
-            unsafe { wdf_kmdf::raw::WdfObjectDelete(read_queue.cast()) }
+            unsafe { wdf_kmdf::raw::WdfObjectDelete(read_queue.cast()) };
+
+            unsafe {
+                wdf_kmdf::raw::WdfObjectDereferenceActual(
+                    read_queue.cast(),
+                    None,
+                    line!() as i32,
+                    Some(wdf_kmdf::cstr!(file!()).as_ptr()),
+                )
+            };
         }
 
         let status_indication_queue =
             core::mem::replace(&mut this.status_indication_queue, core::ptr::null_mut());
         if !status_indication_queue.is_null() {
-            unsafe { wdf_kmdf::raw::WdfObjectDelete(status_indication_queue.cast()) }
+            unsafe { wdf_kmdf::raw::WdfObjectDelete(status_indication_queue.cast()) };
+
+            unsafe {
+                wdf_kmdf::raw::WdfObjectDereferenceActual(
+                    status_indication_queue.cast(),
+                    None,
+                    line!() as i32,
+                    Some(wdf_kmdf::cstr!(file!()).as_ptr()),
+                )
+            };
         }
     }
 }
