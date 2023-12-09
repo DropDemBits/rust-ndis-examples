@@ -65,6 +65,7 @@ macro_rules! impl_context_space {
 ///   (16 on 64-bit systems, 8 on 32-bit systems)
 ///
 /// Use the [`impl_context_space`] macro to do it safely.
+// FIXME: require `Self: Sync` since references to object context spaces can be manifested on different threads.
 pub unsafe trait IntoContextSpace {
     const CONTEXT_INFO: &'static ContextInfo;
 }

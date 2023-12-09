@@ -113,8 +113,10 @@ How fix:
 	- (See "Unloading a driver") normal `DeleteObject` gets called, subject to all the normal refcounting rules (i.e. gets deleted when the refcount gets to one?)
 	- Deleting beforehand means that we can't add children to an object (see [here](https://github.com/microsoft/Windows-Driver-Frameworks/blob/a94b8c30dad524352fab90872aefc83920b98e56/src/framework/shared/object/fxobject.cpp#L867-L874))
 		- Yields a status code of `STATUS_DELETE_PENDING`
-- Just bump refcount?
-	- Need to think more about this.
+- Just bump refcount & unbump on drop?
+	- Like previous option, but allows adding children to an object
+	- Requires doing delete (if necessary) before unbumping refcount
+	- Also kinda allows inverting the deletion direction (mostly top-down removal instead of always bottom-up removal)
 - Push drop requirement to unload
 	- Unload callback happens before we have guaranteed exclusive access
 		- Current solution uses a separate guard to track live context area references, could weaken it to just live references so that we can drop the guard? Unload would then be required to wait until all live references are dead so could block unload thread if `Unload` is called at `PASSIVE_LEVEL` (could be done by using a `KEVENT`).
