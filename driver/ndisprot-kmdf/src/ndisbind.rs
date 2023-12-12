@@ -1,5 +1,4 @@
 //! NDIS protocol entry points as well as handling binding and unbinding from adapters
-// FIXME: Use NDIS_STATUS where it's actually an NDIS_STATUS
 use core::{
     marker::PhantomData,
     mem::ManuallyDrop,
@@ -163,10 +162,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     let BindParameters = unsafe { &*BindParameters };
 
     let driver = unsafe { Driver::<NdisProt>::wrap(ProtocolDriverContext.cast()) };
-    let globals = match driver.get_context() {
-        Ok(ctx) => ctx,
-        Err(err) => return Error::from(err).0.to_u32(),
-    };
+    let globals = driver.get_context();
 
     // Reserve space for the open context in the global list
     {
@@ -676,17 +672,12 @@ pub(crate) unsafe extern "C" fn unbind_adapter(
 
         // note: while this will die if the context isn't initialized yet, there's an assert in `bind_adapter`
         // which disallows unbinding an in-progress bind
-        let open_context = protocol_binding_context
-            .open_context
-            .get_context()
-            .expect("binding context should be initialized at unload");
+        let open_context = protocol_binding_context.open_context.get_context();
 
         // In case threads were waiting for the device to be powered up, wake them
         open_context.powered_up_event.signal();
 
         open_context.inner.lock().state = OpenState::Closing;
-
-        drop(open_context);
 
         shutdown_binding(protocol_binding_context);
     }
@@ -707,10 +698,7 @@ pub(crate) unsafe extern "C" fn close_adapter_complete(ProtocolBindingContext: N
 }
 
 fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
-    let Ok(open_context) = protocol_binding_context.open_context.get_context() else {
-        // either setting up or already unbound
-        return;
-    };
+    let open_context = protocol_binding_context.open_context.get_context();
 
     pinned_init::stack_pin_init!(let closing_event = KeEvent::new(crate::EventType::Notification, false));
     let mut do_close_binding = false;
@@ -821,7 +809,6 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
     open_context
         .driver
         .get_context()
-        .expect("driver context should be available")
         .open_list
         .lock()
         .retain(|e| e.as_ref() != Some(&protocol_binding_context.open_context));
@@ -846,45 +833,43 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
     match event_notif.NetPnPEvent.NetEvent {
         NET_PNP_EVENT_CODE::NetEventSetPower => {
             if let Some(binding_ctx) = protocol_binding_context {
-                if let Ok(open_context) = binding_ctx.open_context.get_context() {
-                    let power_state = unsafe {
-                        event_notif
-                            .NetPnPEvent
-                            .Buffer
-                            .cast::<NET_DEVICE_POWER_STATE>()
-                            .read()
-                    };
-                    open_context.power_state.store(power_state);
+                let open_context = binding_ctx.open_context.get_context();
 
-                    if open_context.power_state.load().0
-                        > NET_DEVICE_POWER_STATE::NetDeviceStateD0.0
-                    {
-                        // ???: So we write to the open context, but the object context area holding open context is supposed
-                        // to only have thread-safe references. How do we get mut access to clear the waiters but also retain
-                        // shared access so as to not block the mut access?
-                        //
-                        // Seems like we can signal the event after setting the power state?
+                let power_state = unsafe {
+                    event_notif
+                        .NetPnPEvent
+                        .Buffer
+                        .cast::<NET_DEVICE_POWER_STATE>()
+                        .read()
+                };
+                open_context.power_state.store(power_state);
 
-                        // The device below is transitioning into a low power state.
-                        // We wake-up any thread attempting to query the device so that they can see the new power state.
-                        open_context.powered_up_event.signal();
+                if open_context.power_state.load().0 > NET_DEVICE_POWER_STATE::NetDeviceStateD0.0 {
+                    // ???: So we write to the open context, but the object context area holding open context is supposed
+                    // to only have thread-safe references. How do we get mut access to clear the waiters but also retain
+                    // shared access so as to not block the mut access?
+                    //
+                    // Seems like we can signal the event after setting the power state?
 
-                        // Wait for any IO in-progress to complete
-                        wait_for_pending_io(&open_context, false);
+                    // The device below is transitioning into a low power state.
+                    // We wake-up any thread attempting to query the device so that they can see the new power state.
+                    open_context.powered_up_event.signal();
 
-                        // Return any receives taht we have queued up
-                        recv::flush_receive_queue(&open_context);
+                    // Wait for any IO in-progress to complete
+                    wait_for_pending_io(&open_context, false);
 
-                        log::info!(
-                            "pnp_event: SetPower to {}",
-                            open_context.power_state.load().0
-                        );
-                    } else {
-                        // The device below is powered up
-                        log::info!("pnp_event: SetPower to ON");
+                    // Return any receives taht we have queued up
+                    recv::flush_receive_queue(&open_context);
 
-                        open_context.powered_up_event.signal();
-                    }
+                    log::info!(
+                        "pnp_event: SetPower to {}",
+                        open_context.power_state.load().0
+                    );
+                } else {
+                    // The device below is powered up
+                    log::info!("pnp_event: SetPower to ON");
+
+                    open_context.powered_up_event.signal();
                 }
             }
         }
@@ -896,9 +881,9 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
             if let Some(driver) = unsafe { wdf_kmdf::raw::WdfGetDriver() } {
                 let driver = unsafe { Driver::<crate::NdisProt>::wrap(driver) };
 
-                if let Ok(globals) = driver.get_context() {
-                    globals.binds_complete.signal();
-                }
+                let globals = driver.get_context();
+                globals.binds_complete.signal();
+
                 // Note: we do not register an ExCallback right now, since we're only focused on getting NdisProt up
 
                 status = STATUS::SUCCESS;
@@ -909,75 +894,71 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
         }
         NET_PNP_EVENT_CODE::NetEventPause => {
             if let Some(binding_ctx) = protocol_binding_context {
-                if let Ok(open_context) = binding_ctx.open_context.get_context() {
-                    // Wait for all sends to complete
-                    let mut open_context_inner = open_context.inner.lock();
-                    open_context_inner.state = OpenState::Pausing;
+                let open_context = binding_ctx.open_context.get_context();
 
-                    // Note: could also complete the PnP event asynchronously (would need NdisCompleteNetPnPEvent)
-                    loop {
-                        let pended_send_count =
-                            open_context.pended_send_count.load(Ordering::Relaxed);
+                // Wait for all sends to complete
+                let mut open_context_inner = open_context.inner.lock();
+                open_context_inner.state = OpenState::Pausing;
 
-                        if pended_send_count == 0 {
-                            break;
-                        }
+                // Note: could also complete the PnP event asynchronously (would need NdisCompleteNetPnPEvent)
+                loop {
+                    let pended_send_count = open_context.pended_send_count.load(Ordering::Relaxed);
 
-                        drop(open_context_inner);
-                        {
-                            log::info!(
-                                "pnp_event: outstanding send count is {}",
-                                pended_send_count
-                            );
-
-                            // Sleep for 1 second!
-                            pinned_init::stack_pin_init!(let sleep_event = KeEvent::new(EventType::Notification, false));
-                            let _ = sleep_event.wait(Timeout::relative_ms(1_000));
-                        }
-                        open_context_inner = open_context.inner.lock();
+                    if pended_send_count == 0 {
+                        break;
                     }
+
                     drop(open_context_inner);
+                    {
+                        log::info!("pnp_event: outstanding send count is {}", pended_send_count);
 
-                    // Return all queued receives
-                    recv::flush_receive_queue(&open_context);
-
-                    open_context.inner.lock().state = OpenState::Paused;
+                        // Sleep for 1 second!
+                        pinned_init::stack_pin_init!(let sleep_event = KeEvent::new(EventType::Notification, false));
+                        let _ = sleep_event.wait(Timeout::relative_ms(1_000));
+                    }
+                    open_context_inner = open_context.inner.lock();
                 }
+                drop(open_context_inner);
+
+                // Return all queued receives
+                recv::flush_receive_queue(&open_context);
+
+                open_context.inner.lock().state = OpenState::Paused;
             }
         }
         NET_PNP_EVENT_CODE::NetEventRestart => {
             if let Some(binding_ctx) = protocol_binding_context {
-                if let Ok(open_context) = binding_ctx.open_context.get_context() {
-                    debug_assert_eq!(
-                        open_context.inner.lock().state,
-                        OpenState::Paused,
-                        "trying to restart binding while adapter isn't paused"
-                    );
+                let open_context = binding_ctx.open_context.get_context();
 
-                    // Get the updated attributes, if there are any
-                    let updated_attributes = 'updated_attributes: {
-                        let buffer = event_notif.NetPnPEvent.Buffer;
-                        if buffer.is_null() {
-                            break 'updated_attributes None;
-                        }
+                debug_assert_eq!(
+                    open_context.inner.lock().state,
+                    OpenState::Paused,
+                    "trying to restart binding while adapter isn't paused"
+                );
 
-                        let buffer_length = event_notif.NetPnPEvent.BufferLength;
-                        assert_eq!(
-                            buffer_length as usize,
-                            core::mem::size_of::<ProtocolRestartParameters>()
-                        );
-
-                        Some(unsafe { &*buffer.cast::<ProtocolRestartParameters>() })
-                    };
-
-                    if let Some(updated_attributes) = updated_attributes {
-                        restart(&open_context, updated_attributes)
+                // Get the updated attributes, if there are any
+                let updated_attributes = 'updated_attributes: {
+                    let buffer = event_notif.NetPnPEvent.Buffer;
+                    if buffer.is_null() {
+                        break 'updated_attributes None;
                     }
 
-                    // Translation note: in the original code, if there are no updated attributes,
-                    // the binding isn't sent back into the open state.
-                    open_context.inner.lock().state = OpenState::Running;
+                    let buffer_length = event_notif.NetPnPEvent.BufferLength;
+                    assert_eq!(
+                        buffer_length as usize,
+                        core::mem::size_of::<ProtocolRestartParameters>()
+                    );
+
+                    Some(unsafe { &*buffer.cast::<ProtocolRestartParameters>() })
+                };
+
+                if let Some(updated_attributes) = updated_attributes {
+                    restart(&open_context, updated_attributes)
                 }
+
+                // Translation note: in the original code, if there are no updated attributes,
+                // the binding isn't sent back into the open state.
+                open_context.inner.lock().state = OpenState::Running;
             }
         }
         NET_PNP_EVENT_CODE::NetEventQueryRemoveDevice
@@ -1097,10 +1078,7 @@ fn do_request(
         _ => unreachable!(),
     }
 
-    request.RequestId = open_context
-        .driver
-        .get_context()
-        .map_or(0, |ctx| ctx.cancel_id_gen.next()) as PVOID;
+    request.RequestId = open_context.driver.get_context().cancel_id_gen.next() as PVOID;
 
     pinned_init::stack_pin_init!(let req_context = pinned_init::pin_init!(Request {
         Request: request,
@@ -1370,13 +1348,7 @@ pub(crate) unsafe extern "C" fn status_handler(
     let status_indication = unsafe { &*StatusIndication };
 
     let open = &protocol_binding_context.open_context;
-    let Ok(open_context) = open.get_context() else {
-        log::error!(
-            "status: invalid open context for {:x?}",
-            protocol_binding_context.binding_handle
-        );
-        return;
-    };
+    let open_context = open.get_context();
 
     const NDIS_SIZEOF_STATUS_INDICATION_REVISION_1: u16 =
         (core::mem::offset_of!(NDIS_STATUS_INDICATION, NdisReserved)
@@ -1469,10 +1441,7 @@ pub(crate) fn query_binding(
         return STATUS::UNSUCCESSFUL.to_u32();
     };
     let driver = unsafe { Driver::<NdisProt>::wrap(driver) };
-    let globals = match driver.get_context() {
-        Ok(ctx) => ctx,
-        Err(err) => return Error::from(err).0.to_u32(),
-    };
+    let globals = driver.get_context();
 
     let mut status;
 
@@ -1499,9 +1468,7 @@ pub(crate) fn query_binding(
             let Some(open) = open.as_ref() else {
                 continue;
             };
-            let Ok(open_context) = open.get_context() else {
-                continue;
-            };
+            let open_context = open.get_context();
 
             // ... or if not bound.
             if !open_context
@@ -1596,7 +1563,7 @@ pub(crate) fn ndisprot_lookup_device(
         .iter()
         .find_map(|open_obj| {
             let open_obj = &open_obj.as_ref()?;
-            let open_context = open_obj.get_context().ok()?;
+            let open_context = open_obj.get_context();
             (open_context.device_name == adapter_name).then(|| open_obj.clone_ref())
         })
 }

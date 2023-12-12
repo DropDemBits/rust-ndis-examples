@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{marker::PhantomData, pin::Pin};
 
 use pinned_init::PinInit;
 use wdf_kmdf_sys::WDFFILEOBJECT;
@@ -56,7 +56,8 @@ where
         let handle = unsafe { Self::wrap(object.cast()) };
 
         // Drop the context area
-        let status = crate::object::drop_context_space::<T>(&handle, |_| ());
+        // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space
+        let status = unsafe { crate::object::drop_context_space::<T>(&handle, |_| ()) };
 
         if let Err(err) = status {
             // No (valid) context space to drop, nothing to do
@@ -69,8 +70,8 @@ impl<T> FileObject<T>
 where
     T: IntoContextSpace,
 {
-    pub fn get_context(&self) -> object::ContextSpaceGuard<'_, T> {
-        object::get_context(self).expect("context space was not initialized")
+    pub fn get_context(&self) -> Pin<&T> {
+        crate::object::get_context(self).expect("context space must be initialized")
     }
 
     /// ## Safety

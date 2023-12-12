@@ -1090,8 +1090,8 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             if let Some(driver) = driver {
                 nt_status = match driver
                     .get_context()
-                    .map_err(|err| err.into())
-                    .and_then(|driver| driver.binds_complete.wait(Timeout::relative_ms(5_000)))
+                    .binds_complete
+                    .wait(Timeout::relative_ms(5_000))
                 {
                     Ok(()) => STATUS::SUCCESS,
                     Err(_) => STATUS::TIMEOUT,
@@ -1198,10 +1198,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                 }
 
                 if let Some(open_context) = open_context {
-                    let Ok(open_context) = open_context.get_context() else {
-                        nt_status = STATUS::UNSUCCESSFUL;
-                        break 'out;
-                    };
+                    let open_context = open_context.get_context();
 
                     let status = ndisbind::query_oid_value(
                         &*open_context,
@@ -1238,10 +1235,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                 }
 
                 if let Some(open_context) = open_context {
-                    let Ok(open_context) = open_context.get_context() else {
-                        nt_status = STATUS::UNSUCCESSFUL;
-                        break 'out;
-                    };
+                    let open_context = open_context.get_context();
 
                     let status = ndisbind::set_oid_value(&*open_context, sys_buffer, buf_size);
 
@@ -1256,27 +1250,22 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
         IOCTL_NDISPROT_INDICATE_STATUS => {
             assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
 
-            'out: {
-                if let Some(open_context) = open_context {
-                    let Ok(open_context) = open_context.get_context() else {
-                        nt_status = STATUS::UNSUCCESSFUL;
-                        break 'out;
-                    };
+            if let Some(open_context) = open_context {
+                let open_context = open_context.get_context();
 
-                    let status = Error::to_err(unsafe {
-                        wdf_kmdf::raw::WdfRequestForwardToIoQueue(
-                            Request,
-                            open_context.status_indication_queue,
-                        )
-                    });
+                let status = Error::to_err(unsafe {
+                    wdf_kmdf::raw::WdfRequestForwardToIoQueue(
+                        Request,
+                        open_context.status_indication_queue,
+                    )
+                });
 
-                    nt_status = match status {
-                        Ok(_) => STATUS::PENDING,
-                        Err(err) => err.0,
-                    };
-                } else {
-                    nt_status = STATUS::DEVICE_NOT_CONNECTED;
-                }
+                nt_status = match status {
+                    Ok(_) => STATUS::PENDING,
+                    Err(err) => err.0,
+                };
+            } else {
+                nt_status = STATUS::DEVICE_NOT_CONNECTED;
             }
         }
         _ => nt_status = STATUS::NOT_SUPPORTED,
@@ -1305,11 +1294,7 @@ fn open_device(
         return Err(STATUS::UNSUCCESSFUL.into());
     };
     let driver = unsafe { wdf_kmdf::driver::Driver::<NdisProt>::wrap(driver) };
-    let Ok(globals) = driver.get_context() else {
-        // Invalid context area
-        return Err(STATUS::UNSUCCESSFUL.into());
-    };
-    let globals = Pin::new(&*globals);
+    let globals = driver.get_context();
 
     let file_context = file_object.get_context();
 
@@ -1327,10 +1312,7 @@ fn open_device(
             break 'out Err(Error(STATUS::OBJECT_NAME_NOT_FOUND));
         };
 
-        let Ok(open_context) = open_context_obj.get_context() else {
-            log::warn!("open_device: open context is invalid");
-            break 'out Err(Error(STATUS::UNSUCCESSFUL));
-        };
+        let open_context = open_context_obj.get_context();
 
         let mut inner = open_context.inner.lock();
 
@@ -1358,11 +1340,7 @@ fn open_device(
 
         if let Err(current) = old_open {
             // already used by another open
-            let flags = if let Ok(current) = current.get_context() {
-                current.inner.lock().flags
-            } else {
-                OpenContextFlags::empty()
-            };
+            let flags = current.get_context().inner.lock().flags;
 
             log::warn!(
                 "open_device: file object {:x?} already associated with open {:x?}/{:x?}",
@@ -1420,8 +1398,6 @@ fn open_device(
 
             break 'out Err(err);
         }
-
-        drop(open_context);
 
         Ok(open_context_obj)
     };

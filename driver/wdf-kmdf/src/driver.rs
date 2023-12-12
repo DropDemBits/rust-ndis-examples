@@ -7,7 +7,7 @@ use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
 use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
 use crate::{
-    object::{self, default_object_attributes, GetContextSpaceError, HandleKind, IntoContextSpace},
+    object::{self, default_object_attributes, HandleKind, IntoContextSpace},
     raw,
 };
 
@@ -55,8 +55,8 @@ impl<T> Driver<T>
 where
     T: IntoContextSpace + DriverCallbacks,
 {
-    pub fn get_context(&self) -> Result<object::ContextSpaceGuard<'_, T>, GetContextSpaceError> {
-        object::get_context(self)
+    pub fn get_context(&self) -> Pin<&T> {
+        crate::object::get_context(self).expect("context space must be initialized")
     }
 }
 
@@ -257,16 +257,9 @@ impl<T: DriverCallbacks> Driver<T> {
         let handle = unsafe { Driver::<T>::wrap(driver) };
 
         if T::HAS_UNLOAD {
-            if let Ok(context_space) = handle.get_context() {
-                // SAFETY: `get_context` should be returning pinned guards
-                let context_space = unsafe { Pin::new_unchecked(&*context_space) };
+            let context_space = handle.get_context();
 
-                T::unload(context_space);
-            } else {
-                // No (valid) context space to unload with, nothing to do
-                windows_kernel_rs::log::warn!("No driver context space to unload");
-                return;
-            }
+            T::unload(context_space);
         }
     }
 
@@ -291,7 +284,8 @@ impl<T: DriverCallbacks> Driver<T> {
         //
         // Thankfully, by adding an initial refcount bump when creating unparented
         // objects, they stay alive until it's time to delete them.
-        let status = object::drop_context_space::<T>(&handle, |_| ());
+        // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space
+        let status = unsafe { object::drop_context_space::<T>(&handle, |_| ()) };
 
         if let Err(err) = status {
             // No (valid) context space to drop, nothing to do
