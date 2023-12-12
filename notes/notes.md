@@ -100,8 +100,13 @@ Problem is that WDF deletes from the bottom up (to ensure that the parent is pre
 Protecting against bad refcounts:
 - `WdfObjectReference` & `WdfObjectDereference` can't delete an object by itself, needs `WdfObjectDelete`.
 - Refcount adjustment shouldn't be exposed to users of the library, and should be considered a bug in the library.
-- (TODO: Think about wrapped pointers)
+- Wrapping raw handles don't adjust refcount since raw handles are derived from existing handles
+	- Should only be used for WDF <-> bindings communication as we lose the ability to track the handle type (owned vs ref vs wrapped)
+	- Q: Should we independently store another refcount so that dropping WDF objects have uniform behavior?
 
+Protecting against other threads created by `PsCreateSystemThread`:
+- Just another case of protecting against bad refcounts
+- WdfDriver is really the only special case for threads since `WdfGetDriver` gets a driver handle via global data, whereas everything else would need to be passed through the context parameter.
 ## Dropping the driver context area
 
 Need exclusive access to the driver context area to soundly drop it.
@@ -117,6 +122,7 @@ How fix:
 	- Like previous option, but allows adding children to an object
 	- Requires doing delete (if necessary) before unbumping refcount
 	- Also kinda allows inverting the deletion direction (mostly top-down removal instead of always bottom-up removal)
+	- Disadvantage of dropping the originating owning handle results in preventing additional child objects
 - Push drop requirement to unload
 	- Unload callback happens before we have guaranteed exclusive access
 		- Current solution uses a separate guard to track live context area references, could weaken it to just live references so that we can drop the guard? Unload would then be required to wait until all live references are dead so could block unload thread if `Unload` is called at `PASSIVE_LEVEL` (could be done by using a `KEVENT`).
