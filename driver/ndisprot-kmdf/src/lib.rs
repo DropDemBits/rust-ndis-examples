@@ -17,7 +17,7 @@ use core::{
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use crossbeam_utils::atomic::AtomicCell;
 use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
@@ -337,7 +337,6 @@ struct NdisProt {
     //   - ahhhhh it's just supposed to be a usize
     //   - also could just not since we never use it for cancellation
     cancel_id_gen: CancelIdGen,
-    // TODO: ListEntry is really just a ListHead<OpenContextList>
     // Used in
     // - ndisbind::BindAdapter (pre `CreateBinding`), mut
     //   - Have access to a ProtocolBindingContext
@@ -945,7 +944,7 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
 
     debug!("Close: FileObject {:#x?}", file_object);
 
-    // file_object.get_context_mut().open_context.take();
+    let _ = file_object.get_context().open_context.lock().take();
 }
 
 /// Called when the handle representing the `FileObject` is closed.
@@ -956,8 +955,7 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
     let file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    // let open_context = file_object.get_context_mut().open_context.take();
-    let open_context = None::<Arc<OpenContext>>;
+    let open_context = file_object.get_context().open_context();
 
     debug!(
         "Cleanup: FileObject {:#x?}, Open: {:#x?}",
@@ -966,6 +964,8 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
     );
 
     if let Some(open_context) = open_context {
+        let open_context = open_context.get_context();
+
         // Mark this endpoint
         {
             let mut inner = open_context.inner.lock();
