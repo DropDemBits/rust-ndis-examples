@@ -12,7 +12,7 @@ use crate::{
 pub struct FileObject<T> {
     handle: WDFFILEOBJECT,
     kind: HandleKind,
-    _context: PhantomData<T>,
+    _context: PhantomData<fn() -> T>,
 }
 
 impl<T> core::fmt::Debug for FileObject<T> {

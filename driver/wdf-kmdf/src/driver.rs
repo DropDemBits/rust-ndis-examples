@@ -14,7 +14,7 @@ use crate::{
 pub struct Driver<T> {
     handle: WDFDRIVER,
     kind: HandleKind,
-    _context: PhantomData<T>,
+    _context: PhantomData<fn() -> T>,
 }
 
 impl<T> Driver<T>

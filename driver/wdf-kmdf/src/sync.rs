@@ -224,8 +224,9 @@ impl<T, Lock: LockBackend> Mutex<T, Lock> {
     }
 }
 
-// Can't send `Mutex` to another thread because we've guaranteed that the storage will never move
-// impl<T> !Send for Mutex<T> {}
+// SAFETY: Can send `Mutex<T>` to other threads as we don't guarantee that the storage
+// won't be moved.
+unsafe impl<T, Lock: LockBackend> Send for Mutex<T, Lock> where T: Send {}
 
 // SAFETY: Can send &Mutex<T> to other threads as we can only observe `T` changing
 // when we hold the lock, and only one thread can hold the lock.

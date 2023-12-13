@@ -210,7 +210,7 @@ pub struct GeneralObject<T> {
     // FIXME: Make pointer-sized
     handle: WDFOBJECT,
     kind: HandleKind,
-    _context: PhantomData<T>,
+    _context: PhantomData<fn() -> T>,
 }
 
 impl<T> core::fmt::Debug for GeneralObject<T> {
