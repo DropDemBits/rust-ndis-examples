@@ -9,6 +9,6 @@ edition = "2021"
 windows-kernel-sys = { path = "../windows-kernel-sys" }
 
 [build-dependencies]
-bindgen = "0.65.1"
+bindgen = "0.69.1"
 thiserror = "1.0.40"
 winreg = "0.50.0"

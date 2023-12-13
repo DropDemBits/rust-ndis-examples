@@ -12,7 +12,6 @@
     clippy::useless_transmute,
     clippy::upper_case_acronyms,
     clippy::too_many_arguments,
-    clippy::incorrect_clone_impl_on_copy_type,
     clippy::pedantic
 )]
 mod bindings {

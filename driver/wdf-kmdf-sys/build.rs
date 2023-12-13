@@ -144,7 +144,7 @@ fn generate() {
         .clang_arg(format!("-I{}", include_dir.to_str().unwrap()))
         .clang_arg(format!("-I{}", wdf_dir.to_str().unwrap()))
         .parse_callbacks(Box::new(RenameTyped))
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Declared in lib.rs
         // .blocklist_item("WdfMinimumVersionRequired")
         // Just so that we don't have to include typedefs for KIDTENTRY64 and KGDTENTRY64

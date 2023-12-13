@@ -134,7 +134,7 @@ fn generate() {
         .clang_arg(format!("-I{}", include_dir.to_str().unwrap()))
         .clang_arg(format!("-I{}", out_path.to_str().unwrap()))
         .parse_callbacks(Box::new(RenameTyped))
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Just so that we don't have to include typedefs for KIDTENTRY64 and KGDTENTRY64
         .blocklist_type("_?P?KPCR.*")
         .blocklist_type("_?P?KIDTENTRY64")
