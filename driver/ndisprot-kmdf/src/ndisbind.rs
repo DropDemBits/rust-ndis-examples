@@ -44,8 +44,9 @@ use windows_kernel_sys::{
 };
 
 use crate::{
-    recv, EventType, IndicateStatus, KeEvent, ListEntry, MACAddr, OpenContext, OpenContextFlags,
-    OpenContextInner, OpenState, QueryBinding, QueryOid, SetOid, Timeout, MAX_MULTICAST_ADDRESS,
+    recv, EventType, IndicateStatus, KeEvent, MACAddr, OpenContext, OpenContextFlags,
+    OpenContextInner, OpenState, QueryBinding, QueryOid, RecvQueue, SetOid, Timeout,
+    MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;
@@ -198,7 +199,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     //     could've come in
     //
     // so this seems to be just for checking if we're leaking bindings
-    if let Some(other_context) = ndisprot_lookup_device(Pin::new(&*globals), adapter_name) {
+    if let Some(other_context) = ndisprot_lookup_device(globals, adapter_name) {
         log::warn!(
             "bind_adapter: binding to {} already exists on binding {:#x?}",
             adapter_name,
@@ -591,8 +592,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     recv_nbl_pool: ScopeGuard::into_inner(recv_nbl_pool),
                     read_queue: ScopeGuard::into_inner(read_queue),
                     pended_read_count: AtomicU32::new(0),
-                    recv_nbl_queue <- ListEntry::new(),
-                    recv_nbl_len: 0,
+                    recv_queue <- SpinPinMutex::new(RecvQueue::new()),
 
                     status_indication_queue: ScopeGuard::into_inner(status_indication_queue),
 

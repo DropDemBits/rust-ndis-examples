@@ -16,7 +16,8 @@ pinned-init.workspace = true
 bitflags = "2.3.3"
 scopeguard = { version = "1.2.0", default-features = false }
 crossbeam-utils = { version = "0.8.16", default-features = false }
-nt-list = { version = "0.3.0", default-features = false }
+nt-list.workspace = true
+moveit = "0.6.0"
 static_assertions = "1.1.0"
 
 [build-dependencies]
