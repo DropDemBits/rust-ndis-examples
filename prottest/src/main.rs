@@ -107,7 +107,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
 
     let opts = Options::try_parse()?;
-    let device_handle = open_handle(&opts.device_name)
+    let device_handle = open_handle(DEFAULT_NDISPROT_DEVICE)
         .wrap_err_with(|| format!("failed to open {}", opts.device_name))?;
 
     let mut state = State {
