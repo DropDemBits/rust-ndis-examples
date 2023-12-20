@@ -17,6 +17,15 @@ pub struct Driver<T> {
     _context: PhantomData<fn() -> T>,
 }
 
+impl<T> core::fmt::Debug for Driver<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Driver")
+            .field("handle", &self.handle)
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
 impl<T> Driver<T>
 where
     T: DriverCallbacks,
