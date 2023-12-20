@@ -310,9 +310,10 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
         }
     });
     let mut return_nbl_queue = None;
-    let mut accepted_receive = false;
 
     while let Some(nbl) = nbl_queue.next() {
+        let mut accepted_receive;
+
         // Note: since we're not using NDIS 6.30, the bottom two bits are reserved for NDIS
         NET_BUFFER_LIST::clear_flag(nbl, windows_kernel_sys::NBL_FLAGS_PROTOCOL_RESERVED & !0x3);
         accepted_receive = false;
@@ -674,7 +675,7 @@ pub(crate) fn flush_receive_queue(open_context: Pin<&OpenContext>) {
     let mut recv_queue = open_context.recv_queue.lock();
 
     while !recv_queue.as_ref().is_empty() {
-        let Some(mut entry) = recv_queue.as_mut().dequeue() else {
+        let Some(entry) = recv_queue.as_mut().dequeue() else {
             break;
         };
 

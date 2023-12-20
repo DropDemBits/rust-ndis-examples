@@ -1146,7 +1146,7 @@ pub(crate) fn validate_open_and_do_request(
     //
     // for now: just use the binding_handle we got from the protocol binding
     // context, we'll deal with WDF -> Binding communication later
-    let mut status;
+    let status;
 
     'out: {
         let mut inner = open_context.inner.lock();
