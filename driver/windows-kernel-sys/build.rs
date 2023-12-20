@@ -146,6 +146,15 @@ fn generate() {
         .unwrap()
         .write_to_file(out_path.join("bindings.rs"))
         .unwrap();
+
+    // Generate the wrappers
+    cc::Build::new()
+        .flag("/kernel")
+        .include(include_dir)
+        .include(out_path)
+        .file("src/wrapper.c")
+        .compile("wrapper_bindings");
+    println!("cargo:rustc-link-lib=wrapper_bindings");
 }
 
 fn header_hacks_dir() -> PathBuf {

@@ -12,7 +12,7 @@
     clippy::useless_transmute,
     clippy::too_many_arguments,
     clippy::unnecessary_cast,
-    clippy::pedantic,
+    clippy::pedantic
 )]
 mod bindings;
 
@@ -87,3 +87,58 @@ pub const POOL_FLAG_SPECIAL_POOL: POOL_FLAGS = 0x0000000100000000_u64;
 pub const POOL_FLAG_OPTIONAL_END: POOL_FLAGS = 0x8000000000000000_u64;
 
 pub const NDIS_DEFAULT_PORT_NUMBER: NDIS_PORT_NUMBER = 0;
+
+impl NET_BUFFER_LIST {
+    pub unsafe fn first_nb(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER {
+        unsafe { NET_BUFFER_LIST_FirstNb(Nbl) }
+    }
+
+    pub unsafe fn next_nbl(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER_LIST {
+        unsafe { NET_BUFFER_LIST_NextNbl(Nbl) }
+    }
+
+    pub unsafe fn next_nbl_mut<'a>(Nbl: PNET_BUFFER_LIST) -> &'a mut PNET_BUFFER_LIST {
+        // Have to directly access the field this time, unless we generate
+        // another wrapper function returning the address to the field
+        unsafe { &mut (*Nbl).__bindgen_anon_1.__bindgen_anon_1.Next }
+    }
+
+    pub unsafe fn test_flag(Nbl: PNET_BUFFER_LIST, Flag: u32) -> bool {
+        unsafe { (*Nbl).Flags & Flag != 0 }
+    }
+
+    pub unsafe fn set_flag(Nbl: PNET_BUFFER_LIST, Flag: u32) {
+        unsafe { (*Nbl).Flags |= Flag }
+    }
+
+    pub unsafe fn clear_flag(Nbl: PNET_BUFFER_LIST, Flag: u32) {
+        unsafe { (*Nbl).Flags &= !Flag }
+    }
+}
+
+#[link(name = "wrapper_bindings")]
+extern "C" {
+    pub fn wrapper_MmGetSystemAddressForMdlSafe(Mdl: PMDL, Priority: ULONG) -> PVOID;
+
+    pub fn wrapper_MmGetMdlByteCount(Mdl: PMDL) -> ULONG;
+
+    pub fn wrapper_NET_BUFFER_LIST_FirstNb(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER;
+
+    pub fn wrapper_NET_BUFFER_LIST_NextNbl(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER_LIST;
+
+    pub fn wrapper_NdisGetNextMdl(CurrentMdl: PMDL, NextMdl: *mut PMDL) -> PMDL;
+
+    pub fn wrapper_NdisQueryMdl(
+        Mdl: PMDL,
+        VirtualAddress: *mut PVOID,
+        Length: *mut ULONG,
+        Priority: ULONG,
+    );
+}
+
+pub use self::wrapper_MmGetMdlByteCount as MmGetMdlByteCount;
+pub use self::wrapper_MmGetSystemAddressForMdlSafe as MmGetSystemAddressForMdlSafe;
+pub use self::wrapper_NET_BUFFER_LIST_FirstNb as NET_BUFFER_LIST_FirstNb;
+pub use self::wrapper_NET_BUFFER_LIST_NextNbl as NET_BUFFER_LIST_NextNbl;
+pub use self::wrapper_NdisGetNextMdl as NdisGetNextMdl;
+pub use self::wrapper_NdisQueryMdl as NdisQueryMdl;
