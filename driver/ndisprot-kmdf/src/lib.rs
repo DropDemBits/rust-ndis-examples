@@ -1086,8 +1086,8 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         // Mark this endpoint
         {
             let mut inner = open_context.inner.lock();
-            // Note: This is equivalent to setting the open flags to idle
-            inner.flags.remove(OpenContextFlags::OPEN_FLAGS);
+            inner.flags.set(OpenContextFlags::OPEN_IDLE, true);
+            let _ = inner.file_object.take();
         }
 
         // Set packet filter to 0, telling NDIS we aren't interested in any more receives.
@@ -1416,10 +1416,20 @@ fn open_device(
     let file_context = file_object.get_context();
 
     let status = 'out: {
+        // length shouldn't include nul terminator
+        let device_name_len = 'len: {
+            if let Some(new_len) = device_name.len().checked_sub(2) {
+                if &device_name[new_len..] == &[0, 0] {
+                    break 'len new_len;
+                }
+            }
+
+            device_name.len()
+        };
         let device_name = unsafe {
             NtUnicodeStr::from_raw_parts(
                 device_name.as_ptr().cast(),
-                device_name.len() as u16,
+                device_name_len as u16,
                 device_name.len() as u16,
             )
         };
@@ -1433,7 +1443,7 @@ fn open_device(
 
         let mut inner = open_context.inner.lock();
 
-        if inner.flags.contains(OpenContextFlags::OPEN_IDLE) {
+        if !inner.flags.contains(OpenContextFlags::OPEN_IDLE) {
             log::warn!(
                 "open_device: open {:x?}/{:x?} already associated with another file object {:x?}",
                 open_context_obj,

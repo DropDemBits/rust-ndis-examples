@@ -871,6 +871,8 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
 
                     open_context.powered_up_event.signal();
                 }
+
+                status = STATUS::SUCCESS;
             }
         }
         NET_PNP_EVENT_CODE::NetEventQueryPower => {
@@ -924,6 +926,8 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                 recv::flush_receive_queue(open_context.as_ref());
 
                 open_context.inner.lock().state = OpenState::Paused;
+
+                status = STATUS::SUCCESS;
             }
         }
         NET_PNP_EVENT_CODE::NetEventRestart => {
@@ -953,12 +957,11 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                 };
 
                 if let Some(updated_attributes) = updated_attributes {
-                    restart(&open_context, updated_attributes)
-                }
+                    restart(&open_context, updated_attributes);
 
-                // Translation note: in the original code, if there are no updated attributes,
-                // the binding isn't sent back into the open state.
-                open_context.inner.lock().state = OpenState::Running;
+                    open_context.inner.lock().state = OpenState::Running;
+                    status = STATUS::SUCCESS;
+                }
             }
         }
         NET_PNP_EVENT_CODE::NetEventQueryRemoveDevice
@@ -1143,7 +1146,7 @@ pub(crate) fn validate_open_and_do_request(
     //
     // for now: just use the binding_handle we got from the protocol binding
     // context, we'll deal with WDF -> Binding communication later
-    let mut status = STATUS::UNSUCCESSFUL;
+    let mut status;
 
     'out: {
         let mut inner = open_context.inner.lock();
@@ -1191,6 +1194,8 @@ pub(crate) fn validate_open_and_do_request(
 
             if let Err(err) = err {
                 status = err.0;
+            } else {
+                status = STATUS::SUCCESS;
             }
         } else {
             status = windows_kernel_sys::result::ERROR::NDIS::ADAPTER_NOT_READY
@@ -1434,8 +1439,6 @@ pub(crate) fn query_binding(
     output_length: usize,
     bytes_returned: &mut usize,
 ) -> NDIS_STATUS {
-    log::error!("unimplemented");
-
     let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
         // Driver not initialized yet
         return STATUS::UNSUCCESSFUL.to_u32();
