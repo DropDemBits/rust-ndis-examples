@@ -85,9 +85,9 @@ const NPROT_ALLOC_TAG: u32 = u32::from_be_bytes(*b"Nuio");
 
 #[derive(Debug)]
 #[pin_data]
-struct ProtocolBindingContext {
-    // The actual open context
-    open_context: GeneralObject<OpenContext>,
+pub(crate) struct ProtocolBindingContext {
+    /// The actual open context
+    pub(crate) open_context: GeneralObject<OpenContext>,
 
     // Initialization context:
     // Note that we have exclusive access to this section

@@ -824,25 +824,42 @@ bitflags::bitflags! {
         const UNBIND_FLAGS = Self::UNBIND_RECEIVED.bits();
         /// Seen NDIS Unbind?
         const UNBIND_RECEIVED = 1 << 28;
-
-        // is 1 << 28 in original example but likely a mistake
-        const ALLOCATED_NBL = 1 << 29;
-        // is 1 << 29 in original example but adjusted due to prev
-        const NBL_RETREAT_RECV_RSVD = 1 << 30;
     }
 }
 
 const MAX_MULTICAST_ADDRESS: usize = 32;
 
+const NPROT_FLAGS_ALLOCATED_NBL: u32 = 1 << 28;
+const NPROT_FLAGS_NB_RETREAT_RECV_RSVD: u32 = 1 << 29;
+
 const OC_STRUCTURE_SIG: u32 = u32::from_be_bytes(*b"Nuio");
 
 #[derive(Default, Clone, Copy)]
+#[repr(C)]
 struct MACAddr([u8; 6]);
 
 impl MACAddr {
     const fn zero() -> Self {
         MACAddr([0; 6])
     }
+}
+
+#[repr(C, packed)]
+struct EthHeader {
+    dst_addr: MACAddr,
+    src_addr: MACAddr,
+    eth_type: u16,
+}
+
+#[repr(C, packed)]
+struct TaggedEthHeader {
+    dst_addr: MACAddr,
+    src_addr: MACAddr,
+    /// ether_type of an 802.1p/q frame
+    tpid: u16,
+    /// tag control information
+    tci: u16,
+    eth_type: u16,
 }
 
 #[vtable::vtable]
@@ -1408,7 +1425,7 @@ fn open_device(
         };
 
         let Some(open_context_obj) = ndisbind::ndisprot_lookup_device(globals, device_name) else {
-            log::warn!("open_device: couldn't find device {:?}", device_name);
+            log::warn!("open_device: couldn't find device {device_name}");
             break 'out Err(Error(STATUS::OBJECT_NAME_NOT_FOUND));
         };
 
