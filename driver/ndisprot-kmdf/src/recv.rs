@@ -1,6 +1,6 @@
 use core::{pin::Pin, sync::atomic::Ordering};
 
-use wdf_kmdf::{file_object::FileObject, object::GeneralObject, raw, driver::Driver};
+use wdf_kmdf::{driver::Driver, file_object::FileObject, object::GeneralObject, raw};
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{
@@ -9,8 +9,8 @@ use windows_kernel_sys::{
 };
 
 use crate::{
-    ndisbind::ProtocolBindingContext, EthHeader, FileObjectContext, OpenContext, OpenContextFlags,
-    OpenState, TaggedEthHeader, NPROT_FLAGS_ALLOCATED_NBL, NdisProt,
+    ndisbind::ProtocolBindingContext, EthHeader, FileObjectContext, NdisProt, OpenContext,
+    OpenContextFlags, OpenState, TaggedEthHeader, NPROT_FLAGS_ALLOCATED_NBL,
 };
 
 #[derive(nt_list::list::NtList)]
@@ -255,7 +255,9 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
     let open_context = open_object.get_context();
 
     let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
-        log::error!("receive_net_buffer_lists: ctx {protocol_binding_context:x?}: driver not loaded");
+        log::error!(
+            "receive_net_buffer_lists: ctx {protocol_binding_context:x?}: driver not loaded"
+        );
         // no leak!!
         if receive_flags.can_pend() {
             // NDIS doesn't automatically reclaim ownership when we return,
@@ -668,9 +670,22 @@ fn free_receive_net_buffer_list(
     }
 }
 
-pub(crate) fn flush_receive_queue(open_context: &OpenContext) {
-    // FIXME: Fill in once we're adding NBLs to the recv list
-    log::error!("unimplemented");
+pub(crate) fn flush_receive_queue(open_context: Pin<&OpenContext>) {
+    let mut recv_queue = open_context.recv_queue.lock();
+
+    while !recv_queue.as_ref().is_empty() {
+        let Some(mut entry) = recv_queue.as_mut().dequeue() else {
+            break;
+        };
+
+        let nbl = entry.take_nbl();
+        log::debug!("flush_receive_queue: open ???, nbl {nbl:#x?}");
+        drop(recv_queue);
+
+        free_receive_net_buffer_list(open_context.as_ref(), nbl, false);
+
+        recv_queue = open_context.recv_queue.lock();
+    }
 }
 
 /// Copies at most `copy_len` bytes from `source_mdl` to `target_mdl`.

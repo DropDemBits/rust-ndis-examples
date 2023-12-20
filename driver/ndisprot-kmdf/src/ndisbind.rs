@@ -773,7 +773,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         }
 
         // discard any queued recieves
-        recv::flush_receive_queue(&open_context);
+        recv::flush_receive_queue(open_context.as_ref());
 
         // close the binding now
         log::info!(
@@ -859,7 +859,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                     wait_for_pending_io(&open_context, false);
 
                     // Return any receives taht we have queued up
-                    recv::flush_receive_queue(&open_context);
+                    recv::flush_receive_queue(open_context.as_ref());
 
                     log::info!(
                         "pnp_event: SetPower to {}",
@@ -921,7 +921,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                 drop(open_context_inner);
 
                 // Return all queued receives
-                recv::flush_receive_queue(&open_context);
+                recv::flush_receive_queue(open_context.as_ref());
 
                 open_context.inner.lock().state = OpenState::Paused;
             }
