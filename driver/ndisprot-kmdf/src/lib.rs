@@ -85,6 +85,11 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     const PROTO_NAME: NtUnicodeStr<'static> = nt_unicode_str!("NDISPROT");
     debug!("DriverEntry");
 
+    // FIXME: Needs to be restructured so that the driver context area is guaranteed initialized
+    // Before `NdisRegisterProtocolDriver` returns, any of the protocol callbacks can be called
+    // including `ProtocolPnPEvent` for a `NetEventBindsComplete`, which depends on the driver
+    // context area being initialized. `NdisRegisterProtocolDriver` does (albeit implicitly)
+    // guarantee that the protocol driver handle is set before any of the callbacks are called.
     wdf_kmdf::driver::Driver::<NdisProt>::create(
         driver_object,
         registry_path,
