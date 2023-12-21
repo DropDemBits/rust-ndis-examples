@@ -834,7 +834,7 @@ const NPROT_FLAGS_NB_RETREAT_RECV_RSVD: u32 = 1 << 29;
 
 const OC_STRUCTURE_SIG: u32 = u32::from_be_bytes(*b"Nuio");
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 struct MACAddr([u8; 6]);
 
