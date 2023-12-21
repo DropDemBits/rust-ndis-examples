@@ -241,7 +241,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
         free_receive_net_buffer_list(open_context, recv_nbl, false);
 
         open_context
-            .pended_send_count
+            .pended_read_count
             .fetch_sub(1, Ordering::Relaxed);
     }
 }
