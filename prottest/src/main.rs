@@ -86,7 +86,7 @@ struct Options {
     )]
     packet_length: u32,
     /// number of packets (defaults to infinity)
-    #[arg(short = 'l')]
+    #[arg(short = 'n')]
     packet_count: Option<u32>,
     /// (defaults to local MAC)
     #[arg(short = 'm')]
@@ -329,7 +329,8 @@ impl State {
             .map(|idx| idx.wrapping_sub(header.len() as u32) as u8)
             .collect::<Vec<_>>();
 
-        write_buf[0..header.len()].copy_from_slice(header);
+        let max_len = header.len().min(self.opts.packet_length as usize);
+        write_buf[0..max_len].copy_from_slice(&header[..max_len]);
 
         let mut write_count = 0;
         let mut bytes_read = 0;
