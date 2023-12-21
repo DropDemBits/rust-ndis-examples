@@ -585,7 +585,8 @@ fn get_context_space_ptr<T: IntoContextSpace>(
 }
 
 /// Gets a ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
-pub(crate) fn get_context<T: IntoContextSpace>(
+// FIXME: Temporarily `pub` until we have something like `WithContextSpace`
+pub fn get_context<T: IntoContextSpace>(
     handle: &impl AsObjectHandle,
 ) -> Result<Pin<&T>, GetContextSpaceError> {
     let context_space = get_context_space_ptr::<T>(handle)?;
@@ -622,7 +623,8 @@ pub(crate) fn get_context<T: IntoContextSpace>(
 /// ## Safety
 ///
 /// Must have exclusive access to the context space, which is guaranteed to happen inside of `EvtDestroy`.
-pub(crate) unsafe fn drop_context_space<T: IntoContextSpace>(
+// FIXME: Temporarily `pub` until we have something like `WithContextSpace`
+pub unsafe fn drop_context_space<T: IntoContextSpace>(
     handle: &impl AsObjectHandle,
     additional_work: impl FnOnce(Pin<&mut T>),
 ) -> Result<(), GetContextSpaceError> {
@@ -699,7 +701,8 @@ impl From<GetContextSpaceError> for Error {
 ///
 /// - Must not reinitialize an object's context space
 /// - Object must actually have the context space
-pub(crate) unsafe fn context_pin_init<T, Handle, I, Err>(
+// FIXME: Temporarily `pub` until we have something like `WithContextSpace`
+pub unsafe fn context_pin_init<T, Handle, I, Err>(
     handle: &mut Handle,
     init_context: impl FnOnce(&mut Handle) -> Result<I, Err>,
 ) -> Result<(), Err>
