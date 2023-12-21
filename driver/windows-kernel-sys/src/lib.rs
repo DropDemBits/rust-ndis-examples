@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(allocator_api)]
+#![feature(allocator_api, offset_of)]
 #![allow(
     non_upper_case_globals,
     non_camel_case_types,
@@ -101,6 +101,32 @@ impl NET_BUFFER_LIST {
         // Have to directly access the field this time, unless we generate
         // another wrapper function returning the address to the field
         unsafe { &mut (*Nbl).__bindgen_anon_1.__bindgen_anon_1.Next }
+    }
+
+    pub unsafe fn info(Nbl: PNET_BUFFER_LIST, Id: NDIS_NET_BUFFER_LIST_INFO) -> *mut PVOID {
+        unsafe { core::ptr::addr_of_mut!((*Nbl).NetBufferListInfo[Id.0 as usize]) }
+    }
+
+    pub unsafe fn set_cancel_id(Nbl: PNET_BUFFER_LIST, CancelId: usize) {
+        unsafe {
+            *Self::info(Nbl, NDIS_NET_BUFFER_LIST_INFO::NetBufferListCancelId) =
+                core::mem::transmute(CancelId);
+        }
+    }
+
+    pub unsafe fn context_data_start(Nbl: PNET_BUFFER_LIST) -> PUCHAR {
+        let nbl_context = unsafe { (*Nbl).Context };
+        let context_data = unsafe {
+            nbl_context
+                .byte_add(core::mem::offset_of!(NET_BUFFER_LIST_CONTEXT, ContextData))
+                .cast::<UCHAR>()
+        };
+        let offset = usize::from(unsafe { (*nbl_context).Offset });
+        unsafe { context_data.add(offset) }
+    }
+
+    pub unsafe fn status(Nbl: PNET_BUFFER_LIST) -> NTSTATUS {
+        unsafe { *(*Nbl).__bindgen_anon_2.Status.as_ref() }
     }
 
     pub unsafe fn test_flag(Nbl: PNET_BUFFER_LIST, Flag: u32) -> bool {
