@@ -35,13 +35,24 @@ static_assertions::const_assert!(
 );
 
 impl RecvNblRsvd {
+    fn from_nbl_raw(net_buffer_list: PNET_BUFFER_LIST) -> *mut Self {
+        unsafe { core::ptr::addr_of_mut!((*net_buffer_list).ProtocolReserved) }.cast()
+    }
+
     fn containing_nbl(self: Pin<&mut Self>) -> PNET_BUFFER_LIST {
         self.nbl
     }
 
+    unsafe fn init_recv_nbl<'a>(net_buffer_list: PNET_BUFFER_LIST) {
+        let element = Self::from_nbl_raw(net_buffer_list);
+        element.write(RecvNblRsvd {
+            link: nt_list::list::NtListEntry::new(),
+            nbl: net_buffer_list,
+        });
+    }
+
     unsafe fn from_nbl<'a>(net_buffer_list: PNET_BUFFER_LIST) -> Pin<&'a mut Self> {
-        let element: *mut Self =
-            unsafe { core::ptr::addr_of_mut!((*net_buffer_list).ProtocolReserved) }.cast();
+        let element = Self::from_nbl_raw(net_buffer_list);
         let element = unsafe { &mut *element };
         unsafe { Pin::new_unchecked(element) }
     }
@@ -414,7 +425,6 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
                     log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to alloc copy of {total_length} bytes");
                     break 'err;
                 }
-                NET_BUFFER_LIST::set_flag(nbl, NPROT_FLAGS_ALLOCATED_NBL);
 
                 let first_nb = NET_BUFFER_LIST::first_nb(nbl);
                 let mdl_chain = unsafe { (*first_nb).__bindgen_anon_1.__bindgen_anon_1.MdlChain };
@@ -512,6 +522,10 @@ fn queue_receive_net_buffer_list(
             .contains(OpenContextFlags::BIND_ACTIVE)
             && open_context.power_state.load() == NET_DEVICE_POWER_STATE::NetDeviceStateD0
         {
+            // Translation Note: `init_recv_nbl` sets `nbl` to itself, since we can't
+            // queue and then set `nbl` in case the queue becomes full.
+            unsafe { RecvNblRsvd::init_recv_nbl(recv_nbl) };
+
             // Queue the nbl
             let mut entry = unsafe { RecvNblRsvd::from_nbl(recv_nbl) };
             if let Some(trimmed_entry) = recv_queue.as_mut().enqueue(entry.as_mut()) {
@@ -528,14 +542,12 @@ fn queue_receive_net_buffer_list(
 
                 free_receive_net_buffer_list(open_context, nbl, at_dispatch_level);
             } else {
-                unsafe {
-                    entry.get_unchecked_mut().nbl = recv_nbl;
-                }
-
                 log::trace!(
                     "queue_recv_nbl: open {open_object:#x?}, queued nbl {recv_nbl:#x?}, queue len {}",
                     recv_queue.as_ref().len()
                 );
+
+                drop(recv_queue);
             }
         } else {
             // binding is going away, so the recv'd nbl needs to be freed
@@ -594,7 +606,11 @@ fn allocate_receive_net_buffer_list(
         };
         if nbl.is_null() {
             log::error!("alloc_recv_nbl: open ???, failed to alloc nbl, {data_length} bytes");
+            break 'out;
         }
+
+        // We allocated this NBL, so we don't want to accidentally return it to the miniport
+        unsafe { NET_BUFFER_LIST::set_flag(nbl, NPROT_FLAGS_ALLOCATED_NBL) };
     }
 
     if nbl.is_null() {
@@ -607,7 +623,7 @@ fn allocate_receive_net_buffer_list(
         }
     }
 
-    todo!()
+    nbl
 }
 
 fn free_receive_net_buffer_list(
@@ -725,7 +741,7 @@ unsafe fn copy_mdl_to_mdl(
     skip_to_start_mdl(&mut source_mdl, &mut source_offset);
     skip_to_start_mdl(&mut target_mdl, &mut target_offset);
 
-    if copy_len == 0 || source_mdl.is_null() || !target_mdl.is_null() {
+    if copy_len == 0 || source_mdl.is_null() || target_mdl.is_null() {
         // No transfer will happen
         return Ok(0);
     }
