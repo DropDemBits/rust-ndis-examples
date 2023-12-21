@@ -74,19 +74,19 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_read(
     let file_object =
         FileObject::<FileObjectContext>::wrap(unsafe { raw::WdfRequestGetFileObject(Request) });
 
-    let open_context = file_object.get_context().open_context();
+    let open_object = file_object.get_context().open_context();
 
     'out: {
         // validate!
-        let Some(open_context) = open_context else {
+        let Some(open_object) = open_object else {
             log::error!("Read: No OpenContext on FileObject {file_object:#x?}");
             nt_status = Err(STATUS::INVALID_HANDLE.into());
             break 'out;
         };
 
-        //
+        let open_context = open_object.get_context();
+
         if !open_context
-            .get_context()
             .inner
             .lock()
             .flags
@@ -96,10 +96,17 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_read(
             break 'out;
         }
 
+        // Translation note: `ndisprot` does increment the pended read count in the IRP_MR_READ handler,
+        // but `ndisprot-kmdf` does not (likely as an oversight). It still works since nothing waits on
+        // all reads to finish, but just in case we do wait on having all of the reads finish.
+        open_context
+            .pended_read_count
+            .fetch_add(1, Ordering::Relaxed);
+
         // Forward this request to the pending read queue.
         // The framework manages cancellation of requests which are on the queue, so we don't have to worry about that.
         nt_status = Error::to_err(unsafe {
-            raw::WdfRequestForwardToIoQueue(Request, open_context.get_context().read_queue)
+            raw::WdfRequestForwardToIoQueue(Request, open_context.read_queue)
         });
     }
 
