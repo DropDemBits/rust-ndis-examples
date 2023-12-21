@@ -22,4 +22,5 @@ pub mod raw;
 pub mod driver;
 pub mod file_object;
 pub mod object;
+pub mod request;
 pub mod sync;
