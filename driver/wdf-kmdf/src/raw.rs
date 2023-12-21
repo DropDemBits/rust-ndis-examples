@@ -1664,6 +1664,77 @@ pub unsafe fn WdfRequestRetrieveInputBuffer(
     ))
 }
 
+// FIXME: WdfRequestRetrieveInputMemory
+
+/// Gets a memory descriptor list (MDL) representing the request's input buffer
+///
+/// The input buffer of a request contains information that was supplied by the request's originator.
+/// [`WdfRequestRetrieveInputWdmMdl`] can be used to get the MDL of the input buffer for a write or IO control request,
+/// but not for a read request as read requests expect data to be written to the output buffer.
+///
+/// [`WdfRequestRetrieveInputWdmMdl`] can be used to get the input buffer's MDL for requests using the buffered or
+/// direct IO buffer access methods. If the request's IO control code is [`IRP_MJ_INTERNAL_DEVICE_CONTROL`],
+/// or the request came from another kernel-mode driver, this can also be used for requests using the neither
+/// buffer access mode.
+///
+/// Accessing the retrieved output buffer MDL is valid until the associated request [is completed].
+///
+/// [`IRP_MJ_INTERNAL_DEVICE_CONTROL`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/irp-mj-internal-device-control
+/// [is completed]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/completing-i-o-requests
+///
+/// ## Return value
+///
+/// Upon successful completion, `Mdl` is updated with the MDL representing the output buffer.
+///
+/// `STATUS_SUCCESS` is returned if the operation was successful, otherwise:
+///
+/// - `STATUS_INVALID_PARAMETER` if an input parameter is invalid
+/// - `STATUS_BUFFER_TOO_SMALL` if the input buffer's length is zero
+/// - `STATUS_INVALID_DEVICE_REQUEST` if the request type is not valid or the request is using the neither
+///    buffer access mode and the request type does not support neither IO
+/// - `STATUS_INTERNAL_ERROR` if the request has already been completed
+/// - `STATUS_INSUFFICIENT_RESOURCES` if there is insufficient memory
+/// - Other `NTSTATUS` values (see [`NTSTATUS` values])
+///
+/// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `..=DISPATCH_LEVEL`
+/// - ([MdlAfterReqCompletedIntIoctl], [MdlAfterReqCompletedIntIoctlA], [MdlAfterReqCompletedIoctl], [MdlAfterReqCompletedIoctlA], [MdlAfterReqCompletedRead], [MdlAfterReqCompletedReadA], [MdlAfterReqCompletedWrite], [MdlAfterReqCompletedWriteA])
+///   The MDL associated with the request must not be accessed after the request is completed.
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+/// - ([InvalidReqAccess], [InvalidReqAccessLocal]) Requests must not be accessed after having been completed or cancelled
+/// - ([InputBufferAPI]) The correct DDI functions for buffer retrieval are used in the [`EvtIoRead`] callback
+///    (i.e. not using the `WdfRequestRetrieveInputXxx` family of methods)
+///
+/// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+/// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+/// [MdlAfterReqCompletedIntIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIntIoctl
+/// [MdlAfterReqCompletedIntIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIntIoctlA
+/// [MdlAfterReqCompletedIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIoctl
+/// [MdlAfterReqCompletedIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIoctlA
+/// [MdlAfterReqCompletedRead]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedRead
+/// [MdlAfterReqCompletedReadA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedReadA
+/// [MdlAfterReqCompletedWrite]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedWrite
+/// [MdlAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedWriteA
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+/// [InvalidReqAccess]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InvalidReqAccess
+/// [InvalidReqAccessLocal]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InvalidReqAccessLocal
+/// [InputBufferAPI]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InputBufferAPI
+/// [`EvtIoRead`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfio/nc-wdfio-evt_wdf_io_queue_io_read
+///
+/// ## See Also
+///
+/// - [Accessing Data Buffers in Framework-based Drivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/accessing-data-buffers-in-wdf-drivers)
+#[must_use]
+pub unsafe fn WdfRequestRetrieveInputWdmMdl(Request: WDFREQUEST, Mdl: &mut PMDL) -> NTSTATUS {
+    dispatch!(WdfRequestRetrieveInputWdmMdl(Request, Mdl))
+}
+
 /// Gets a request's output buffer
 ///
 /// The output buffer of a request contains information that was supplied by the request's originator.
@@ -1750,6 +1821,8 @@ pub unsafe fn WdfRequestRetrieveOutputBuffer(
     ))
 }
 
+// FIXME: WdfRequestRetrieveOutputMemory
+
 /// Gets a memory descriptor list (MDL) representing the request's output buffer
 ///
 /// The output buffer of a request contains information that was supplied by the request's originator.
@@ -1787,8 +1860,8 @@ pub unsafe fn WdfRequestRetrieveOutputBuffer(
 /// In addition to all passed-in pointers pointing to valid memory locations:
 ///
 /// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: <= `DISPATCH_LEVEL`
-/// - ([BufAfterReqCompletedIntIoctl], [BufAfterReqCompletedIntIoctlA], [BufAfterReqCompletedIoctl], [BufAfterReqCompletedIoctlA], [BufAfterReqCompletedRead], [BufAfterReqCompletedReadA], [BufAfterReqCompletedWrite], [BufAfterReqCompletedWriteA])
-///   The IO request buffer associated with the request must not be accessed after the request is completed.
+/// - ([MdlAfterReqCompletedIntIoctl], [MdlAfterReqCompletedIntIoctlA], [MdlAfterReqCompletedIoctl], [MdlAfterReqCompletedIoctlA], [MdlAfterReqCompletedRead], [MdlAfterReqCompletedReadA], [MdlAfterReqCompletedWrite], [MdlAfterReqCompletedWriteA])
+///   The MDL associated with the request must not be accessed after the request is completed.
 /// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
 /// - ([InvalidReqAccess], [InvalidReqAccessLocal]) Requests must not be accessed after having been completed or cancelled
 /// - ([OutputBufferAPI]) The correct DDI functions for buffer retrieval are used in the [`EvtIoWrite`] callback
@@ -1796,14 +1869,14 @@ pub unsafe fn WdfRequestRetrieveOutputBuffer(
 ///
 /// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
 /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
-/// [BufAfterReqCompletedIntIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIntIoctl
-/// [BufAfterReqCompletedIntIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIntIoctlA
-/// [BufAfterReqCompletedIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIoctl
-/// [BufAfterReqCompletedIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedIoctlA
-/// [BufAfterReqCompletedRead]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedRead
-/// [BufAfterReqCompletedReadA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedReadA
-/// [BufAfterReqCompletedWrite]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedWrite
-/// [BufAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-BufAfterReqCompletedWriteA
+/// [MdlAfterReqCompletedIntIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIntIoctl
+/// [MdlAfterReqCompletedIntIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIntIoctlA
+/// [MdlAfterReqCompletedIoctl]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIoctl
+/// [MdlAfterReqCompletedIoctlA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedIoctlA
+/// [MdlAfterReqCompletedRead]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedRead
+/// [MdlAfterReqCompletedReadA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedReadA
+/// [MdlAfterReqCompletedWrite]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedWrite
+/// [MdlAfterReqCompletedWriteA]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-MdlAfterReqCompletedWriteA
 /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
 /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
 /// [InvalidReqAccess]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-InvalidReqAccess
