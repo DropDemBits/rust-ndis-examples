@@ -49,18 +49,14 @@ impl NprotSendNblRsvd {
         unsafe { Self::from_send_nbl(this).request }
     }
 
-    unsafe fn ref_send_nbl(nbl: PNET_BUFFER_LIST) {
-        let this = unsafe { Self::from_send_nbl(nbl) };
-        this.ref_count.fetch_add(1, Ordering::Acquire);
-    }
-
     unsafe fn deref_send_nbl(nbl: PNET_BUFFER_LIST) {
         let ref_count = {
             let this = unsafe { Self::from_send_nbl(nbl) };
             this.ref_count.fetch_sub(1, Ordering::Release)
         };
 
-        if ref_count == 0 {
+        if ref_count == 1 {
+            // this was the only ref, so we can deallocate it
             let this = NET_BUFFER_LIST::context_data_start(nbl).cast::<Self>();
             // drop the open object ref
             unsafe { core::ptr::drop_in_place(this) };
@@ -323,7 +319,8 @@ pub(crate) unsafe extern "C" fn send_complete(
             .pended_send_count
             .fetch_sub(1, Ordering::Relaxed);
 
-        if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
+        if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
+            // only pending send finished, signal the closing event
             assert!(!inner.closing_event.is_null());
             let closing_event = unsafe { &*inner.closing_event };
 

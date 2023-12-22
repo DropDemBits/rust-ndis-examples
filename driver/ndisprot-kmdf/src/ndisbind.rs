@@ -1209,7 +1209,8 @@ pub(crate) fn validate_open_and_do_request(
         let pended_send_count = open_context
             .pended_send_count
             .fetch_sub(1, Ordering::Relaxed);
-        if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
+        if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
+            // only pending send finished, signal the closing event
             assert!(!inner.closing_event.is_null());
             let closing_event = unsafe { &*inner.closing_event };
 
@@ -1645,7 +1646,8 @@ pub(crate) fn query_oid_value(
                 .pended_send_count
                 .fetch_sub(1, Ordering::Relaxed);
 
-            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
+            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
+                // only pending send finished, signal the closing event
                 assert!(!inner.closing_event.is_null());
                 let closing_event = unsafe { &*inner.closing_event };
 
@@ -1747,7 +1749,8 @@ pub(crate) fn set_oid_value(
                 .pended_send_count
                 .fetch_sub(1, Ordering::Relaxed);
 
-            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 0 {
+            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
+                // only pending send finished, signal the closing event
                 assert!(!inner.closing_event.is_null());
                 let closing_event = unsafe { &*inner.closing_event };
 
