@@ -157,7 +157,7 @@ impl<T: DriverCallbacks> Driver<T> {
         registry_path: NtUnicodeStr<'_>,
         config: DriverConfig,
         init_context: impl FnOnce(&mut DriverHandle) -> Result<I, Error>,
-    ) -> Result<(), Error>
+    ) -> Result<Self, Error>
     where
         I: PinInit<T, Error>,
     {
@@ -217,7 +217,14 @@ impl<T: DriverCallbacks> Driver<T> {
         // - It's WDF's responsibility to insert the context area, since we create
         //   the default object attributes with T's context area
         // - The driver object was just created
-        unsafe { object::context_pin_init(&mut handle, init_context) }
+        unsafe { object::context_pin_init(&mut handle, init_context)? };
+
+        // Make a wrapped handle since WDF owns the driver object
+        Ok(Driver {
+            handle: handle.0,
+            kind: HandleKind::Wrapped,
+            _context: PhantomData,
+        })
     }
 
     /// Makes a shared reference to the driver

@@ -398,7 +398,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             let send_nbl_pool = {
                 let nbl_pool = NdisAllocateNetBufferListPool(
-                    globals.ndis_protocol_handle,
+                    globals.ndis_protocol_handle.load(),
                     &mut pool_parameters,
                 );
                 if nbl_pool.is_null() {
@@ -417,7 +417,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             let recv_nbl_pool = {
                 let nbl_pool = NdisAllocateNetBufferListPool(
-                    globals.ndis_protocol_handle,
+                    globals.ndis_protocol_handle.load(),
                     &mut pool_parameters,
                 );
                 if nbl_pool.is_null() {
@@ -468,7 +468,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             let mut status = unsafe {
                 Error::to_err(NdisOpenAdapterEx(
-                    globals.ndis_protocol_handle,
+                    globals.ndis_protocol_handle.load(),
                     protocol_binding_context.cast(),
                     &mut open_parameters,
                     BindContext,
@@ -1034,8 +1034,7 @@ fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
 }
 
 pub(crate) fn unload_protocol(context: Pin<&NdisProt>) {
-    // let proto_handle = core::mem::replace(&mut context.ndis_protocol_handle, core::ptr::null_mut());
-    let proto_handle = context.ndis_protocol_handle;
+    let proto_handle = context.ndis_protocol_handle.swap(core::ptr::null_mut());
 
     if !proto_handle.is_null() {
         unsafe { NdisDeregisterProtocolDriver(proto_handle) };

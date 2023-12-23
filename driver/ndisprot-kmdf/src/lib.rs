@@ -85,12 +85,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     const PROTO_NAME: NtUnicodeStr<'static> = nt_unicode_str!("NDISPROT");
     debug!("DriverEntry");
 
-    // FIXME: Needs to be restructured so that the driver context area is guaranteed initialized
-    // Before `NdisRegisterProtocolDriver` returns, any of the protocol callbacks can be called
-    // including `ProtocolPnPEvent` for a `NetEventBindsComplete`, which depends on the driver
-    // context area being initialized. `NdisRegisterProtocolDriver` does (albeit implicitly)
-    // guarantee that the protocol driver handle is set before any of the callbacks are called.
-    wdf_kmdf::driver::Driver::<NdisProt>::create(
+    let driver = wdf_kmdf::driver::Driver::<NdisProt>::create(
         driver_object,
         registry_path,
         wdf_kmdf::driver::DriverConfig {
@@ -116,60 +111,6 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                 error!("create_control_device failed with status {:#x?}", err.0)
             })?;
 
-            const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 =
-                (core::mem::offset_of!(
-                    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
-                    SendNetBufferListsCompleteHandler
-                ) + core::mem::size_of::<
-                    windows_kernel_sys::SEND_NET_BUFFER_LISTS_COMPLETE_HANDLER,
-                >()) as u16;
-
-            // initialize the protocol characteristic structure
-            let mut proto_char =
-                unsafe { core::mem::zeroed::<NDIS_PROTOCOL_DRIVER_CHARACTERISTICS>() };
-
-            proto_char.Header.Type = NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS as u8;
-            proto_char.Header.Size = NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1;
-            proto_char.Header.Revision = NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1 as u8;
-
-            proto_char.MajorNdisVersion = 6;
-            proto_char.MinorNdisVersion = 0;
-            proto_char.Name = unsafe { *(PROTO_NAME.as_ptr().cast()) };
-
-            proto_char.SetOptionsHandler = None;
-            proto_char.OpenAdapterCompleteHandlerEx = Some(ndisbind::open_adapter_complete);
-            proto_char.CloseAdapterCompleteHandlerEx = Some(ndisbind::close_adapter_complete);
-            proto_char.BindAdapterHandlerEx = Some(ndisbind::bind_adapter);
-            proto_char.UnbindAdapterHandlerEx = Some(ndisbind::unbind_adapter);
-            proto_char.OidRequestCompleteHandler = Some(ndisbind::request_complete);
-            proto_char.StatusHandlerEx = Some(ndisbind::status_handler);
-            proto_char.NetPnPEventHandler = Some(ndisbind::pnp_event_handler);
-            proto_char.UninstallHandler = None;
-
-            proto_char.SendNetBufferListsCompleteHandler = Some(send::send_complete);
-            proto_char.ReceiveNetBufferListsHandler = Some(recv::receive_net_buffer_lists);
-
-            // Register as a protocol driver
-            let mut handle = MaybeUninit::<NDIS_HANDLE>::uninit();
-            Error::to_err(unsafe {
-                windows_kernel_sys::NdisRegisterProtocolDriver(
-                    // Pass in the driver context so that `BindAdapter` has access to the driver globals
-                    driver.as_handle_mut(),
-                    &mut proto_char,
-                    handle.as_mut_ptr(),
-                )
-            })
-            .inspect_err(|err| {
-                warn!(
-                    "Failed to register protocol driver with NDIS (status code {:#x?})",
-                    err.0
-                );
-            })?;
-
-            // Note:
-            // If an error occurs after a successful call to NdisRegisterProtocolDriver, the driver must call the NdisDeregisterProtocolDriver function before DriverEntry returns.
-            let handle = unsafe { handle.assume_init() };
-
             let cancel_id_gen = CancelIdGen::new(unsafe { NdisGeneratePartialCancelId() });
 
             info!(
@@ -180,7 +121,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
             Ok(pinned_init::try_pin_init! {
                 NdisProt {
                     control_device,
-                    ndis_protocol_handle: handle,
+                    ndis_protocol_handle: AtomicCell::new(core::ptr::null_mut()),
                     eth_type: NPROT_ETH_TYPE,
                     cancel_id_gen,
                     open_list <- SpinPinMutex::new(Vec::new()),
@@ -190,6 +131,67 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
         },
     )
     .inspect_err(|err| error!("WdfDriverCreate failed with status {:#x?}", err.0))?;
+
+    // Register as a protocol driver
+    //
+    // We do this seperately from the main driver context area initialization as
+    // unfortunately before `NdisRegisterProtocolDriver` returns, any of the protocol
+    // callbacks can be called including `ProtocolPnPEventHandler`, which accesses
+    // the driver context area. This ends up accessing the context area while it's
+    // being initialized, which we panic on.
+    //
+    // Unfortunately this doesn't happen every single time the driver is loaded, as
+    // it ends up being a race condition. We have to assume that the write to the
+    // protocol driver handle place happens before any of the callbacks since
+    // `ProtocolBindAdapterEx` requires it for `NdisOpenAdapterEx`.
+
+    const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = (core::mem::offset_of!(
+        NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
+        SendNetBufferListsCompleteHandler
+    ) + core::mem::size_of::<
+        windows_kernel_sys::SEND_NET_BUFFER_LISTS_COMPLETE_HANDLER,
+    >()) as u16;
+
+    // initialize the protocol characteristic structure
+    let mut proto_char = unsafe { core::mem::zeroed::<NDIS_PROTOCOL_DRIVER_CHARACTERISTICS>() };
+
+    proto_char.Header.Type = NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS as u8;
+    proto_char.Header.Size = NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1;
+    proto_char.Header.Revision = NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1 as u8;
+
+    proto_char.MajorNdisVersion = 6;
+    proto_char.MinorNdisVersion = 0;
+    proto_char.Name = unsafe { *(PROTO_NAME.as_ptr().cast()) };
+
+    proto_char.SetOptionsHandler = None;
+    proto_char.OpenAdapterCompleteHandlerEx = Some(ndisbind::open_adapter_complete);
+    proto_char.CloseAdapterCompleteHandlerEx = Some(ndisbind::close_adapter_complete);
+    proto_char.BindAdapterHandlerEx = Some(ndisbind::bind_adapter);
+    proto_char.UnbindAdapterHandlerEx = Some(ndisbind::unbind_adapter);
+    proto_char.OidRequestCompleteHandler = Some(ndisbind::request_complete);
+    proto_char.StatusHandlerEx = Some(ndisbind::status_handler);
+    proto_char.NetPnPEventHandler = Some(ndisbind::pnp_event_handler);
+    proto_char.UninstallHandler = None;
+
+    proto_char.SendNetBufferListsCompleteHandler = Some(send::send_complete);
+    proto_char.ReceiveNetBufferListsHandler = Some(recv::receive_net_buffer_lists);
+
+    // Register as a protocol driver
+    //
+    // note: this stays live as long as the driver context space is live, which is
+    // the case so long as we're in `driver_entry`
+    let handle_place = driver.get_context().ndis_protocol_handle.as_ptr();
+    Error::to_err(unsafe {
+        windows_kernel_sys::NdisRegisterProtocolDriver(
+            // Pass in the driver context so that `BindAdapter` has access to the driver globals
+            driver.as_handle().cast(),
+            &mut proto_char,
+            handle_place,
+        )
+    })
+    .inspect_err(|err| {
+        warn!("Failed to register protocol driver with NDIS (status code {err:#x?})",);
+    })?;
 
     Ok(())
 }
@@ -326,7 +328,7 @@ struct NdisProt {
     //     - Opening the adapter (`NdisOpenAdapterEx`)
     // - (Dropping) ProtocolUnloadHandler (unused)
     // - (Dropping) EvtUnload
-    ndis_protocol_handle: NDIS_HANDLE,
+    ndis_protocol_handle: AtomicCell<NDIS_HANDLE>,
     /// frame type of interest
     // Used in
     // - RecieveNbl
