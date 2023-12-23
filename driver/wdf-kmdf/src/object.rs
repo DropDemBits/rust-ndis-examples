@@ -711,14 +711,8 @@ where
     Handle: AsObjectHandle,
     I: PinInit<T, Err>,
 {
-    let raw_handle = handle.as_handle_mut();
-
-    // SAFETY: `raw_handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
-    let context_space = unsafe {
-        // filler line as a work-around for https://github.com/rust-lang/rust-clippy/issues/10832
-        raw::WdfObjectGetTypedContextWorker(raw_handle, T::CONTEXT_INFO)
-    };
-    let context_space = context_space.cast::<T>();
+    let context_space =
+        get_context_space_ptr::<T>(handle).expect("object must have the context space");
 
     // Get closure to initialize context with
     //
@@ -737,16 +731,23 @@ where
     let pin_init = init_context(handle)?;
 
     // SAFETY:
-    // - The following ensures that the context space is valid pinned uninitialized memory:
-    //   - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
-    //     (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
-    //   - WDF does not move the allocation for the original object context
-    //   - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
+    // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
+    //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
+    // - `IntoContextSpace` requires alignemt to MEMORY_ALLOCATION_ALIGNMENT or smaller
+    // - `data` is located at the start of the context space (guaranteed because it's repr(C),
+    //   guaranteeing that it's in-bounds and aligned
+    // - `addr_of_mut!` doesn't load from `context_space` at all, so it doesn't access uninit memory
+    let context_data = unsafe { core::ptr::addr_of_mut!((*context_space).data).cast::<T>() };
+
+    // SAFETY:
+    // The following ensures that the context space is valid pinned uninitialized memory:
+    // - `context_data` is aligned & in-bounds as per above
+    // - WDF does not move the allocation for the original object context
     // - We directly `?` the produced error
-    unsafe { pin_init.__pinned_init(context_space)? }
+    unsafe { pin_init.__pinned_init(context_data)? }
 
     // SAFETY: By this point we've successfully initialized the context space
-    unsafe { mark_context_space_init::<T>(context_space.cast()) };
+    unsafe { mark_context_space_init::<T>(context_space) };
 
     Ok(())
 }
