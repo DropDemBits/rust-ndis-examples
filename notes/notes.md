@@ -173,3 +173,4 @@ Interestingly on x64 there's a free bit that can be used due to allocations bein
 ## Debugging Tips
 
 - Pool leakage? Look at `!wdfkd.wdfpoolusage` to find more details on what was leaked.
+- [NDIS Debug Tracing](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/enabling-ndis-debug-tracing)
