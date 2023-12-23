@@ -1,6 +1,9 @@
 //! Raw bindings to KMDF functions
 #![allow(non_snake_case)] // Preserving the names of the original WDF functions
 
+// FIXME: Use "See Also" section header more
+// FIXME: Use new range format for IRQL description
+
 use wdf_kmdf_sys::{
     PCWDF_OBJECT_CONTEXT_TYPE_INFO, PFN_WDF_IO_QUEUE_STATE, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
     PWDF_FILEOBJECT_CONFIG, PWDF_IO_QUEUE_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFCONTEXT, WDFDEVICE,
