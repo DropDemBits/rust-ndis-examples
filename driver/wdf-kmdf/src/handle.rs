@@ -190,6 +190,11 @@ where
 {
 }
 
+// SAFETY: Equivalent to passing a `usize` around, and all WDF functions are thread-safe
+unsafe impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> Send for RawHandle<H, T, Mode> {}
+// SAFETY: Equivalent to passing a `usize` around, and all WDF functions are thread-safe
+unsafe impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> Sync for RawHandle<H, T, Mode> {}
+
 /// A handle with an extra context space attached to it.
 pub struct WithContext<H: HandleWrapper, T: IntoContextSpace> {
     handle: H,
@@ -391,7 +396,6 @@ where
 // accidentally cause aliasing accesses on drop.
 #[derive(PartialEq, Eq)]
 pub struct Ref<H: HandleWrapper>(ManuallyDrop<H>);
-
 
 impl<H: HandleWrapper> Ref<H> {
     /// Transforms an owning handle into a parented ref handle
