@@ -69,36 +69,6 @@ where
     }
 }
 
-/// Opaque driver handle used during the initialization of the driver's context space
-pub struct DriverHandle(WDFDRIVER);
-
-impl DriverHandle {
-    /// Wraps the handle in a raw driver object
-    ///
-    /// ## Safety
-    ///
-    /// Respect aliasing rules, since this can be used to
-    /// generate aliasing mutable references to the context space
-    unsafe fn wrap(handle: WDFDRIVER) -> Self {
-        Self(handle)
-    }
-
-    /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
-    pub fn raw_handle(&mut self) -> WDFDRIVER {
-        self.0
-    }
-}
-
-impl object::AsObjectHandle for DriverHandle {
-    fn as_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
-        self.0.cast()
-    }
-
-    fn as_handle_mut(&mut self) -> wdf_kmdf_sys::WDFOBJECT {
-        self.0.cast()
-    }
-}
-
 #[derive(Default, Clone, Copy)]
 pub struct DriverConfig {
     /// If the driver is a PnP driver, and thus requires an `EvtDriverDeviceAdd` callback.
@@ -156,7 +126,7 @@ impl<T: DriverCallbacks> Driver<T> {
         driver_object: DriverObject,
         registry_path: NtUnicodeStr<'_>,
         config: DriverConfig,
-        init_context: impl FnOnce(&mut DriverHandle) -> Result<I, Error>,
+        init_context: impl FnOnce(&mut Driver<T>) -> Result<I, Error>,
     ) -> Result<Self, Error>
     where
         I: PinInit<T, Error>,
@@ -197,7 +167,7 @@ impl<T: DriverCallbacks> Driver<T> {
             let driver_object = driver_object.into_raw();
 
             // SAFETY: Replaced with the real driver pointer next
-            let mut handle = unsafe { DriverHandle::wrap(core::ptr::null_mut()) };
+            let mut handle = unsafe { Driver::<T>::wrap(core::ptr::null_mut()) };
 
             // SAFETY: Owned `DriverObject` means that it only gets called once
             unsafe {
@@ -206,7 +176,7 @@ impl<T: DriverCallbacks> Driver<T> {
                     registry_path.as_ptr().cast(),
                     Some(&mut object_attrs),
                     &mut driver_config,
-                    Some(&mut handle.0),
+                    Some(&mut handle.handle),
                 ))?;
             }
 
@@ -219,12 +189,8 @@ impl<T: DriverCallbacks> Driver<T> {
         // - The driver object was just created
         unsafe { object::context_pin_init(&mut handle, init_context)? };
 
-        // Make a wrapped handle since WDF owns the driver object
-        Ok(Driver {
-            handle: handle.0,
-            kind: HandleKind::Wrapped,
-            _context: PhantomData,
-        })
+        // Return the wrapped handle since WDF owns the driver object
+        Ok(handle)
     }
 
     /// Makes a shared reference to the driver
@@ -255,12 +221,9 @@ impl<T: DriverCallbacks> Driver<T> {
         // we only use an immutable handle.
         // SAFETY: Only used behind an immutable reference, so we prevent
         // concurrent immutable mutations
-        let handle = unsafe { DriverHandle::wrap(driver) };
+        let handle = unsafe { Driver::<T>::wrap(driver) };
 
-        let context_space = match object::get_context::<T>(&handle) {
-            Ok(it) => it,
-            Err(err) => return Error::from(err).0.to_u32(),
-        };
+        let context_space = handle.get_context();
 
         match T::device_add(context_space.deref(), device_init) {
             Ok(()) => STATUS::SUCCESS.to_u32(),
