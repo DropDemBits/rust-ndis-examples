@@ -22,8 +22,10 @@ use crossbeam_utils::atomic::AtomicCell;
 use nt_list::list::NtListHead;
 use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
+    device::ControlDevice,
     driver::Driver,
     file_object::FileObject,
+    handle::{HandleWrapper, Ref},
     object::{AsObjectHandle, GeneralObject},
     sync::{SpinMutex, SpinPinMutex},
 };
@@ -197,9 +199,9 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
 }
 
 fn create_control_device(
-    _driver: &mut wdf_kmdf::driver::DriverHandle,
+    _driver: &wdf_kmdf::driver::Driver<NdisProt>,
     device_init: wdf_kmdf_sys::PWDFDEVICE_INIT,
-) -> Result<WDFDEVICE, Error> {
+) -> Result<ControlDevice<()>, Error> {
     struct DeviceInit(wdf_kmdf_sys::PWDFDEVICE_INIT);
 
     impl Drop for DeviceInit {
@@ -260,7 +262,7 @@ fn create_control_device(
         )
     };
 
-    let mut device_object_attribs = wdf_kmdf::object::default_object_attributes::<ControlDevice>();
+    let mut device_object_attribs = wdf_kmdf::object::default_object_attributes::<()>();
 
     let mut control_device = core::ptr::null_mut();
     Error::to_err(unsafe {
@@ -303,7 +305,9 @@ fn create_control_device(
     unsafe { wdf_kmdf::raw::WdfControlFinishInitializing(control_device) };
 
     // Create a device object where an application to use NDIS devices
-    return Ok(control_device);
+    //
+    // SAFETY: Is the correct type of handle
+    return Ok(unsafe { ControlDevice::wrap_raw(control_device.cast()) });
 }
 
 const NT_DEVICE_NAME: NtUnicodeStr<'static> = nt_unicode_str!(r"\Device\Ndisprot");
@@ -319,7 +323,7 @@ const NPROTO_PACKET_FILTER: u32 =
 #[pin_data(PinnedDrop)]
 struct NdisProt {
     // Only used by BindAdapter to create the WDFIOQUEUEs for the adapter
-    control_device: WDFDEVICE,
+    control_device: ControlDevice<()>,
     // Used in
     // - ndisbind::BindAdapter
     //   - ndisbind::CreateBinding
@@ -356,7 +360,7 @@ struct NdisProt {
     //     - Have access to FileObject.ContextSpace
     // Is an `Option<GeneralObject<OpenContext>>` so that we can pre-allocate space to put the open context in
     #[pin]
-    open_list: SpinPinMutex<Vec<Option<GeneralObject<OpenContext>>>>,
+    open_list: SpinPinMutex<Vec<Option<Ref<GeneralObject<OpenContext>>>>>,
     /// Notifiying when binding is complete (used in ioctl)
     // Used in
     // - ndisbind::PnPEventHandler
@@ -406,26 +410,22 @@ impl CancelIdGen {
 }
 
 struct FileObjectContext {
-    open_context: SpinMutex<Option<GeneralObject<OpenContext>>>,
+    open_context: SpinMutex<Option<Ref<GeneralObject<OpenContext>>>>,
 }
 
 wdf_kmdf::impl_context_space!(FileObjectContext);
 
 impl FileObjectContext {
-    fn open_context(&self) -> Option<GeneralObject<OpenContext>> {
+    fn open_context(&self) -> Option<Ref<GeneralObject<OpenContext>>> {
         let guard = self.open_context.lock();
         guard.as_ref().map(|it| it.clone_ref())
     }
 }
 
-struct ControlDevice;
-
-wdf_kmdf::impl_context_space!(ControlDevice);
-
 /// See <https://github.com/microsoft/Windows-driver-samples/blob/d9acf794c92ba2fb0525f6c794ef394709035ac3/network/ndis/ndisprot_kmdf/60/ndisprot.h#L54-L90>
 #[pin_data(PinnedDrop)]
 struct OpenContext {
-    driver: Driver<NdisProt>,
+    driver: Ref<Driver<NdisProt>>,
 
     #[pin]
     inner: SpinPinMutex<OpenContextInner>,
@@ -679,7 +679,7 @@ struct OpenContextInner {
     // - OpenDevice (setting up assoc, breaking assoc in error case of setting filter)
     //
     // Essentially just used as debugging for figuring out the assoc'd file object
-    file_object: Option<FileObject<FileObjectContext>>,
+    file_object: Option<Ref<FileObject<FileObjectContext>>>,
 }
 
 #[pin_data]
@@ -1406,8 +1406,8 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
 /// If so, make an association between the binding and this file object.
 fn open_device(
     device_name: &[u8],
-    file_object: FileObject<FileObjectContext>,
-) -> Result<GeneralObject<OpenContext>, Error> {
+    file_object: Ref<FileObject<FileObjectContext>>,
+) -> Result<Ref<GeneralObject<OpenContext>>, Error> {
     let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
         // Driver not initialized yet
         return Err(STATUS::UNSUCCESSFUL.into());

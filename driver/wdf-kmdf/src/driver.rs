@@ -1,4 +1,4 @@
-use core::{marker::PhantomData, ops::Deref, pin::Pin};
+use core::{ops::Deref, pin::Pin};
 
 use pinned_init::PinInit;
 use vtable::vtable;
@@ -7,56 +7,20 @@ use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
 use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
 use crate::{
-    object::{self, default_object_attributes, HandleKind, IntoContextSpace},
+    handle::{FrameworkOwned, HandleWrapper, RawHandle, Ref, Wrapped},
+    object::{self, default_object_attributes, IntoContextSpace},
     raw,
 };
 
-pub struct Driver<T> {
-    handle: WDFDRIVER,
-    kind: HandleKind,
-    _context: PhantomData<fn() -> T>,
+pub struct Driver<T: IntoContextSpace> {
+    handle: RawHandle<WDFDRIVER, T, FrameworkOwned>,
 }
 
-impl<T> core::fmt::Debug for Driver<T> {
+impl<T: IntoContextSpace> core::fmt::Debug for Driver<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Driver")
             .field("handle", &self.handle)
-            .field("kind", &self.kind)
             .finish()
-    }
-}
-
-impl<T> Driver<T>
-where
-    T: DriverCallbacks,
-{
-    /// Wraps the handle in a raw driver object
-    ///
-    /// ## Safety
-    ///
-    /// Respect aliasing rules, since this can be used to
-    /// generate aliasing mutable references to the context space
-    pub unsafe fn wrap(handle: WDFDRIVER) -> Self {
-        Self {
-            handle,
-            kind: HandleKind::Wrapped,
-            _context: PhantomData,
-        }
-    }
-
-    /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
-    pub fn raw_handle(&mut self) -> WDFDRIVER {
-        self.handle
-    }
-}
-
-impl<T> object::AsObjectHandle for Driver<T> {
-    fn as_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
-        self.handle.cast()
-    }
-
-    fn as_handle_mut(&mut self) -> wdf_kmdf_sys::WDFOBJECT {
-        self.handle.cast()
     }
 }
 
@@ -64,6 +28,22 @@ impl<T> Driver<T>
 where
     T: IntoContextSpace + DriverCallbacks,
 {
+    /// Wraps the handle in a raw driver object
+    ///
+    /// ## Safety
+    ///
+    /// Respect aliasing rules, since this can be used to
+    /// generate aliasing mutable references to the context space
+    pub unsafe fn wrap(handle: WDFDRIVER) -> Wrapped<Self> {
+        // SAFETY: uhhhhh
+        unsafe { Wrapped::wrap_raw(handle.cast()) }
+    }
+
+    /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
+    pub fn raw_handle(&self) -> WDFDRIVER {
+        self.handle.as_handle()
+    }
+
     pub fn get_context(&self) -> Pin<&T> {
         crate::object::get_context(self).expect("context space must be initialized")
     }
@@ -110,7 +90,10 @@ pub trait DriverCallbacks: IntoContextSpace {
     fn unload(self: Pin<&Self>) {}
 }
 
-impl<T: DriverCallbacks> Driver<T> {
+impl<T> Driver<T>
+where
+    T: IntoContextSpace + DriverCallbacks,
+{
     /// Creates a new WDF Driver Object
     ///
     /// ## IRQL: Passive
@@ -126,7 +109,7 @@ impl<T: DriverCallbacks> Driver<T> {
         driver_object: DriverObject,
         registry_path: NtUnicodeStr<'_>,
         config: DriverConfig,
-        init_context: impl FnOnce(&mut Driver<T>) -> Result<I, Error>,
+        init_context: impl FnOnce(&Self) -> Result<I, Error>,
     ) -> Result<Self, Error>
     where
         I: PinInit<T, Error>,
@@ -166,8 +149,7 @@ impl<T: DriverCallbacks> Driver<T> {
         let mut handle = {
             let driver_object = driver_object.into_raw();
 
-            // SAFETY: Replaced with the real driver pointer next
-            let mut handle = unsafe { Driver::<T>::wrap(core::ptr::null_mut()) };
+            let mut handle = core::ptr::null_mut();
 
             // SAFETY: Owned `DriverObject` means that it only gets called once
             unsafe {
@@ -176,11 +158,13 @@ impl<T: DriverCallbacks> Driver<T> {
                     registry_path.as_ptr().cast(),
                     Some(&mut object_attrs),
                     &mut driver_config,
-                    Some(&mut handle.handle),
+                    Some(&mut handle),
                 ))?;
             }
 
-            handle
+            // SAFETY: We just created this handle and are immediately wrapping it
+            let handle = unsafe { RawHandle::create(handle) };
+            Self { handle }
         };
 
         // SAFETY:
@@ -195,22 +179,9 @@ impl<T: DriverCallbacks> Driver<T> {
 
     /// Makes a shared reference to the driver
     ///
-    /// ## IRQL: <= Dispatch
-    pub fn clone_ref(&self) -> Driver<T> {
-        // Safety: Caller ensures that we're at the right IRQL
-        unsafe {
-            raw::WdfObjectReferenceActual(
-                self.handle.cast(),
-                Some(object::REF_TAG as *mut _),
-                line!() as i32,
-                Some(cstr!(file!()).as_ptr()),
-            )
-        }
-
-        Driver {
-            kind: HandleKind::Ref,
-            ..*self
-        }
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn clone_ref(&self) -> Ref<Self> {
+        Ref::clone_from_handle(self)
     }
 
     unsafe extern "C" fn __dispatch_driver_device_add(
@@ -264,7 +235,7 @@ impl<T: DriverCallbacks> Driver<T> {
         // Thankfully, by adding an initial refcount bump when creating unparented
         // objects, they stay alive until it's time to delete them.
         // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space
-        let status = unsafe { object::drop_context_space::<T>(&handle, |_| ()) };
+        let status = unsafe { object::drop_context_space::<T, _>(&handle, |_| ()) };
 
         if let Err(err) = status {
             // No (valid) context space to drop, nothing to do
@@ -273,21 +244,23 @@ impl<T: DriverCallbacks> Driver<T> {
     }
 }
 
-impl<T> Drop for Driver<T> {
-    fn drop(&mut self) {
-        // FIXME: Assert that this is at <= DISPATCH_LEVEL
+impl<T: IntoContextSpace> HandleWrapper for Driver<T> {
+    type Handle = WDFDRIVER;
 
-        // Only need to decrement ref counts, WDF takes care of deleting the driver object
-        if let HandleKind::Ref = self.kind {
-            // Safety: assertion that we're at the correct IRQL
-            unsafe {
-                raw::WdfObjectDereferenceActual(
-                    self.handle.cast(),
-                    Some(object::REF_TAG as *mut _),
-                    line!() as i32,
-                    Some(cstr!(file!()).as_ptr()),
-                )
-            }
+    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+        // SAFETY: Caller ensures that the handle is valid
+        Self {
+            handle: unsafe { RawHandle::wrap_raw(raw) },
         }
+    }
+
+    fn as_object_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
+        self.handle.as_object_handle()
+    }
+}
+
+impl<T: IntoContextSpace> AsRef<Driver<T>> for Driver<T> {
+    fn as_ref(&self) -> &Driver<T> {
+        self
     }
 }

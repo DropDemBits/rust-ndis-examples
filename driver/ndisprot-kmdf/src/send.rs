@@ -1,6 +1,12 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use wdf_kmdf::{file_object::FileObject, object::GeneralObject, raw};
+use crossbeam_utils::atomic::AtomicCell;
+use wdf_kmdf::{
+    handle::{HandleWrapper, Ref, WithContext},
+    object::GeneralObject,
+    raw,
+    request::FileRequest,
+};
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{
@@ -17,21 +23,20 @@ use crate::{
 /// which generated the send.
 ///
 pub(crate) struct NprotSendNblRsvd {
-    request: WDFREQUEST,
+    request: WithContext<FileRequest<FileObjectContext>, RequestContext>,
     /// Used to determine when to free the packet back to its pool.
     /// It is used to synchronize between a thread completing a send and a thread attempting
     /// to cancel a send.
     ref_count: AtomicU32,
     /// Which open object this is bound to
-    // FIXME: Like a `Ref<...>` in `NprotRecvNblRsvd`
-    open_object: GeneralObject<OpenContext>,
+    open_object: Ref<GeneralObject<OpenContext>>,
 }
 
 impl NprotSendNblRsvd {
     unsafe fn init_send_nbl(
         nbl: PNET_BUFFER_LIST,
-        request: WDFREQUEST,
-        open_object: GeneralObject<OpenContext>,
+        request: WithContext<FileRequest<FileObjectContext>, RequestContext>,
+        open_object: Ref<GeneralObject<OpenContext>>,
     ) {
         let this = NET_BUFFER_LIST::context_data_start(nbl).cast::<Self>();
         this.write(Self {
@@ -45,8 +50,10 @@ impl NprotSendNblRsvd {
         unsafe { &*NET_BUFFER_LIST::context_data_start(nbl).cast::<Self>() }
     }
 
-    unsafe fn request(this: PNET_BUFFER_LIST) -> WDFREQUEST {
-        unsafe { Self::from_send_nbl(this).request }
+    unsafe fn request<'a>(
+        this: PNET_BUFFER_LIST,
+    ) -> &'a WithContext<FileRequest<FileObjectContext>, RequestContext> {
+        unsafe { &Self::from_send_nbl(this).request }
     }
 
     unsafe fn deref_send_nbl(nbl: PNET_BUFFER_LIST) {
@@ -66,44 +73,55 @@ impl NprotSendNblRsvd {
 }
 
 struct RequestContext {
-    nbl: PNET_BUFFER_LIST,
+    //nbl: AtomicCell<PNET_BUFFER_LIST>,
     length: ULONG,
 }
 
 wdf_kmdf::impl_context_space!(RequestContext);
 
 pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
-    Queue: WDFQUEUE,         // in
-    mut Request: WDFREQUEST, // in
-    Length: usize,           // in
+    Queue: WDFQUEUE,     // in
+    Request: WDFREQUEST, // in
+    Length: usize,       // in
 ) {
-    let file_object = unsafe { raw::WdfRequestGetFileObject(Request) };
-    let file_object = FileObject::<FileObjectContext>::wrap(file_object);
+    // FIXME: Would be nice if we didn't have to wrap the file request in a new context
+    // We borrow this handle from the framework
+    let Request = unsafe { FileRequest::<FileObjectContext>::wrap_raw(Request.cast()) };
+
+    let file_object = Request.file_object();
 
     let open_object = file_object.get_context().open_context();
     let mut nt_status;
 
+    let Request = {
+        let Ok(Length) = ULONG::try_from(Length) else {
+            unsafe {
+                raw::WdfRequestComplete(Request.raw_handle(), STATUS::INVALID_BUFFER_SIZE.into())
+            }
+            return;
+        };
+
+        match WithContext::<_, RequestContext>::create(Request, |_| {
+            Ok(pinned_init::init! {
+                RequestContext {
+                    //nbl: AtomicCell::new(core::ptr::null_mut()),
+                    length: Length,
+                }
+            })
+        }) {
+            Ok(context) => context,
+            Err((err, request)) => {
+                unsafe {
+                    raw::WdfRequestComplete(request.raw_handle(), STATUS::INVALID_HANDLE.to_u32())
+                }
+                return;
+            }
+        }
+    };
+
     'out: {
         // Create a context to track the length of transfer and NDIS nbl associated with this request
-        let mut attributes = wdf_kmdf::object::default_object_attributes::<RequestContext>();
-        let mut req_context = core::ptr::null_mut();
-
-        nt_status = unsafe {
-            Error::to_err(raw::WdfObjectAllocateContext(
-                Request.cast(),
-                &mut attributes,
-                &mut req_context,
-            ))
-        };
-        if let Err(err) = nt_status {
-            nt_status = Err(STATUS::INVALID_HANDLE.into());
-            break 'out;
-        }
-
-        let Ok(Length) = ULONG::try_from(Length) else {
-            nt_status = Err(STATUS::INVALID_BUFFER_SIZE.into());
-            break 'out;
-        };
+        let attributes = wdf_kmdf::object::default_object_attributes::<RequestContext>();
 
         let Some(open_object) = open_object else {
             log::warn!("write: FileObject {file_object:x?} not yet associated with a device");
@@ -112,7 +130,12 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
         };
 
         let mut mdl = core::ptr::null_mut();
-        nt_status = unsafe { Error::to_err(raw::WdfRequestRetrieveInputWdmMdl(Request, &mut mdl)) };
+        nt_status = unsafe {
+            Error::to_err(raw::WdfRequestRetrieveInputWdmMdl(
+                Request.raw_handle(),
+                &mut mdl,
+            ))
+        };
         if let Err(err) = nt_status {
             log::error!("write: WdfRequestRetrieveInputWdmMdl failed {err:x?}");
             break 'out;
@@ -157,7 +180,8 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
             .cast::<MACAddr>()
             .read_unaligned();
 
-        if unsafe { raw::WdfRequestGetRequestorMode(Request) } == MODE::UserMode.0 as i8
+        if unsafe { raw::WdfRequestGetRequestorMode(Request.raw_handle()) }
+            == MODE::UserMode.0 as i8
             && src_addr != open_context.current_address
         {
             log::warn!("write: failing with invalid source address");
@@ -203,11 +227,16 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
 
         let send_open_object = open_object.clone_ref();
 
+        // Clone the request so that we can complete it in the event of an error
+        let err_request = Request.clone_ref();
+
         // Initialize the send nbl context, setting the initial ref count to 1
         // Note that currently this sample code does not implement the cancellation
         // logic. An actual driver would likely use `WdfRequestMarkCancelableEx` to
         // do this logic.
-        unsafe { NprotSendNblRsvd::init_send_nbl(nbl, Request, send_open_object); }
+        unsafe {
+            NprotSendNblRsvd::init_send_nbl(nbl, Request, send_open_object);
+        }
 
         // We create a cancel id on each send NBL (which gets associated with a
         // write request) and save the NBL pointer in the request context. If the
@@ -219,16 +248,6 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
         // it.
         let cancel_id = open_context.driver.get_context().cancel_id_gen.next();
         NET_BUFFER_LIST::set_cancel_id(nbl, cancel_id);
-
-        // note: is an irrefutable pattern
-        let _ = wdf_kmdf::object::context_pin_init::<RequestContext, _, _, _>(&mut Request, |_| {
-            Ok(pinned_init::init! {
-                RequestContext {
-                    nbl,
-                    length: Length,
-                }
-            })
-        });
 
         drop(inner);
 
@@ -246,11 +265,19 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
                 send_flags,
             );
         }
+
+        if let Err(err) = nt_status {
+            if err.0 != STATUS::PENDING {
+                unsafe { raw::WdfRequestComplete(err_request.raw_handle(), err.0.to_u32()) }
+            }
+        }
+
+        return;
     }
 
     if let Err(err) = nt_status {
         if err.0 != STATUS::PENDING {
-            unsafe { raw::WdfRequestComplete(Request, err.0.to_u32()) }
+            unsafe { raw::WdfRequestComplete(Request.raw_handle(), err.0.to_u32()) }
         }
     }
 }
@@ -284,8 +311,7 @@ pub(crate) unsafe extern "C" fn send_complete(
                 break;
             };
             let request = unsafe { NprotSendNblRsvd::request(nbl) };
-            let req_context = wdf_kmdf::object::get_context::<RequestContext>(&request)
-                .expect("context space should be initialized");
+            let req_context = request.get_context();
             let completion_status = unsafe { NET_BUFFER_LIST::status(nbl) };
             let length = req_context.length;
 
@@ -298,7 +324,7 @@ pub(crate) unsafe extern "C" fn send_complete(
             if completion_status == STATUS::SUCCESS.to_u32() {
                 unsafe {
                     raw::WdfRequestCompleteWithInformation(
-                        request,
+                        request.raw_handle(),
                         STATUS::SUCCESS.to_u32(),
                         length.into(),
                     )
@@ -306,7 +332,7 @@ pub(crate) unsafe extern "C" fn send_complete(
             } else {
                 unsafe {
                     raw::WdfRequestCompleteWithInformation(
-                        request,
+                        request.raw_handle(),
                         STATUS::UNSUCCESSFUL.to_u32(),
                         0,
                     )

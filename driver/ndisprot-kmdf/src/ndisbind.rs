@@ -14,7 +14,7 @@ use nt_list::{
 };
 use pinned_init::{pin_data, InPlaceInit, PinInit};
 use scopeguard::ScopeGuard;
-use wdf_kmdf::{driver::Driver, object::GeneralObject, sync::SpinPinMutex};
+use wdf_kmdf::{driver::Driver, handle::Ref, object::GeneralObject, sync::SpinPinMutex};
 use wdf_kmdf_sys::WDF_IO_QUEUE_CONFIG;
 use windows_kernel_rs::{
     log,
@@ -87,7 +87,7 @@ const NPROT_ALLOC_TAG: u32 = u32::from_be_bytes(*b"Nuio");
 #[pin_data]
 pub(crate) struct ProtocolBindingContext {
     /// The actual open context
-    pub(crate) open_context: GeneralObject<OpenContext>,
+    pub(crate) open_context: Ref<GeneralObject<OpenContext>>,
 
     // Initialization context:
     // Note that we have exclusive access to this section
@@ -212,7 +212,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     // Note: if we want to async-ify this, we need to somehow break the dependency loop between OpenContext and ProtocolBindingContext
     // orrr we could just decouple open context & EvtIoDeviceControl
     let status = wdf_kmdf::object::GeneralObject::<OpenContext>::with_parent(
-        &wdf_kmdf::object::RawObjectHandle(globals.control_device.cast()),
+        &globals.control_device,
         |open_context| {
             // capture rules moment, need to borrow driver so as to not accidentally move it
             let driver = &driver;
@@ -248,7 +248,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                 );
                 let status = Error::to_err(unsafe {
                     wdf_kmdf::raw::WdfIoQueueCreate(
-                        globals.control_device,
+                        globals.control_device.raw_handle(),
                         &mut queue_config,
                         None,
                         Some(&mut io_queue),
@@ -307,7 +307,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                 );
                 let status = Error::to_err(unsafe {
                     wdf_kmdf::raw::WdfIoQueueCreate(
-                        globals.control_device,
+                        globals.control_device.raw_handle(),
                         &mut queue_config,
                         None,
                         Some(&mut io_queue),
@@ -811,7 +811,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         .get_context()
         .open_list
         .lock()
-        .retain(|e| e.as_ref() != Some(&protocol_binding_context.open_context));
+        .retain(|e| e.as_deref() != Some(&protocol_binding_context.open_context));
 }
 
 pub(crate) unsafe extern "C" fn pnp_event_handler(
@@ -979,7 +979,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
     }
 
     log::debug!(
-        "pnp_event_handler: Open {:#x?}, Event Ptr {:#x?}, Event {:x?}, Status {:x}",
+        "pnp_event_handler: Open {:x?}, Event Ptr {:#x?}, Event {:x?}, Status {:x}",
         protocol_binding_context,
         NetPnPEventNotification,
         event_notif.NetPnPEvent.NetEvent.0,
@@ -1558,7 +1558,7 @@ pub(crate) fn query_binding(
 pub(crate) fn ndisprot_lookup_device(
     globals: Pin<&NdisProt>,
     adapter_name: NtUnicodeStr<'_>,
-) -> Option<GeneralObject<OpenContext>> {
+) -> Option<Ref<GeneralObject<OpenContext>>> {
     globals
         .open_list
         .lock()

@@ -19,8 +19,10 @@ macro_rules! cstr {
 
 pub mod raw;
 
+pub mod device;
 pub mod driver;
 pub mod file_object;
+pub mod handle;
 pub mod object;
 pub mod request;
 pub mod sync;

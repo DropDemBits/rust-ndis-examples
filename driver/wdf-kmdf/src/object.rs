@@ -1,5 +1,4 @@
 use core::{
-    marker::PhantomData,
     mem::MaybeUninit,
     pin::Pin,
     sync::atomic::{AtomicU8, Ordering},
@@ -12,7 +11,10 @@ use wdf_kmdf_sys::{
 };
 use windows_kernel_sys::{result::STATUS, Error};
 
-use crate::raw;
+use crate::{
+    handle::{DriverOwned, HandleWrapper, RawHandle, Ref, Wrapped},
+    raw,
+};
 
 #[doc(hidden)]
 pub mod __macro_internals {
@@ -70,8 +72,12 @@ pub unsafe trait IntoContextSpace {
     const CONTEXT_INFO: &'static ContextInfo;
 }
 
+// Impl for `()` so that it's easy to create empty context spaces
+impl_context_space!(());
+
 pub(crate) const OWN_TAG: usize = u32::from_le_bytes(*b"Own ") as usize;
 pub(crate) const REF_TAG: usize = u32::from_le_bytes(*b"Ref ") as usize;
+pub(crate) const FRAMEWORK_TAG: usize = u32::from_le_bytes(*b"Fwrk") as usize;
 
 /// The maximum IRQL the object's event callback functions will be called at
 ///
@@ -192,34 +198,8 @@ impl AsObjectHandle for RawObjectHandle {
     }
 }
 
-// Modes:
-// - Wrapped (nothing to do in drop)
-// - Owned (need drop for delete)
-// - Parented (need drop for delete so that it can be deleted sooner)
-// - Ref (need to deref)
-
-#[derive(Debug)]
-pub(crate) enum HandleKind {
-    Wrapped,
-    Owned,
-    Parented,
-    Ref,
-}
-
-pub struct GeneralObject<T> {
-    // FIXME: Make pointer-sized
-    handle: WDFOBJECT,
-    kind: HandleKind,
-    _context: PhantomData<fn() -> T>,
-}
-
-impl<T> core::fmt::Debug for GeneralObject<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("GeneralObject")
-            .field("handle", &self.handle)
-            .field("kind", &self.kind)
-            .finish()
-    }
+pub struct GeneralObject<T: IntoContextSpace> {
+    handle: RawHandle<WDFOBJECT, T, DriverOwned>,
 }
 
 impl<T> GeneralObject<T>
@@ -236,13 +216,14 @@ where
     ///
     /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
     /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
-    pub fn create<I>(
-        init_context: impl FnOnce(&mut Self) -> Result<I, Error>,
-    ) -> Result<Self, Error>
+    pub fn create<I>(init_context: impl FnOnce(&Self) -> Result<I, Error>) -> Result<Self, Error>
     where
         I: PinInit<T, Error>,
     {
-        Self::_create(default_object_attributes::<T>(), init_context)
+        Self::_create(default_object_attributes::<T>(), init_context, |handle| {
+            let handle = unsafe { RawHandle::create(handle) };
+            Self { handle }
+        })
     }
 
     /// Creates a new WDF General Object attached to an object
@@ -256,73 +237,50 @@ where
     /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
     /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
     pub fn with_parent<I>(
-        parent: &impl AsObjectHandle,
-        init_context: impl FnOnce(&mut Self) -> Result<I, Error>,
-    ) -> Result<Self, Error>
+        parent: &impl HandleWrapper,
+        init_context: impl FnOnce(&Self) -> Result<I, Error>,
+    ) -> Result<Ref<Self>, Error>
     where
         I: PinInit<T, Error>,
     {
         let mut object_attrs = default_object_attributes::<T>();
-        object_attrs.ParentObject = parent.as_handle();
-        Self::_create(object_attrs, init_context)
+        object_attrs.ParentObject = parent.as_object_handle();
+
+        Self::_create(object_attrs, init_context, |handle| {
+            let handle = unsafe { RawHandle::create_parented(handle) };
+            let handle = Self { handle };
+            unsafe { Ref::into_parented(handle) }
+        })
     }
 
-    fn _create<I>(
-        mut object_attrs: wdf_kmdf_sys::WDF_OBJECT_ATTRIBUTES,
-        init_context: impl FnOnce(&mut Self) -> Result<I, Error>,
-    ) -> Result<Self, Error>
+    fn _create<Handle, I>(
+        mut object_attrs: WDF_OBJECT_ATTRIBUTES,
+        init_context: impl FnOnce(&Self) -> Result<I, Error>,
+        create_handle: impl FnOnce(WDFOBJECT) -> Handle,
+    ) -> Result<Handle, Error>
     where
+        Handle: HandleWrapper + AsRef<Self>,
         I: PinInit<T, Error>,
     {
-        let kind = if object_attrs.ParentObject.is_null() {
-            HandleKind::Owned
-        } else {
-            HandleKind::Parented
-        };
-
         // Add the drop callback
         object_attrs.EvtDestroyCallback = Some(Self::__dispatch_evt_destroy);
 
-        // Make the object!
-        let mut handle = {
+        let handle = {
             let mut handle = core::ptr::null_mut();
-
             // SAFETY:
             // - Caller ensures that we're at the right IRQL
             unsafe { Error::to_err(raw::WdfObjectCreate(Some(&mut object_attrs), &mut handle)) }?;
-
-            // SAFETY:
-            // - Caller ensures that we're at the right IRQL
-            unsafe {
-                raw::WdfObjectReferenceActual(
-                    handle,
-                    Some(OWN_TAG as *mut _),
-                    line!() as i32,
-                    Some(cstr!(file!()).as_ptr()),
-                )
-            }
-
-            Self {
-                handle,
-                kind,
-                _context: PhantomData,
-            }
+            // Wrap it in the right raw handle
+            create_handle(handle)
         };
 
         // SAFETY:
         // - It's WDF's responsibility to insert the context area, since we create
         //   the default object attributes with T's context area
         // - The object was just created, and the context space has not been initialized yet
-        let status = unsafe { crate::object::context_pin_init(&mut handle, init_context) };
+        unsafe { crate::object::context_pin_init(handle.as_ref(), init_context)? };
 
-        if let Err(err) = status {
-            // Drop the handle so that we clean up any resources allocated by `init_context`
-            drop(handle);
-
-            Err(err)
-        } else {
-            Ok(handle)
-        }
+        Ok(handle)
     }
 
     /// Wraps the raw handle in a general object wrapper
@@ -332,41 +290,25 @@ where
     /// Respect aliasing rules, since this can be used to
     /// generate aliasing mutable references to the context space.
     /// Also, the context space must be initialized.
-    pub unsafe fn wrap(handle: WDFOBJECT) -> Self {
-        Self {
-            handle,
-            kind: HandleKind::Wrapped,
-            _context: PhantomData,
-        }
+    pub unsafe fn wrap(handle: WDFOBJECT) -> Wrapped<Self> {
+        // SAFETY: Caller ensures that this is a valid handle
+        unsafe { Wrapped::wrap_raw(handle) }
     }
 
     /// Gets the object handle for use with WDF functions that don't have clean wrappers yet
     pub fn raw_handle(&self) -> WDFOBJECT {
-        self.handle
+        self.handle.as_handle()
     }
 
     pub fn get_context(&self) -> Pin<&T> {
         crate::object::get_context(self).expect("context space must be initialized")
     }
 
-    /// Makes another shared reference to the general object
+    /// Makes a shared reference to the object
     ///
-    /// ## IRQL: <= Dispatch
-    pub fn clone_ref(&self) -> GeneralObject<T> {
-        // Safety: Caller ensures that we're at the right IRQL
-        unsafe {
-            raw::WdfObjectReferenceActual(
-                self.handle,
-                Some(REF_TAG as *mut _),
-                line!() as i32,
-                Some(cstr!(file!()).as_ptr()),
-            )
-        }
-
-        GeneralObject {
-            kind: HandleKind::Ref,
-            ..*self
-        }
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn clone_ref(&self) -> Ref<Self> {
+        Ref::clone_from_handle(self)
     }
 
     unsafe extern "C" fn __dispatch_evt_destroy(object: wdf_kmdf_sys::WDFOBJECT) {
@@ -375,7 +317,7 @@ where
 
         // Drop the context area
         // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space
-        let status = unsafe { crate::object::drop_context_space::<T>(&handle, |_| ()) };
+        let status = unsafe { crate::object::drop_context_space::<T, _>(&handle, |_| ()) };
 
         if let Err(err) = status {
             // No (valid) context space to drop, nothing to do
@@ -384,61 +326,44 @@ where
     }
 }
 
-impl<T> Drop for GeneralObject<T> {
-    fn drop(&mut self) {
-        // FIXME: Assert that this is at ..=DISPATCH_LEVEL
-        match self.kind {
-            HandleKind::Wrapped => {}
-            HandleKind::Owned | HandleKind::Parented => {
-                if matches!(self.kind, HandleKind::Owned) {
-                    // SAFETY:
-                    // - assertion that we're at the correct IRQL (..=DISPATCH_LEVEL)
-                    // - is a valid WDFOBJECT
-                    unsafe { raw::WdfObjectDelete(self.handle) };
-                }
+impl<T: IntoContextSpace> HandleWrapper for GeneralObject<T> {
+    type Handle = WDFOBJECT;
 
-                // SAFETY: assertion that we're at the correct IRQL (..=DISPATCH_LEVEL)
-                unsafe {
-                    raw::WdfObjectDereferenceActual(
-                        self.handle,
-                        Some(OWN_TAG as *mut _),
-                        line!() as i32,
-                        Some(cstr!(file!()).as_ptr()),
-                    )
-                };
-            }
-            HandleKind::Ref => {
-                // SAFETY: assertion that we're at the correct IRQL (..=DISPATCH_LEVEL)
-                unsafe {
-                    raw::WdfObjectDereferenceActual(
-                        self.handle,
-                        Some(REF_TAG as *mut _),
-                        line!() as i32,
-                        Some(cstr!(file!()).as_ptr()),
-                    )
-                }
-            }
+    #[inline]
+    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
+        Self {
+            // SAFETY: Caller has the responsibility to ensure that this is valid
+            handle: unsafe { RawHandle::wrap_raw(raw) },
         }
     }
-}
 
-impl<T> AsObjectHandle for GeneralObject<T> {
-    fn as_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
-        self.handle.cast()
-    }
-
-    fn as_handle_mut(&mut self) -> wdf_kmdf_sys::WDFOBJECT {
-        self.handle.cast()
+    #[inline]
+    fn as_object_handle(&self) -> WDFOBJECT {
+        self.handle.as_object_handle()
     }
 }
 
-impl<T> PartialEq for GeneralObject<T> {
+impl<T: IntoContextSpace> AsRef<GeneralObject<T>> for GeneralObject<T> {
+    fn as_ref(&self) -> &GeneralObject<T> {
+        self
+    }
+}
+
+impl<T: IntoContextSpace> core::fmt::Debug for GeneralObject<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GeneralObject")
+            .field("handle", &self.handle)
+            .finish()
+    }
+}
+
+impl<T: IntoContextSpace> PartialEq for GeneralObject<T> {
     fn eq(&self, other: &Self) -> bool {
         self.handle == other.handle
     }
 }
 
-impl<T> Eq for GeneralObject<T> {}
+impl<T: IntoContextSpace> Eq for GeneralObject<T> {}
 
 #[repr(C)]
 struct ContextSpaceWithDropLock<T> {
@@ -564,8 +489,8 @@ unsafe fn mark_context_space_init<T: IntoContextSpace>(
     unsafe { drop_lock.mark_initialized() };
 }
 
-fn get_context_space_ptr<T: IntoContextSpace>(
-    handle: &impl AsObjectHandle,
+fn get_context_space_ptr<T: IntoContextSpace, H: AsObjectHandle>(
+    handle: &H,
 ) -> Result<*mut ContextSpaceWithDropLock<T>, GetContextSpaceError> {
     let handle = handle.as_handle();
 
@@ -586,10 +511,10 @@ fn get_context_space_ptr<T: IntoContextSpace>(
 
 /// Gets a ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
 // FIXME: Temporarily `pub` until we have something like `WithContextSpace`
-pub fn get_context<T: IntoContextSpace>(
-    handle: &impl AsObjectHandle,
+pub fn get_context<T: IntoContextSpace, H: AsObjectHandle>(
+    handle: &H,
 ) -> Result<Pin<&T>, GetContextSpaceError> {
-    let context_space = get_context_space_ptr::<T>(handle)?;
+    let context_space = get_context_space_ptr::<T, H>(handle)?;
 
     // SAFETY:
     // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
@@ -624,11 +549,11 @@ pub fn get_context<T: IntoContextSpace>(
 ///
 /// Must have exclusive access to the context space, which is guaranteed to happen inside of `EvtDestroy`.
 // FIXME: Temporarily `pub` until we have something like `WithContextSpace`
-pub unsafe fn drop_context_space<T: IntoContextSpace>(
-    handle: &impl AsObjectHandle,
+pub unsafe fn drop_context_space<T: IntoContextSpace, H: AsObjectHandle>(
+    handle: &H,
     additional_work: impl FnOnce(Pin<&mut T>),
 ) -> Result<(), GetContextSpaceError> {
-    let context_space = get_context_space_ptr::<T>(handle)?;
+    let context_space = get_context_space_ptr::<T, H>(handle)?;
 
     // SAFETY: `get_context_space_ptr` returns a pointer to the base of the context space
     let drop_lock = unsafe { ContextSpaceWithDropLock::drop_flag_mut(context_space) };
@@ -703,16 +628,16 @@ impl From<GetContextSpaceError> for Error {
 /// - Object must actually have the context space
 // FIXME: Temporarily `pub` until we have something like `WithContextSpace`
 pub unsafe fn context_pin_init<T, Handle, I, Err>(
-    handle: &mut Handle,
-    init_context: impl FnOnce(&mut Handle) -> Result<I, Err>,
+    handle: &Handle,
+    init_context: impl FnOnce(&Handle) -> Result<I, Err>,
 ) -> Result<(), Err>
 where
     T: IntoContextSpace,
-    Handle: AsObjectHandle,
+    Handle: HandleWrapper,
     I: PinInit<T, Err>,
 {
     let context_space =
-        get_context_space_ptr::<T>(handle).expect("object must have the context space");
+        get_context_space_ptr::<T, Handle>(handle).expect("object must have the context space");
 
     // Get closure to initialize context with
     //
