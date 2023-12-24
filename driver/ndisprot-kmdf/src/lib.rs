@@ -1,5 +1,5 @@
 #![no_std]
-#![allow(non_snake_case, unused_variables, dead_code)] // Cut down on the warnings for now
+#![allow(non_snake_case)] // Cut down on the warnings for now
 #![feature(allocator_api, const_option, offset_of)]
 
 extern crate alloc;
@@ -44,7 +44,7 @@ use windows_kernel_rs::{
 };
 use windows_kernel_sys::{
     result::STATUS, Error, KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, NdisFreeMemory,
-    NdisFreeNetBufferListPool, NdisGeneratePartialCancelId, KEVENT, LIST_ENTRY, NDIS_HANDLE,
+    NdisFreeNetBufferListPool, NdisGeneratePartialCancelId, KEVENT, NDIS_HANDLE,
     NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_OID, NDIS_PACKET_TYPE_BROADCAST,
     NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST, NDIS_PORT_NUMBER,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
@@ -320,6 +320,16 @@ const NPROT_8021P_TAG_TYPE: u16 = 0x0081;
 const NPROTO_PACKET_FILTER: u32 =
     NDIS_PACKET_TYPE_DIRECTED | NDIS_PACKET_TYPE_MULTICAST | NDIS_PACKET_TYPE_BROADCAST;
 
+// XXX: What parts of this are common to all protocol drivers, and which are NdisProt specific?
+// Common Protocol
+// - ndis_protocol_handle (for creating nbl pools and opening adapters)
+// - cancel_id_gen (for cancelling sends and oid requests)
+// - open_list (for storing all of the bound protocol handles)
+// - binds_complete (for indicating all binds are complete?)
+//
+// NdisProt
+// - eth_type (for filtering)
+// - control_device (for piping through requests to be made from userspace)
 #[pin_data(PinnedDrop)]
 struct NdisProt {
     // Only used by BindAdapter to create the WDFIOQUEUEs for the adapter
@@ -778,7 +788,7 @@ impl<const LEN: u32> RecvQueue<LEN> {
     }
 
     fn dequeue(self: Pin<&mut Self>) -> Option<Pin<&mut recv::RecvNblRsvd>> {
-        let (mut queue, len) = self.project();
+        let (queue, len) = self.project();
         *len = len.saturating_sub(1);
         let element = unsafe { queue.pop_front() };
         element.map(|it| unsafe { Pin::new_unchecked(it) })
@@ -791,6 +801,8 @@ enum OpenState {
     Running,
     Pausing,
     Paused,
+    // FIXME: Use this somewhere
+    #[allow(unused)]
     Restarting,
     Closing,
 }
@@ -832,9 +844,6 @@ bitflags::bitflags! {
 const MAX_MULTICAST_ADDRESS: usize = 32;
 
 const NPROT_FLAGS_ALLOCATED_NBL: u32 = 1 << 28;
-const NPROT_FLAGS_NB_RETREAT_RECV_RSVD: u32 = 1 << 29;
-
-const OC_STRUCTURE_SIG: u32 = u32::from_be_bytes(*b"Nuio");
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -876,24 +885,6 @@ impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
         // the framework handles deleting of the control object
         // self.control_device = core::ptr::null_mut();
         debug!("Unload Exit");
-    }
-}
-
-// Dummy type so that we can store a list entry in `NdisProt`
-struct ListEntry {
-    entry: LIST_ENTRY,
-}
-
-impl ListEntry {
-    fn new() -> impl PinInit<Self, Error> {
-        unsafe {
-            pinned_init::init_from_closure(|slot: *mut Self| {
-                let entry = addr_of_mut!((*slot).entry);
-                addr_of_mut!((*entry).Flink).write(entry);
-                addr_of_mut!((*entry).Blink).write(entry);
-                Ok(())
-            })
-        }
     }
 }
 
@@ -1029,7 +1020,7 @@ pub enum EventType {
 /// ## Note
 /// This is called synchronously and in the context of the thread which created the IRP_MJ_CREATE request.
 unsafe extern "C" fn ndisprot_evt_device_file_create(
-    Device: WDFDEVICE,
+    _Device: WDFDEVICE,
     Request: WDFREQUEST,
     FileObject: WDFFILEOBJECT,
 ) {
@@ -1175,11 +1166,11 @@ const IOCTL_NDISPROT_INDICATE_STATUS: IoControlCode = IoControlCode::new(
 );
 
 unsafe extern "C" fn ndisprot_evt_io_device_control(
-    Queue: WDFQUEUE,           // in
-    Request: WDFREQUEST,       // in
-    OutputBufferLength: usize, // in
-    InputBufferLength: usize,  // in
-    IoControlCode: ULONG,      // in
+    _Queue: WDFQUEUE,           // in
+    Request: WDFREQUEST,        // in
+    _OutputBufferLength: usize, // in
+    _InputBufferLength: usize,  // in
+    IoControlCode: ULONG,       // in
 ) {
     let file_object = unsafe { wdf_kmdf::raw::WdfRequestGetFileObject(Request) };
 

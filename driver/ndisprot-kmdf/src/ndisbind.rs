@@ -232,7 +232,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             let protocol_binding_context = match protocol_binding_context {
                 Ok(it) => it,
-                Err(err) => {
+                Err(_err) => {
                     log::error!("bind_adapter: protocol binding context alloc failed");
                     return Err(STATUS::INSUFFICIENT_RESOURCES.into());
                 }
@@ -989,12 +989,6 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
     status.to_u32()
 }
 
-pub(crate) unsafe extern "C" fn NdisprotProtocolUnloadHandler() -> NDIS_STATUS {
-    // Note: no-one calls this, instead the driver unload callback is used
-    log::debug!("unload_handler");
-    STATUS::SUCCESS.to_u32()
-}
-
 /// Wait for all outstanding IO to complete on an open context.
 /// Since we're given a `&OpenContext`, we can assume that the open context won't go away.
 ///
@@ -1230,7 +1224,7 @@ pub(crate) fn validate_open_and_do_request(
 
 /// Entry point indicating completion of a pended NDIS_REQUEST
 pub(crate) unsafe extern "C" fn request_complete(
-    ProtocolBindingContext: NDIS_HANDLE,
+    _ProtocolBindingContext: NDIS_HANDLE,
     OidRequest: PNDIS_OID_REQUEST,
     Status: NDIS_STATUS,
 ) {

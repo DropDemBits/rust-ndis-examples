@@ -39,10 +39,6 @@ impl RecvNblRsvd {
         unsafe { core::ptr::addr_of_mut!((*net_buffer_list).ProtocolReserved) }.cast()
     }
 
-    fn containing_nbl(self: Pin<&mut Self>) -> PNET_BUFFER_LIST {
-        self.nbl
-    }
-
     unsafe fn init_recv_nbl<'a>(net_buffer_list: PNET_BUFFER_LIST) {
         let element = Self::from_nbl_raw(net_buffer_list);
         element.write(RecvNblRsvd {
@@ -65,9 +61,9 @@ impl RecvNblRsvd {
 
 /// Called when the framework receives IRP_MJ_READ requests from usermode.
 pub(crate) unsafe extern "C" fn ndisprot_evt_io_read(
-    Queue: WDFQUEUE,     // in
+    _Queue: WDFQUEUE,    // in
     Request: WDFREQUEST, // in
-    Length: usize,       // in
+    _Length: usize,      // in
 ) {
     let nt_status;
 
@@ -117,7 +113,7 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_read(
 
 /// Called every time the queue becomes non-empty (i.e. the number of requests goes from 0 to 1)
 pub(crate) unsafe extern "C" fn ndisprot_evt_notify_read_queue(
-    Queue: WDFQUEUE,
+    _Queue: WDFQUEUE,
     Context: wdf_kmdf_sys::WDFCONTEXT,
 ) {
     let open_object = &GeneralObject::<OpenContext>::wrap(Context);
@@ -456,7 +452,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
 
                 let bytes_copied = match nt_status {
                     Ok(len) => len,
-                    Err(err) => {
+                    Err(_err) => {
                         log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to copy the data, {total_length} bytes");
                         // Free the copy_nbl
                         free_receive_net_buffer_list(open_context, copy_nbl, dispatch_level);
@@ -481,7 +477,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
             // ownership was transferred to us
             unsafe { *NET_BUFFER_LIST::next_nbl_mut(nbl) = core::ptr::null_mut() };
 
-            if let Some((head, tail)) = &mut return_nbl_queue {
+            if let Some((_head, tail)) = &mut return_nbl_queue {
                 unsafe { *NET_BUFFER_LIST::next_nbl_mut(*tail) = nbl };
                 *tail = nbl;
             } else {

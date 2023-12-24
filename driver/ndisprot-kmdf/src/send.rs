@@ -1,6 +1,5 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crossbeam_utils::atomic::AtomicCell;
 use wdf_kmdf::{
     handle::{HandleWrapper, Ref, WithContext},
     object::GeneralObject,
@@ -29,7 +28,7 @@ pub(crate) struct NprotSendNblRsvd {
     /// to cancel a send.
     ref_count: AtomicU32,
     /// Which open object this is bound to
-    open_object: Ref<GeneralObject<OpenContext>>,
+    _open_object: Ref<GeneralObject<OpenContext>>,
 }
 
 impl NprotSendNblRsvd {
@@ -42,7 +41,7 @@ impl NprotSendNblRsvd {
         this.write(Self {
             request,
             ref_count: AtomicU32::new(1),
-            open_object,
+            _open_object: open_object,
         })
     }
 
@@ -80,7 +79,7 @@ struct RequestContext {
 wdf_kmdf::impl_context_space!(RequestContext);
 
 pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
-    Queue: WDFQUEUE,     // in
+    _Queue: WDFQUEUE,    // in
     Request: WDFREQUEST, // in
     Length: usize,       // in
 ) {
@@ -93,6 +92,9 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
     let open_object = file_object.get_context().open_context();
     let mut nt_status;
 
+    // Create a context to track the length of transfer associated with this request
+    // The NBL holds the association to the request so we don't need the request to do it,
+    // and we don't need it for cancellation either since it just takes in a cancel id
     let Request = {
         let Ok(Length) = ULONG::try_from(Length) else {
             unsafe {
@@ -110,7 +112,7 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
             })
         }) {
             Ok(context) => context,
-            Err((err, request)) => {
+            Err((_err, request)) => {
                 unsafe {
                     raw::WdfRequestComplete(request.raw_handle(), STATUS::INVALID_HANDLE.to_u32())
                 }
@@ -120,9 +122,6 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
     };
 
     'out: {
-        // Create a context to track the length of transfer and NDIS nbl associated with this request
-        let attributes = wdf_kmdf::object::default_object_attributes::<RequestContext>();
-
         let Some(open_object) = open_object else {
             log::warn!("write: FileObject {file_object:x?} not yet associated with a device");
             nt_status = Err(STATUS::INVALID_HANDLE.into());
@@ -293,7 +292,7 @@ pub(crate) unsafe extern "C" fn send_complete(
     let open_object = protocol_binding_context.open_context.clone_ref();
     let open_context = open_object.get_context();
 
-    let dispatch_level =
+    let _dispatch_level =
         send_complete_flags & windows_kernel_sys::NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL != 0;
 
     // note: we assume that we'll always have at least 1 nbl in the nbl_queue
