@@ -270,6 +270,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "87d7335204cb6ef7bd647fa6db0be3e4d7aa25b5823a7aa030027ddf512cefba"
 
 [[package]]
+name = "ndis-rs"
+version = "0.1.0"
+
+[[package]]
 name = "ndisprot-kmdf"
 version = "0.1.0"
 dependencies = [

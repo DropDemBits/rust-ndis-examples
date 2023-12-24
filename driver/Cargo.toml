@@ -9,6 +9,10 @@ members = [
   "wdf-kmdf",
 ]
 
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
 [workspace.dependencies]
 vtable = { path = "../libs/vtable" }
 once-arc = { path = "../libs/once-arc", default-features = false }
