@@ -32,13 +32,12 @@ use crate::{
 /// A wrapper around a raw handle
 ///
 /// ## Drop IRQL: `..=DISPATCH_LEVEL`
-pub struct RawHandle<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> {
+pub struct RawHandle<H: WdfHandle, Mode: OwningMode> {
     handle: H,
-    _context_space: PhantomData<fn() -> T>,
     _mode: PhantomData<Mode>,
 }
 
-impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandle<H, T, Mode> {
+impl<H: WdfHandle, Mode: OwningMode> RawHandle<H, Mode> {
     /// Creates a new raw handle from a foreign handle
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
@@ -63,7 +62,6 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandle<H, T, Mode> 
 
         Self {
             handle,
-            _context_space: PhantomData,
             _mode: PhantomData,
         }
     }
@@ -91,7 +89,6 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandle<H, T, Mode> 
 
         Self {
             handle,
-            _context_space: PhantomData,
             _mode: PhantomData,
         }
     }
@@ -101,16 +98,9 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandle<H, T, Mode> 
     pub fn as_handle(&self) -> H {
         self.handle
     }
-
-    /// Default attributes to properly contstruct the object context space
-    pub fn default_object_attributes() -> WDF_OBJECT_ATTRIBUTES {
-        let mut attributes = object::default_object_attributes::<T>();
-        attributes.EvtDestroyCallback = Some(default_dispatch_evt_destroy::<T>);
-        attributes
-    }
 }
 
-impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> Drop for RawHandle<H, T, Mode> {
+impl<H: WdfHandle, Mode: OwningMode> Drop for RawHandle<H, Mode> {
     fn drop(&mut self) {
         // FIXME: Assert that this is at `..=DISPATCH_LEVEL`
 
@@ -141,7 +131,7 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> Drop for RawHandle<H, 
     }
 }
 
-impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HandleWrapper for RawHandle<H, T, Mode> {
+impl<H: WdfHandle, Mode: OwningMode> HandleWrapper for RawHandle<H, Mode> {
     type Handle = H;
 
     #[inline]
@@ -149,7 +139,6 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HandleWrapper for RawH
         Self {
             // SAFETY: Caller ensures that it is a handle of the correct type
             handle: unsafe { H::wrap_raw(raw) },
-            _context_space: PhantomData,
             _mode: PhantomData,
         }
     }
@@ -160,10 +149,9 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HandleWrapper for RawH
     }
 }
 
-impl<H, T, Mode> core::fmt::Debug for RawHandle<H, T, Mode>
+impl<H, Mode> core::fmt::Debug for RawHandle<H, Mode>
 where
     H: WdfHandle + core::fmt::Debug,
-    T: IntoContextSpace,
     Mode: OwningMode,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -171,7 +159,119 @@ where
     }
 }
 
-impl<H, T, Mode> PartialEq for RawHandle<H, T, Mode>
+impl<H, Mode> PartialEq for RawHandle<H, Mode>
+where
+    H: WdfHandle + PartialEq,
+    Mode: OwningMode,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.handle == other.handle
+    }
+}
+
+impl<H, Mode> Eq for RawHandle<H, Mode>
+where
+    H: WdfHandle + Eq,
+    Mode: OwningMode,
+{
+}
+
+// SAFETY: Equivalent to passing a `usize` around, and all WDF functions are thread-safe
+unsafe impl<H: WdfHandle, Mode: OwningMode> Send for RawHandle<H, Mode> {}
+// SAFETY: Equivalent to passing a `usize` around, and all WDF functions are thread-safe
+unsafe impl<H: WdfHandle, Mode: OwningMode> Sync for RawHandle<H, Mode> {}
+
+/// A wrapper around a raw handle, with a context space allocated at creation
+///
+/// ## Drop IRQL: `..=DISPATCH_LEVEL`
+pub struct RawHandleWithContext<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> {
+    handle: RawHandle<H, Mode>,
+    _context_space: PhantomData<fn() -> T>,
+}
+
+impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandleWithContext<H, T, Mode> {
+    /// Creates a new raw handle from a foreign handle
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    ///
+    /// ## Safety
+    ///
+    /// Must have the correct ownership over the raw handle
+    pub unsafe fn create(handle: H) -> Self {
+        // SAFETY: Caller handles the responsibility of this function
+        let handle = unsafe { RawHandle::create(handle) };
+        Self {
+            handle,
+            _context_space: PhantomData,
+        }
+    }
+
+    /// Creates a new raw handle from a foreign handle,
+    /// where the handle is parented to another object.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    ///
+    /// ## Safety
+    ///
+    /// Must have the correct ownership over the raw handle,
+    /// and the handle must be parented.
+    pub unsafe fn create_parented(handle: H) -> Self {
+        // SAFETY: Caller handles the responsibility of this function
+        let handle = unsafe { RawHandle::create_parented(handle) };
+        Self {
+            handle,
+            _context_space: PhantomData,
+        }
+    }
+
+    /// Gets the backing raw handle
+    #[inline]
+    pub fn as_handle(&self) -> H {
+        self.handle.as_handle()
+    }
+
+    /// Default attributes to properly contstruct the object context space
+    pub fn default_object_attributes() -> WDF_OBJECT_ATTRIBUTES {
+        let mut attributes = object::default_object_attributes::<T>();
+        attributes.EvtDestroyCallback = Some(default_dispatch_evt_destroy::<T>);
+        attributes
+    }
+}
+
+impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HandleWrapper
+    for RawHandleWithContext<H, T, Mode>
+{
+    type Handle = H;
+
+    #[inline]
+    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
+        Self {
+            // SAFETY: Caller ensures that it is a handle of the correct type
+            handle: unsafe { RawHandle::wrap_raw(raw) },
+            _context_space: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn as_object_handle(&self) -> WDFOBJECT {
+        self.handle.as_object_handle()
+    }
+}
+
+impl<H, T, Mode> core::fmt::Debug for RawHandleWithContext<H, T, Mode>
+where
+    H: WdfHandle + core::fmt::Debug,
+    T: IntoContextSpace,
+    Mode: OwningMode,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("RawHandleWithContext")
+            .field(&self.handle)
+            .finish()
+    }
+}
+
+impl<H, T, Mode> PartialEq for RawHandleWithContext<H, T, Mode>
 where
     H: WdfHandle + PartialEq,
     T: IntoContextSpace,
@@ -182,18 +282,13 @@ where
     }
 }
 
-impl<H, T, Mode> Eq for RawHandle<H, T, Mode>
+impl<H, T, Mode> Eq for RawHandleWithContext<H, T, Mode>
 where
     H: WdfHandle + Eq,
     T: IntoContextSpace,
     Mode: OwningMode,
 {
 }
-
-// SAFETY: Equivalent to passing a `usize` around, and all WDF functions are thread-safe
-unsafe impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> Send for RawHandle<H, T, Mode> {}
-// SAFETY: Equivalent to passing a `usize` around, and all WDF functions are thread-safe
-unsafe impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> Sync for RawHandle<H, T, Mode> {}
 
 /// A handle with an extra context space attached to it.
 pub struct WithContext<H: HandleWrapper, T: IntoContextSpace> {
@@ -558,7 +653,10 @@ pub trait HasContext<T: IntoContextSpace>: HandleWrapper {
     }
 }
 
-impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HasContext<T> for RawHandle<H, T, Mode> {}
+impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HasContext<T>
+    for RawHandleWithContext<H, T, Mode>
+{
+}
 
 impl<H: HandleWrapper, T: IntoContextSpace> HasContext<T> for WithContext<H, T> {}
 
@@ -708,7 +806,7 @@ impl Drop for UninitDropBomb {
 // FIXME: I guess this should go into `object`?
 unsafe extern "C" fn default_dispatch_evt_destroy<T: IntoContextSpace>(object: WDFOBJECT) {
     // SAFETY: EvtDestroy is only called once, and there are no other references to the object by the time we're here
-    let handle = unsafe { RawHandle::<WDFOBJECT, T, FrameworkOwned>::wrap_raw(object) };
+    let handle = unsafe { RawHandleWithContext::<WDFOBJECT, T, FrameworkOwned>::wrap_raw(object) };
 
     // Drop the context area
     // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space

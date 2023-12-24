@@ -11,7 +11,10 @@ use pinned_init::{pin_data, Init, PinInit};
 use wdf_kmdf_sys::WDFSPINLOCK;
 use windows_kernel_sys::Error;
 
-use crate::{object, raw};
+use crate::{
+    handle::{DriverOwned, RawHandle},
+    raw,
+};
 
 pub trait LockBackend: Sized {
     type Guard<'a>
@@ -263,7 +266,7 @@ impl<'a, T, Lock: LockBackend> DerefMut for MutexGuard<'a, T, Lock> {
 /// Wrapper around a framework-based spin lock.
 ///
 /// IRQL-aware, and adjusts the IRQL to `DISPATCH_LEVEL` while the lock is acquired
-pub struct SpinLock(WDFSPINLOCK);
+pub struct SpinLock(RawHandle<WDFSPINLOCK, DriverOwned>);
 
 impl SpinLock {
     /// Creates a new spin lock
@@ -284,18 +287,9 @@ impl SpinLock {
         // - We're manually managing the lifetime of the spinlock (easier that way)
         Error::to_err(unsafe { raw::WdfSpinLockCreate(None, &mut lock) })?;
 
-        // SAFETY:
-        // - Caller ensures that we're at the right IRQL
-        unsafe {
-            raw::WdfObjectReferenceActual(
-                lock.cast(),
-                Some(object::OWN_TAG as *mut _),
-                line!() as i32,
-                Some(cstr!(file!()).as_ptr()),
-            )
-        }
-
-        Ok(Self(lock))
+        // SAFETY: We're manually managing the lifetime of the spinlock, and thus
+        // the spinlock is driver-owned.
+        Ok(Self(unsafe { RawHandle::create(lock) }))
     }
 
     /// Acquires the spin lock, returning a guard that releases the lock once dropped
@@ -306,7 +300,7 @@ impl SpinLock {
         // - We created the spin lock ourselves, so it's not part of an interrupt config struct
         // - Caller ensures we're calling this at the right IRQL
         unsafe {
-            raw::WdfSpinLockAcquire(self.0);
+            raw::WdfSpinLockAcquire(self.0.as_handle());
         }
 
         SpinLockGuard { lock: self }
@@ -325,31 +319,6 @@ impl LockBackend for SpinLock {
     }
 }
 
-impl Drop for SpinLock {
-    fn drop(&mut self) {
-        // SAFETY:
-        // - Cleanup callbacks are always called at either `DISPATCH_LEVEL` or `PASSIVE_LEVEL`
-        // - We're always deleting a spin lock, which has no special deletion requirements
-        unsafe { raw::WdfObjectDelete(self.0.cast()) }
-
-        // SAFETY:
-        // - Cleanup callbacks are always called at either `DISPATCH_LEVEL` or `PASSIVE_LEVEL`
-        unsafe {
-            raw::WdfObjectDereferenceActual(
-                self.0.cast(),
-                Some(object::OWN_TAG as *mut _),
-                line!() as i32,
-                Some(cstr!(file!()).as_ptr()),
-            )
-        }
-    }
-}
-
-// SAFETY: Can manifest SpinLock to another thread (as-if we'd moved a pointer)
-unsafe impl Send for SpinLock {}
-// SAFETY: Can send &SpinLock to other threads (no interior mutability observable)
-unsafe impl Sync for SpinLock {}
-
 /// A guard for a [`SpinLock`]
 pub struct SpinLockGuard<'a> {
     lock: &'a SpinLock,
@@ -360,6 +329,6 @@ impl<'a> Drop for SpinLockGuard<'a> {
         // SAFETY:
         // Having a guard guarantees we've called `WdfSpinLockAcquire`,
         // and also implies we're at IRQL `DISPATCH_LEVEL`
-        unsafe { raw::WdfSpinLockRelease(self.lock.0) }
+        unsafe { raw::WdfSpinLockRelease(self.lock.0.as_handle()) }
     }
 }

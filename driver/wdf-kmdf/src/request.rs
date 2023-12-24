@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub struct FileRequest<F> {
-    handle: RawHandle<WDFREQUEST, (), FrameworkOwned>,
+    handle: RawHandle<WDFREQUEST, FrameworkOwned>,
     // FIXME: Bound with file callbacks?
     _file: PhantomData<F>,
 }

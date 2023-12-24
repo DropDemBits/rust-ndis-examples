@@ -1,12 +1,12 @@
 use wdf_kmdf_sys::WDFDEVICE;
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, RawHandle},
+    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext},
     object::IntoContextSpace,
 };
 
 pub struct ControlDevice<T: IntoContextSpace> {
-    handle: RawHandle<WDFDEVICE, T, FrameworkOwned>,
+    handle: RawHandleWithContext<WDFDEVICE, T, FrameworkOwned>,
 }
 
 impl<T: IntoContextSpace> ControlDevice<T> {
@@ -22,7 +22,7 @@ impl<T: IntoContextSpace> HandleWrapper for ControlDevice<T> {
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
         // SAFETY: uhhhhh caller's problem
         Self {
-            handle: unsafe { RawHandle::wrap_raw(raw) },
+            handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }
 

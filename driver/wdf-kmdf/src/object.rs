@@ -12,7 +12,7 @@ use wdf_kmdf_sys::{
 use windows_kernel_sys::{result::STATUS, Error};
 
 use crate::{
-    handle::{DriverOwned, HandleWrapper, RawHandle, Ref, Wrapped},
+    handle::{DriverOwned, HandleWrapper, RawHandleWithContext, Ref, Wrapped},
     raw,
 };
 
@@ -199,7 +199,7 @@ impl AsObjectHandle for RawObjectHandle {
 }
 
 pub struct GeneralObject<T: IntoContextSpace> {
-    handle: RawHandle<WDFOBJECT, T, DriverOwned>,
+    handle: RawHandleWithContext<WDFOBJECT, T, DriverOwned>,
 }
 
 impl<T> GeneralObject<T>
@@ -221,7 +221,7 @@ where
         I: PinInit<T, Error>,
     {
         Self::_create(default_object_attributes::<T>(), init_context, |handle| {
-            let handle = unsafe { RawHandle::create(handle) };
+            let handle = unsafe { RawHandleWithContext::create(handle) };
             Self { handle }
         })
     }
@@ -247,7 +247,7 @@ where
         object_attrs.ParentObject = parent.as_object_handle();
 
         Self::_create(object_attrs, init_context, |handle| {
-            let handle = unsafe { RawHandle::create_parented(handle) };
+            let handle = unsafe { RawHandleWithContext::create_parented(handle) };
             let handle = Self { handle };
             unsafe { Ref::into_parented(handle) }
         })
@@ -333,7 +333,7 @@ impl<T: IntoContextSpace> HandleWrapper for GeneralObject<T> {
     unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
         Self {
             // SAFETY: Caller has the responsibility to ensure that this is valid
-            handle: unsafe { RawHandle::wrap_raw(raw) },
+            handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }
 

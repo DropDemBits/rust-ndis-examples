@@ -5,12 +5,12 @@ use wdf_kmdf_sys::WDFFILEOBJECT;
 use windows_kernel_sys::Error;
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, RawHandle, Ref, Wrapped},
+    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext, Ref, Wrapped},
     object::{self, IntoContextSpace},
 };
 
 pub struct FileObject<T: IntoContextSpace> {
-    handle: RawHandle<WDFFILEOBJECT, T, FrameworkOwned>,
+    handle: RawHandleWithContext<WDFFILEOBJECT, T, FrameworkOwned>,
 }
 
 impl<T: IntoContextSpace> core::fmt::Debug for FileObject<T> {
@@ -94,7 +94,7 @@ impl<T: IntoContextSpace> HandleWrapper for FileObject<T> {
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
         // SAFETY: uhhhhh proc macro pls
         Self {
-            handle: unsafe { RawHandle::wrap_raw(raw) },
+            handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }
 

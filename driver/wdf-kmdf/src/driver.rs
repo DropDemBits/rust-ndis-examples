@@ -7,13 +7,13 @@ use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
 use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, RawHandle, Ref, Wrapped},
+    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext, Ref, Wrapped},
     object::{self, default_object_attributes, IntoContextSpace},
     raw,
 };
 
 pub struct Driver<T: IntoContextSpace> {
-    handle: RawHandle<WDFDRIVER, T, FrameworkOwned>,
+    handle: RawHandleWithContext<WDFDRIVER, T, FrameworkOwned>,
 }
 
 impl<T: IntoContextSpace> core::fmt::Debug for Driver<T> {
@@ -163,7 +163,7 @@ where
             }
 
             // SAFETY: We just created this handle and are immediately wrapping it
-            let handle = unsafe { RawHandle::create(handle) };
+            let handle = unsafe { RawHandleWithContext::create(handle) };
             Self { handle }
         };
 
@@ -250,7 +250,7 @@ impl<T: IntoContextSpace> HandleWrapper for Driver<T> {
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
         // SAFETY: Caller ensures that the handle is valid
         Self {
-            handle: unsafe { RawHandle::wrap_raw(raw) },
+            handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }
 
