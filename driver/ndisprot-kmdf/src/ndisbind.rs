@@ -765,6 +765,8 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         }
 
         // cancel pending reads and status indications
+        // note: this appears to be done in place of `wait_for_pending_io` since we just
+        // drop all of the requests and wait for them to complete.
         unsafe {
             wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.read_queue);
         }
@@ -856,7 +858,17 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                     open_context.powered_up_event.signal();
 
                     // Wait for any IO in-progress to complete
-                    wait_for_pending_io(&open_context, false);
+                    //
+                    // Note: NDIS 6.30+ protocol drivers must not wait for
+                    // the completion of any IO requests. We already wait
+                    // for any pending IO requests in `NetEventPause` like
+                    // in the non-KMDF ndisprot driver example, so we
+                    // simply just comment out this call.
+                    //
+                    // See the `NetEventSetPower` section in
+                    // https://learn.microsoft.com/en-us/windows-hardware/drivers/network/handling-pnp-events-and-power-management-events-in-a-protocol-driver
+                    // for more info.
+                    // wait_for_pending_io(&open_context, false);
 
                     // Return any receives taht we have queued up
                     recv::flush_receive_queue(open_context.as_ref());
@@ -993,6 +1005,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
 /// Since we're given a `&OpenContext`, we can assume that the open context won't go away.
 ///
 /// If `cancel_reads` is `true`, we also wait for pending reads to be completed/cancelled.
+#[allow(unused)] // Not sure if we do need this
 fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
     // Wait for any pending sends or requests on the binding to complete
     if open_context.pended_send_count.load(Ordering::Relaxed) == 0 {
