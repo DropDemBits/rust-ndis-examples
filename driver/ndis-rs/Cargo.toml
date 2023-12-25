@@ -1,5 +1,5 @@
 [package]
-name = "wdf-kmdf"
+name = "ndis-rs"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,11 +7,4 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wdf-kmdf-sys = { path = "../wdf-kmdf-sys" }
 windows-kernel-sys.workspace = true
-windows-kernel-rs.workspace = true
-paste = "1.0.12"
-static_assertions = "1.1.0"
-vtable.workspace = true
-pinned-init.workspace = true
-lock_api = "0.4.10"

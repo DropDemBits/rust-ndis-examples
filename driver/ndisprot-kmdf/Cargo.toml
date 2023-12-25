@@ -10,8 +10,8 @@ crate-type = ["cdylib"]
 [dependencies]
 wdf-kmdf-sys = { path = "../wdf-kmdf-sys" }
 wdf-kmdf = { path = "../wdf-kmdf" }
-windows-kernel-sys = { path = "../windows-kernel-sys" }
-windows-kernel-rs = { path = "../windows-kernel-rs" }
+windows-kernel-sys.workspace = true
+windows-kernel-rs.workspace = true
 vtable.workspace = true
 pinned-init.workspace = true
 bitflags = "2.3.3"

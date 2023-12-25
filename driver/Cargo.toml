@@ -2,6 +2,7 @@
 resolver="2"
 
 members = [
+  "ndis-rs",
   "ndisprot-kmdf",
   "wdf-kmdf-sys",
   "windows-kernel-sys",
@@ -18,6 +19,9 @@ vtable = { path = "../libs/vtable" }
 once-arc = { path = "../libs/once-arc", default-features = false }
 pinned-init = { version = "0.0.6", default-features = false, features = ["alloc"] }
 nt-list = { version = "0.3.0", default-features = false }
+windows-kernel-sys = { path = "windows-kernel-sys" }
+windows-kernel-rs = { path = "windows-kernel-rs" }
+ndis-rs = { path = "ndis-rs" }
 
 [profile.dev]
 panic = "abort"
