@@ -17,6 +17,11 @@ pub struct NblChain {
 }
 
 impl NblChain {
+    /// Creates a new empty [`NblChain`]
+    pub fn new() -> Self {
+        Self { head: None }
+    }
+
     /// Creates a [`NblChain`] from an existing `NET_BUFFER_LIST` chain
     ///
     /// # Safety
@@ -24,15 +29,10 @@ impl NblChain {
     /// `head` must either be null, or a valid pointer to a `NET_BUFFER_LIST`,
     /// and all of the directly accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s,
     /// and `MDL`s are valid.
-    pub unsafe fn new(head: PNET_BUFFER_LIST) -> Self {
+    pub unsafe fn from_raw(head: PNET_BUFFER_LIST) -> Self {
         let head = NonNull::new(head).map(|head| head.cast());
 
         Self { head }
-    }
-
-    /// Creates an empty [`NblChain`]
-    pub fn empty() -> Self {
-        Self { head: None }
     }
 
     /// Gets the first element of the chain
@@ -171,7 +171,7 @@ mod test {
 
     #[test]
     fn create_empty_chain() {
-        let chain = NblChain::empty();
+        let chain = NblChain::new();
 
         assert_eq!(chain.iter().count(), 0);
     }
@@ -185,7 +185,7 @@ mod test {
             Box::leak(nbl)
         });
 
-        let mut chain = NblChain::empty();
+        let mut chain = NblChain::new();
         for nbl in nbl_elements {
             chain.push_front(nbl);
         }
