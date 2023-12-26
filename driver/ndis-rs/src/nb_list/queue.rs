@@ -23,6 +23,60 @@ impl NblQueue {
         Self::default()
     }
 
+    /// Gets the first element of the queue
+    ///
+    /// Completes in O(1) time
+    pub fn first(&self) -> Option<&NetBufferList> {
+        // SAFETY: `NblQueue::set_head` ensures that `head` is a valid pointer
+        // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
+        // `NET_BUFFER`s, and `MDL`s are valid).
+        //
+        // Also, we tie the lifetime of the reference to the `NetBufferList` to
+        // the queue so that no element in the queue will be mutated.
+        self.head.map(|head| unsafe { head.as_ref() })
+    }
+
+    /// Gets a mutable reference to the first element of the queue
+    ///
+    /// Completes in O(1) time
+    pub fn first_mut(&mut self) -> Option<&mut NetBufferList> {
+        // SAFETY: `NblQueue::set_head` ensures that `head` is a valid pointer
+        // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
+        // `NET_BUFFER`s, and `MDL`s are valid).
+        //
+        // Also, we tie the lifetime of the mutable reference to the
+        // `NetBufferList` to the queue so that only the yielded element will
+        // be mutated.
+        self.head.map(|mut head| unsafe { head.as_mut() })
+    }
+
+    /// Gets the last element of the queue
+    ///
+    /// Completes in O(1) time
+    pub fn last(&self) -> Option<&NetBufferList> {
+        // SAFETY: `NblQueue::set_tail` ensures that `tail` is a valid pointer
+        // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
+        // `NET_BUFFER`s, and `MDL`s are valid).
+        //
+        // Also, we tie the lifetime of the reference to the `NetBufferList` to
+        // the queue so that no element in the queue will be mutated.
+        self.tail.map(|tail| unsafe { tail.as_ref() })
+    }
+
+    /// Gets a mutable reference to the last element of the queue
+    ///
+    /// Completes in O(1) time
+    pub fn last_mut(&mut self) -> Option<&mut NetBufferList> {
+        // SAFETY: `NblQueue::set_tail` ensures that `tail` is a valid pointer
+        // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
+        // `NET_BUFFER`s, and `MDL`s are valid).
+        //
+        // Also, we tie the lifetime of the mutable reference to the
+        // `NetBufferList` to the queue so that only the yielded element will
+        // be mutated.
+        self.tail.map(|mut tail| unsafe { tail.as_mut() })
+    }
+
     /// Pushes a [`NetBufferList`] at the front of the queue
     ///
     /// Completes in O(1) time
@@ -35,16 +89,21 @@ impl NblQueue {
         );
 
         // Link the old head to the new `nbl`
-        *nbl.next_nbl_mut() = self
-            .head
-            .map_or(core::ptr::null_mut(), |it| it.as_ptr().cast());
+        //
+        // SAFETY: `NblQueue::new` and `NblQueue::set_head` ensures that all the
+        // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from `head`
+        // are valid.
+        unsafe { nbl.set_next_nbl(self.head) };
 
         // Replace the head with the new nbl
-        let nbl = NonNull::from(nbl);
-
-        if self.head.replace(nbl).is_none() {
-            // The queue was empty, so the new head is now also the tail
-            self.tail = Some(nbl);
+        //
+        // SAFETY: `nbl` comes from a `&mut NetBufferList`, which already asserts
+        // that all of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s
+        // are valid (the `NetBufferList` validity invariant) by references requiring
+        // that the place they're referencing is valid.
+        unsafe {
+            let nbl = Some(NonNull::from(nbl));
+            self.set_head(nbl);
         }
 
         self.assert_valid();
@@ -62,16 +121,21 @@ impl NblQueue {
         );
 
         // Link the old tail to the new `nbl`
-        *nbl.next_nbl_mut() = self
-            .tail
-            .map_or(core::ptr::null_mut(), |it| it.as_ptr().cast());
+        //
+        // SAFETY: `NblQueue::new` and `NblQueue::set_tail` ensures that all the
+        // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from `tail`
+        // are valid.
+        unsafe { nbl.set_next_nbl(self.tail) };
 
         // Replace the tail with the new nbl
-        let nbl = NonNull::from(nbl);
-
-        if self.tail.replace(nbl).is_none() {
-            // The queue was empty, so the new tail is now also the head
-            self.head = Some(nbl);
+        //
+        // SAFETY: `nbl` comes from a `&mut NetBufferList`, which already asserts
+        // that all of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s
+        // are valid (the `NetBufferList` validity invariant) by references requiring
+        // that the place they're referencing is valid.
+        unsafe {
+            let nbl = Some(NonNull::from(nbl));
+            self.set_tail(nbl);
         }
 
         self.assert_valid();
@@ -92,14 +156,15 @@ impl NblQueue {
         let current = unsafe { current.as_mut() };
 
         // Take & break the link with the next `NetBufferList` so that we don't
-        // accidentally take the rest of the chain with `current`.
-        self.head = current.take_next_nbl();
-
-        // Fixup the queue links
-        if self.head.is_none() {
-            // If the queue is empty, both links should be empty
-            self.tail = None;
-        }
+        // accidentally take the rest of the queue with `current`.
+        //
+        // SAFETY: `next` comes from `current` which comes from `head`, and
+        // `NblChain::new` as well as previous calls to `NblChain::set_head`
+        // ensures that all accessible `NET_BUFFER_LIST`s are valid.
+        unsafe {
+            let next = current.take_next_nbl();
+            self.set_head(next)
+        };
 
         self.assert_valid();
 
@@ -120,6 +185,52 @@ impl NblQueue {
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are
         // valid.
         unsafe { IterMut::new(self.head) }
+    }
+
+    /// Sets the head of the queue, and updates the tail pointer as appropriate
+    ///
+    /// # Safety
+    ///
+    /// If `nbl` is not `None`, then all of the accessible `NET_BUFFER_LIST`s,
+    /// `NET_BUFFER`s, and `MDL`s must be valid.
+    #[inline]
+    unsafe fn set_head(&mut self, nbl: Option<NonNull<NetBufferList>>) {
+        if let Some(nbl) = nbl {
+            // `nbl` is a valid pointer to a `NetBufferList` so we can update the head.
+            self.head = Some(nbl);
+
+            if self.tail.is_none() {
+                // Queue was empty so set the tail too
+                self.tail = Some(nbl);
+            }
+        } else {
+            // Clearing the queue, can set both to `None`
+            self.head = None;
+            self.tail = None;
+        }
+    }
+
+    /// Sets the tail of the queue, and updates the head pointer as appropriate
+    ///
+    /// # Safety
+    ///
+    /// If `nbl` is not `None`, then all of the accessible `NET_BUFFER_LIST`s,
+    /// `NET_BUFFER`s, and `MDL`s must be valid.
+    #[inline]
+    unsafe fn set_tail(&mut self, nbl: Option<NonNull<NetBufferList>>) {
+        if let Some(nbl) = nbl {
+            // `nbl` is a valid pointer to a `NetBufferList` so we can update the tail.
+            self.tail = Some(nbl);
+
+            if self.head.is_none() {
+                // Queue was empty so set the tail too
+                self.head = Some(nbl);
+            }
+        } else {
+            // Clearing the queue, can set both to `None`
+            self.head = None;
+            self.tail = None;
+        }
     }
 
     /// Ensures that the queue is valid (only up to all of the nbls in the chain)

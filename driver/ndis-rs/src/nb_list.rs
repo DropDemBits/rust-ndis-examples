@@ -2,7 +2,7 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 
-use windows_kernel_sys::{NET_BUFFER_LIST, PNET_BUFFER_LIST};
+use windows_kernel_sys::NET_BUFFER_LIST;
 
 use crate::NblChain;
 
@@ -49,20 +49,37 @@ impl NetBufferList {
     pub(crate) fn next_nbl(&self) -> Option<NonNull<NetBufferList>> {
         // SAFETY: Having a `&self` transitively guarantees that all fields are properly initialized
         let next = unsafe { self.nbl.__bindgen_anon_1.__bindgen_anon_1.Next };
-        NonNull::new(next).map(|next| next.cast())
-    }
 
-    /// Gets a mutable reference to the next [`NetBufferList`] in a chain
-    pub(crate) fn next_nbl_mut(&mut self) -> &mut PNET_BUFFER_LIST {
-        // SAFETY: Having a `&mut self` transitively guarantees that all fields are properly initialized
-        unsafe { &mut self.nbl.__bindgen_anon_1.__bindgen_anon_1.Next }
+        // Casting is sound because `NET_BUFFER_LIST` and `NetBufferList` have the same layout
+        NonNull::new(next).map(|next| next.cast())
     }
 
     /// Gets the next [`NetBufferList`] in a chain, and detaches the current
     /// [`NetBufferList`] from the chain.
     pub(crate) fn take_next_nbl(&mut self) -> Option<NonNull<NetBufferList>> {
-        let next = core::mem::replace(self.next_nbl_mut(), core::ptr::null_mut());
-        NonNull::new(next).map(|next| next.cast())
+        let next = self.next_nbl();
+        // SAFETY: We're setting the next link to `None`, which means that we aren't
+        // linking to any other `NetBufferList`s from this one.
+        unsafe { self.set_next_nbl(None) };
+        next
+    }
+
+    /// Sets the next [`NetBufferList`] link to point to `next`.
+    ///
+    /// # Safety
+    ///
+    /// If `next` is not `None`, all `NET_BUFFER_LIST`s, `NET_BUFFER`s, and
+    /// `MDL`s accessible from `next` must be valid.
+    pub(crate) unsafe fn set_next_nbl(&mut self, next: Option<NonNull<NetBufferList>>) {
+        // Transform `next` into a `PNET_BUFFER_LIST`
+        //
+        // Casting is sound because `NetBufferList` and `NET_BUFFER_LIST` have the same layout
+        let next = next.map_or(core::ptr::null_mut(), |next| next.as_ptr().cast());
+
+        // Set the new next link
+        //
+        // SAFETY: Having a `&mut self` transitively guarantees that all fields are properly initialized
+        unsafe { self.nbl.__bindgen_anon_1.__bindgen_anon_1.Next = next };
     }
 }
 
@@ -123,6 +140,9 @@ impl<'chain> IterMut<'chain> {
     /// `head` must be a valid pointer to a [`NetBufferList`], and all
     /// [`NetBufferList`]s in the chain must be valid (see the
     /// "Validity Invariant" section of [`NetBufferList`]).
+    ///
+    /// Must also not alias with any other mutable reference to the
+    /// [`NetBufferList`] elements.
     pub unsafe fn new(head: Option<NonNull<NetBufferList>>) -> Self {
         Self {
             next: head,
