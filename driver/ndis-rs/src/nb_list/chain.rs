@@ -85,7 +85,7 @@ impl NblChain {
             "nbl to add to the queue must be detached"
         );
 
-        // Link the old head to the new `nbl`
+        // Link the new nbl to the old head
         //
         // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that all the
         // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from `head`

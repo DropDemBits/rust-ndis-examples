@@ -88,7 +88,7 @@ impl NblQueue {
             "nbl to add to the queue must be detached"
         );
 
-        // Link the old head to the new `nbl`
+        // Link the new `nbl` to the old head
         //
         // SAFETY: `NblQueue::new` and `NblQueue::set_head` ensures that all the
         // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from `head`
@@ -120,23 +120,25 @@ impl NblQueue {
             "nbl to add to the queue must be detached"
         );
 
-        // Link the old tail to the new `nbl`
-        //
-        // SAFETY: `NblQueue::new` and `NblQueue::set_tail` ensures that all the
-        // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from `tail`
-        // are valid.
-        unsafe { nbl.set_next_nbl(self.tail) };
+        let nbl = Some(NonNull::from(nbl));
 
-        // Replace the tail with the new nbl
+        if let Some(last) = self.last_mut() {
+            // Link the old tail to the new `nbl`
+            //
+            // SAFETY: `nbl` comes from a `&mut NetBufferList`, which already asserts
+            // that all of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s
+            // are valid (the `NetBufferList` validity invariant) by references requiring
+            // that the place they're referencing is valid.
+            unsafe { last.set_next_nbl(nbl) };
+        }
+
+        // Replace the tail with the new `nbl`
         //
         // SAFETY: `nbl` comes from a `&mut NetBufferList`, which already asserts
         // that all of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s
         // are valid (the `NetBufferList` validity invariant) by references requiring
         // that the place they're referencing is valid.
-        unsafe {
-            let nbl = Some(NonNull::from(nbl));
-            self.set_tail(nbl);
-        }
+        unsafe { self.set_tail(nbl) };
 
         self.assert_valid();
     }
@@ -253,5 +255,81 @@ impl NblQueue {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::boxed::Box;
+    use std::vec;
+    use std::vec::Vec;
+
+    use crate::NblQueue;
+
+    #[test]
+    fn create_empty_queue() {
+        let queue = NblQueue::new();
+
+        assert_eq!(queue.iter().count(), 0);
+    }
+
+    #[test]
+    fn queue_push_front_pop_front() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut queue = NblQueue::new();
+        for nbl in nbl_elements {
+            queue.push_front(nbl);
+        }
+
+        // should be pushed in reverse order
+        let mut flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        flags.reverse();
+
+        assert_eq!(&flags, &elements);
+
+        // should be pushed in normal order
+        let mut nbls = vec![];
+        while let Some(nbl) = queue.pop_front() {
+            nbls.push(nbl.flags());
+            let _ = unsafe { Box::from_raw(nbl) };
+        }
+        nbls.reverse();
+
+        assert_eq!(&nbls, &elements);
+    }
+
+    #[test]
+    fn queue_push_back_pop_front() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut queue = NblQueue::new();
+        for nbl in nbl_elements {
+            queue.push_back(nbl);
+        }
+
+        // should be pushed in normal order
+        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+
+        assert_eq!(&flags, &elements);
+
+        // should be popped in normal order
+        let mut nbls = vec![];
+        while let Some(nbl) = queue.pop_front() {
+            nbls.push(nbl.flags());
+            let _ = unsafe { Box::from_raw(nbl) };
+        }
+
+        assert_eq!(&nbls, &elements);
     }
 }
