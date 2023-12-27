@@ -8,7 +8,7 @@ use crate::NetBufferList;
 
 use super::{Iter, IterMut};
 
-/// A queue of [`NetBuffer`] with O(1) append of single elements.
+/// A queue of [`NetBufferList`]s with O(1) append of single elements.
 #[derive(Debug, Default)]
 pub struct NblQueue {
     /// Points to the head of the queue (the next element to pop), or `None` if
@@ -20,7 +20,7 @@ pub struct NblQueue {
 }
 
 impl NblQueue {
-    /// Creates a new empty [`NblQueue`]
+    /// Creates a new empty [`NblQueue`].
     pub fn new() -> Self {
         Self::default()
     }
@@ -53,9 +53,9 @@ impl NblQueue {
         (head.cast(), tail.cast())
     }
 
-    /// Gets the first element of the queue
+    /// Gets the first element of the queue.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn first(&self) -> Option<&NetBufferList> {
         // SAFETY: `NblQueue::set_head` ensures that `head` is a valid pointer
         // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
@@ -66,9 +66,9 @@ impl NblQueue {
         self.head.map(|head| unsafe { head.as_ref() })
     }
 
-    /// Gets a mutable reference to the first element of the queue
+    /// Gets a mutable reference to the first element of the queue.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn first_mut(&mut self) -> Option<&mut NetBufferList> {
         // SAFETY: `NblQueue::set_head` ensures that `head` is a valid pointer
         // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
@@ -80,9 +80,9 @@ impl NblQueue {
         self.head.map(|mut head| unsafe { head.as_mut() })
     }
 
-    /// Gets the last element of the queue
+    /// Gets the last element of the queue.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn last(&self) -> Option<&NetBufferList> {
         // SAFETY: `NblQueue::set_tail` ensures that `tail` is a valid pointer
         // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
@@ -93,9 +93,9 @@ impl NblQueue {
         self.tail.map(|tail| unsafe { tail.as_ref() })
     }
 
-    /// Gets a mutable reference to the last element of the queue
+    /// Gets a mutable reference to the last element of the queue.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn last_mut(&mut self) -> Option<&mut NetBufferList> {
         // SAFETY: `NblQueue::set_tail` ensures that `tail` is a valid pointer
         // to a `NetBufferList` (i.e. all of the accessible `NET_BUFFER_LIST`s,
@@ -107,9 +107,9 @@ impl NblQueue {
         self.tail.map(|mut tail| unsafe { tail.as_mut() })
     }
 
-    /// Pushes a [`NetBufferList`] at the front of the queue
+    /// Pushes a [`NetBufferList`] at the front of the queue.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn push_front(&mut self, nbl: &'static mut NetBufferList) {
         self.assert_valid();
 
@@ -173,9 +173,9 @@ impl NblQueue {
         self.assert_valid();
     }
 
-    /// Pops the next [`NetBufferList`] from the front of the queue
+    /// Pops the next [`NetBufferList`] from the front of the queue.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn pop_front(&mut self) -> Option<&'static mut NetBufferList> {
         self.assert_valid();
 
@@ -203,7 +203,7 @@ impl NblQueue {
         Some(current)
     }
 
-    /// Creates an iterator over all of the [`NetBufferList`]s in the queue
+    /// Creates an iterator over all of the [`NetBufferList`]s in the queue.
     pub fn iter(&self) -> Iter<'_> {
         // SAFETY: The validity invariant of a `NetBufferList` ensures that all
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are
@@ -211,7 +211,7 @@ impl NblQueue {
         unsafe { Iter::new(self.head) }
     }
 
-    /// Creates a mutable iterator over all of the [`NetBufferList`]s in the queue
+    /// Creates a mutable iterator over all of the [`NetBufferList`]s in the queue.
     pub fn iter_mut(&mut self) -> IterMut<'_> {
         // SAFETY: The validity invariant of a `NetBufferList` ensures that all
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are
@@ -219,7 +219,7 @@ impl NblQueue {
         unsafe { IterMut::new(self.head) }
     }
 
-    /// Sets the head of the queue, and updates the tail pointer as appropriate
+    /// Sets the head of the queue, and updates the tail pointer as appropriate.
     ///
     /// # Safety
     ///
@@ -242,7 +242,7 @@ impl NblQueue {
         }
     }
 
-    /// Sets the tail of the queue, and updates the head pointer as appropriate
+    /// Sets the tail of the queue, and updates the head pointer as appropriate.
     ///
     /// # Safety
     ///
@@ -361,5 +361,31 @@ mod test {
         }
 
         assert_eq!(&nbls, &elements);
+    }
+
+    #[test]
+    fn raw_round_trip() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut queue = NblQueue::new();
+        for nbl in nbl_elements {
+            queue.push_back(nbl);
+        }
+
+        let queue = {
+            let (head, tail) = queue.into_raw_parts();
+            // SAFETY: from `into_raw_parts`
+            unsafe { NblQueue::from_raw_parts(head, tail) }
+        };
+
+        // should be pushed in normal order
+        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+
+        assert_eq!(&flags, &elements);
     }
 }

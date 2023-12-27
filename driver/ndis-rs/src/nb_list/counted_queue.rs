@@ -2,7 +2,7 @@
 
 use windows_kernel_sys::PNET_BUFFER_LIST;
 
-use crate::NblQueue;
+use crate::{NblQueue, NetBufferList};
 
 use super::{Iter, IterMut};
 
@@ -53,22 +53,88 @@ impl NblCountedQueue {
         (head, tail, self.length)
     }
 
-    /// Gets the length of the counted queue
+    /// Gets the length of the counted queue.
     pub fn len(&self) -> usize {
         self.length
     }
 
-    /// Creates an iterator over all of the [`NetBufferList`]s in the queue
+    /// Gets the first element of the queue.
+    ///
+    /// Completes in O(1) time.
+    pub fn first(&self) -> Option<&NetBufferList> {
+        self.queue.first()
+    }
+
+    /// Gets a mutable reference to the first element of the queue.
+    ///
+    /// Completes in O(1) time.
+    pub fn first_mut(&mut self) -> Option<&mut NetBufferList> {
+        self.queue.first_mut()
+    }
+
+    /// Gets the last element of the queue.
+    ///
+    /// Completes in O(1) time.
+    pub fn last(&self) -> Option<&NetBufferList> {
+        self.queue.last()
+    }
+
+    /// Gets a mutable reference to the last element of the queue.
+    ///
+    /// Completes in O(1) time.
+    pub fn last_mut(&mut self) -> Option<&mut NetBufferList> {
+        self.queue.last_mut()
+    }
+
+    /// Pushes a [`NetBufferList`] at the front of the queue.
+    ///
+    /// Completes in O(1) time.
+    pub fn push_front(&mut self, nbl: &'static mut NetBufferList) {
+        self.assert_valid();
+
+        self.queue.push_front(nbl);
+        self.length = self.length.saturating_add(1);
+
+        self.assert_valid();
+    }
+
+    /// Pushes a [`NetBufferList`] at the back of the queue
+    ///
+    /// Completes in O(1) time
+    pub fn push_back(&mut self, nbl: &'static mut NetBufferList) {
+        self.assert_valid();
+
+        self.queue.push_back(nbl);
+        self.length = self.length.saturating_add(1);
+
+        self.assert_valid();
+    }
+
+    /// Pops the next [`NetBufferList`] from the front of the queue.
+    ///
+    /// Completes in O(1) time.
+    pub fn pop_front(&mut self) -> Option<&'static mut NetBufferList> {
+        self.assert_valid();
+
+        let element = self.queue.pop_front();
+        self.length = self.length.saturating_sub(1);
+
+        self.assert_valid();
+
+        element
+    }
+
+    /// Creates an iterator over all of the [`NetBufferList`]s in the queue.
     pub fn iter(&self) -> Iter<'_> {
         self.queue.iter()
     }
 
-    /// Creates a mutable iterator over all of the [`NetBufferList`]s in the queue
+    /// Creates a mutable iterator over all of the [`NetBufferList`]s in the queue.
     pub fn iter_mut(&mut self) -> IterMut<'_> {
         self.queue.iter_mut()
     }
 
-    /// Ensures that the counted queue is valid
+    /// Ensures that the counted queue is valid.
     fn assert_valid(&self) {
         if cfg!(debug_assertions) {
             self.queue.assert_valid();
@@ -76,5 +142,118 @@ impl NblCountedQueue {
             let real_len = self.iter().count();
             debug_assert_eq!(self.length, real_len, "mismatch in counted queue length");
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::boxed::Box;
+    use std::vec;
+    use std::vec::Vec;
+
+    use crate::NblCountedQueue;
+
+    #[test]
+    fn create_empty_queue() {
+        let queue = NblCountedQueue::new();
+
+        assert_eq!(queue.iter().count(), 0);
+    }
+
+    #[test]
+    fn queue_push_front_pop_front() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut queue = NblCountedQueue::new();
+        for nbl in nbl_elements {
+            queue.push_front(nbl);
+        }
+
+        // should be pushed in reverse order
+        let mut flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        flags.reverse();
+
+        assert_eq!(&flags, &elements);
+        assert_eq!(queue.len(), 5);
+
+        // should be pushed in normal order
+        let mut nbls = vec![];
+        while let Some(nbl) = queue.pop_front() {
+            nbls.push(nbl.flags());
+            let _ = unsafe { Box::from_raw(nbl) };
+        }
+        nbls.reverse();
+
+        assert_eq!(&nbls, &elements);
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn queue_push_back_pop_front() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut queue = NblCountedQueue::new();
+        for nbl in nbl_elements {
+            queue.push_back(nbl);
+        }
+
+        // should be pushed in normal order
+        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+
+        assert_eq!(&flags, &elements);
+        assert_eq!(queue.len(), 5);
+
+        // should be popped in normal order
+        let mut nbls = vec![];
+        while let Some(nbl) = queue.pop_front() {
+            nbls.push(nbl.flags());
+            let _ = unsafe { Box::from_raw(nbl) };
+        }
+
+        assert_eq!(&nbls, &elements);
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn raw_round_trip() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut queue = NblCountedQueue::new();
+        for nbl in nbl_elements {
+            queue.push_back(nbl);
+        }
+
+        // should be pushed in normal order
+        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+
+        assert_eq!(&flags, &elements);
+        assert_eq!(queue.len(), 5);
+
+        let queue = {
+            let (head, tail, length) = queue.into_raw_parts();
+            // SAFETY: from `into_raw_parts`
+            unsafe { NblCountedQueue::from_raw_parts(head, tail, length) }
+        };
+
+        // should be pushed in normal order
+        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+
+        assert_eq!(&flags, &elements);
+        assert_eq!(queue.len(), 5);
     }
 }

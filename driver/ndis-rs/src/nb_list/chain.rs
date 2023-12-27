@@ -213,4 +213,30 @@ mod test {
 
         assert_eq!(&nbls, &elements);
     }
+
+    #[test]
+    fn raw_round_trip() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut chain = NblChain::new();
+        for nbl in nbl_elements {
+            chain.push_front(nbl);
+        }
+
+        let chain = {
+            // SAFETY: from `into_raw`
+            unsafe { NblChain::from_raw(chain.into_raw()) }
+        };
+
+        // should be pushed in reverse order
+        let mut flags = chain.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        flags.reverse();
+
+        assert_eq!(&flags, &elements);
+    }
 }
