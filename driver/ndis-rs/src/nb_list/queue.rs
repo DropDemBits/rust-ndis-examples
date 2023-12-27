@@ -2,6 +2,8 @@
 
 use core::ptr::NonNull;
 
+use windows_kernel_sys::PNET_BUFFER_LIST;
+
 use crate::NetBufferList;
 
 use super::{Iter, IterMut};
@@ -21,6 +23,34 @@ impl NblQueue {
     /// Creates a new empty [`NblQueue`]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates a [`NblQueue`] from its constituent components.
+    ///
+    /// # Safety
+    ///
+    /// - `head` must either be null, or a valid pointer to a `NET_BUFFER_LIST`,
+    ///   and all of the directly accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s,
+    ///   and `MDL`s are valid.
+    /// - `tail` must be null if `head` is null, or must otherwise point to the
+    ///   last `NET_BUFFER_LIST` in the chain starting from `head`.
+    pub unsafe fn from_raw_parts(head: PNET_BUFFER_LIST, tail: PNET_BUFFER_LIST) -> Self {
+        let head = NonNull::new(head.cast());
+        let tail = NonNull::new(tail.cast());
+
+        let queue = Self { head, tail };
+        queue.assert_valid();
+        queue
+    }
+
+    /// Decomposes a [`NblQueue`] into its raw parts.
+    ///
+    /// The tuple matches the argument order of [`NblQueue::from_raw_parts`].
+    pub fn into_raw_parts(self) -> (PNET_BUFFER_LIST, PNET_BUFFER_LIST) {
+        let head = self.head.map_or(core::ptr::null_mut(), |it| it.as_ptr());
+        let tail = self.tail.map_or(core::ptr::null_mut(), |it| it.as_ptr());
+
+        (head.cast(), tail.cast())
     }
 
     /// Gets the first element of the queue

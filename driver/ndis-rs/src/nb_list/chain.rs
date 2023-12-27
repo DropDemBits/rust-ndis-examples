@@ -35,6 +35,15 @@ impl NblChain {
         Self { head }
     }
 
+    /// Decomposes a [`NblChain`] into its raw components
+    ///
+    /// The returned pointer is guaranteed to be valid to pass to [`NblChain::from_raw`]
+    pub fn into_raw(self) -> PNET_BUFFER_LIST {
+        self.head
+            .map_or(core::ptr::null_mut(), |ptr| ptr.as_ptr())
+            .cast()
+    }
+
     /// Gets the first element of the chain
     ///
     /// Completes in O(1) time
