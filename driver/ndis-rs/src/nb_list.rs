@@ -28,12 +28,6 @@ pub struct NetBufferList {
     nbl: NET_BUFFER_LIST,
 }
 
-impl core::fmt::Debug for NetBufferList {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("NetBufferList").finish_non_exhaustive()
-    }
-}
-
 impl NetBufferList {
     /// Gets the ??? flags of the nbl
     pub fn flags(&self) -> u32 {
@@ -78,10 +72,20 @@ impl NetBufferList {
 
         // Set the new next link
         //
-        // SAFETY: Having a `&mut self` transitively guarantees that all fields are properly initialized
-        unsafe { self.nbl.__bindgen_anon_1.__bindgen_anon_1.Next = next };
+        // Caller ensures that all `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s
+        // accessible from `next` are valid.
+        self.nbl.__bindgen_anon_1.__bindgen_anon_1.Next = next;
     }
 }
+
+impl core::fmt::Debug for NetBufferList {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NetBufferList").finish_non_exhaustive()
+    }
+}
+
+unsafe impl Send for NetBufferList {}
+unsafe impl Sync for NetBufferList {}
 
 /// An iterator over [`NetBufferList`]s in the same chain.
 pub struct Iter<'chain> {
@@ -125,6 +129,9 @@ impl<'chain> Iterator for Iter<'chain> {
 }
 
 impl<'a> core::iter::FusedIterator for Iter<'a> {}
+
+unsafe impl<'a> Send for Iter<'a> {}
+unsafe impl<'a> Sync for Iter<'a> {}
 
 /// A mutable iterator over [`NetBufferList`]s in the same chain.
 pub struct IterMut<'chain> {
@@ -171,6 +178,11 @@ impl<'chain> Iterator for IterMut<'chain> {
     }
 }
 
+impl<'a> core::iter::FusedIterator for IterMut<'a> {}
+
+unsafe impl<'a> Send for IterMut<'a> {}
+unsafe impl<'a> Sync for IterMut<'a> {}
+
 /// An owning iterator over all of the [`NetBufferList`]s in the same chain.
 pub struct IntoIter {
     chain: NblChain,
@@ -191,4 +203,28 @@ impl Iterator for IntoIter {
     }
 }
 
-impl<'a> core::iter::FusedIterator for IterMut<'a> {}
+impl core::iter::FusedIterator for IntoIter {}
+
+#[allow(dead_code)]
+fn assert_properties() {
+    fn is_send<T: Send>() {}
+    fn is_sync<T: Send>() {}
+
+    is_send::<crate::NetBufferList>();
+    is_sync::<crate::NetBufferList>();
+
+    is_send::<crate::NblQueue>();
+    is_sync::<crate::NblQueue>();
+
+    is_send::<crate::NblCountedQueue>();
+    is_sync::<crate::NblCountedQueue>();
+
+    is_send::<Iter<'_>>();
+    is_sync::<Iter<'_>>();
+
+    is_send::<IterMut<'_>>();
+    is_sync::<IterMut<'_>>();
+
+    is_send::<IntoIter>();
+    is_sync::<IntoIter>();
+}

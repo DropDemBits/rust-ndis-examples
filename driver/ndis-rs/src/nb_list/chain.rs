@@ -170,6 +170,9 @@ impl NblChain {
     }
 }
 
+unsafe impl Send for NblChain {}
+unsafe impl Sync for NblChain {}
+
 #[cfg(test)]
 mod test {
     use std::boxed::Box;

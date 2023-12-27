@@ -288,6 +288,9 @@ impl NblQueue {
     }
 }
 
+unsafe impl Send for NblQueue {}
+unsafe impl Sync for NblQueue {}
+
 #[cfg(test)]
 mod test {
     use std::boxed::Box;
