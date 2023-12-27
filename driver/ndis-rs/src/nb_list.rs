@@ -2,7 +2,7 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 
-use windows_kernel_sys::{NET_BUFFER_LIST, PNET_BUFFER_LIST};
+use windows_kernel_sys::{NDIS_NET_BUFFER_LIST_INFO, NET_BUFFER_LIST, PNET_BUFFER_LIST, PVOID};
 
 use crate::{NbChain, NblChain};
 
@@ -77,6 +77,26 @@ impl NetBufferList {
     /// Gets a mutable reference to the ??? flags of the nbl
     pub fn flags_mut(&mut self) -> &mut u32 {
         &mut self.nbl.Flags
+    }
+
+    /// Gets the cancellation id from the `NetBufferListCancelId` info field.
+    pub fn cancel_id(&self) -> usize {
+        self.nbl_info(NDIS_NET_BUFFER_LIST_INFO::NetBufferListCancelId)
+    }
+
+    /// Sets the `NetBufferListCancelId` info field.
+    pub fn set_cancel_id(&mut self, cancel_id: usize) {
+        *self.nbl_info_mut(NDIS_NET_BUFFER_LIST_INFO::NetBufferListCancelId) = cancel_id as *mut _;
+    }
+
+    /// Get a `NetBufferListInfo` value.
+    pub fn nbl_info(&self, id: NDIS_NET_BUFFER_LIST_INFO) -> usize {
+        self.nbl.NetBufferListInfo[id.0 as usize] as usize
+    }
+
+    /// Get a mutable reference to a `NetBufferListInfo` value.
+    pub fn nbl_info_mut(&mut self, id: NDIS_NET_BUFFER_LIST_INFO) -> &mut PVOID {
+        &mut self.nbl.NetBufferListInfo[id.0 as usize]
     }
 
     /// Gets the next [`NetBufferList`] in a chain
