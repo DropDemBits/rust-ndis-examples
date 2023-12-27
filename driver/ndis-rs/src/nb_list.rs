@@ -2,7 +2,7 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 
-use windows_kernel_sys::NET_BUFFER_LIST;
+use windows_kernel_sys::{NET_BUFFER_LIST, PNET_BUFFER_LIST};
 
 use crate::NblChain;
 
@@ -29,6 +29,25 @@ pub struct NetBufferList {
 }
 
 impl NetBufferList {
+    /// Casts a `PNET_BUFFER_LIST` into a `NetBufferList` pointer
+    ///
+    /// # Safety
+    ///
+    /// All of the `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from
+    /// `nbl` must be valid.
+    pub unsafe fn ptr_cast_from_raw(nbl: PNET_BUFFER_LIST) -> Option<NonNull<NetBufferList>> {
+        // This is sound because `NetBufferList` and `NET_BUFFER_LIST` have the same
+        // layout due to `NetBufferList` being `repr(transparent)`
+        NonNull::new(nbl).map(NonNull::cast)
+    }
+
+    /// Casts a `NetBufferList` pointer into a `PNET_BUFFER_LIST`
+    pub fn ptr_cast_to_raw(nb: Option<NonNull<NetBufferList>>) -> PNET_BUFFER_LIST {
+        // This is sound because `NetBufferList` and `NET_BUFFER_LIST` have the same
+        // layout due to `NetBufferList` being `repr(transparent)`
+        nb.map_or(core::ptr::null_mut(), |ptr| ptr.cast().as_ptr())
+    }
+
     /// Gets the ??? flags of the nbl
     pub fn flags(&self) -> u32 {
         self.nbl.Flags
@@ -41,11 +60,14 @@ impl NetBufferList {
 
     /// Gets the next [`NetBufferList`] in a chain
     pub(crate) fn next_nbl(&self) -> Option<NonNull<NetBufferList>> {
-        // SAFETY: Having a `&self` transitively guarantees that all fields are properly initialized
+        // SAFETY: Having a `&self` transitively guarantees that all fields are
+        // properly initialized.
         let next = unsafe { self.nbl.__bindgen_anon_1.__bindgen_anon_1.Next };
 
-        // Casting is sound because `NET_BUFFER_LIST` and `NetBufferList` have the same layout
-        NonNull::new(next).map(|next| next.cast())
+        // SAFETY: Having a `&self` transitively guarantees that all of the
+        // accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are valid by
+        // the validity invarint of `NetBufferList`.
+        unsafe { Self::ptr_cast_from_raw(next) }
     }
 
     /// Gets the next [`NetBufferList`] in a chain, and detaches the current
@@ -66,9 +88,7 @@ impl NetBufferList {
     /// `MDL`s accessible from `next` must be valid.
     pub(crate) unsafe fn set_next_nbl(&mut self, next: Option<NonNull<NetBufferList>>) {
         // Transform `next` into a `PNET_BUFFER_LIST`
-        //
-        // Casting is sound because `NetBufferList` and `NET_BUFFER_LIST` have the same layout
-        let next = next.map_or(core::ptr::null_mut(), |next| next.as_ptr().cast());
+        let next = Self::ptr_cast_to_raw(next);
 
         // Set the new next link
         //

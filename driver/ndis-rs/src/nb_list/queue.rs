@@ -35,8 +35,10 @@ impl NblQueue {
     /// - `tail` must be null if `head` is null, or must otherwise point to the
     ///   last `NET_BUFFER_LIST` in the chain starting from `head`.
     pub unsafe fn from_raw_parts(head: PNET_BUFFER_LIST, tail: PNET_BUFFER_LIST) -> Self {
-        let head = NonNull::new(head.cast());
-        let tail = NonNull::new(tail.cast());
+        // SAFETY: Caller ensures that `head` is a valid pointer
+        let head = unsafe { NetBufferList::ptr_cast_from_raw(head) };
+        // SAFETY: Caller ensures that `tail` is a valid pointer
+        let tail = unsafe { NetBufferList::ptr_cast_from_raw(tail) };
 
         let queue = Self { head, tail };
         queue.assert_valid();
@@ -47,10 +49,14 @@ impl NblQueue {
     ///
     /// The tuple matches the argument order of [`NblQueue::from_raw_parts`].
     pub fn into_raw_parts(self) -> (PNET_BUFFER_LIST, PNET_BUFFER_LIST) {
-        let head = self.head.map_or(core::ptr::null_mut(), |it| it.as_ptr());
-        let tail = self.tail.map_or(core::ptr::null_mut(), |it| it.as_ptr());
+        self.assert_valid();
 
-        (head.cast(), tail.cast())
+        let Self { head, tail } = self;
+
+        (
+            NetBufferList::ptr_cast_to_raw(head),
+            NetBufferList::ptr_cast_to_raw(tail),
+        )
     }
 
     /// Gets the first element of the queue.

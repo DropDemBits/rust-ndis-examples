@@ -13,8 +13,8 @@ use super::{IntoIter, Iter, IterMut, NetBufferList};
 /// A [`NblChain`] owns all of the [`NetBufferList`]s that it comprises.
 #[derive(Debug, Default)]
 pub struct NblChain {
-    /// Invariant: `NblChain::new` ensures that all of the accessible
-    /// `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are valid.
+    /// Invariant: `NblChain::new` and `NblChain::set_head` ensures that all of
+    /// the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are valid.
     head: Option<NonNull<NetBufferList>>,
 }
 
@@ -32,7 +32,10 @@ impl NblChain {
     /// and all of the directly accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s,
     /// and `MDL`s are valid.
     pub unsafe fn from_raw(head: PNET_BUFFER_LIST) -> Self {
-        let head = NonNull::new(head).map(|head| head.cast());
+        // SAFETY: Caller ensures that `head` must either be null, or a valid
+        // pointer to a `NET_BUFFER_LIST`, and all of the directly accessible
+        // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are valid.
+        let head = unsafe { NetBufferList::ptr_cast_from_raw(head) };
 
         Self { head }
     }
@@ -41,9 +44,8 @@ impl NblChain {
     ///
     /// The returned pointer is guaranteed to be valid to pass to [`NblChain::from_raw`]
     pub fn into_raw(self) -> PNET_BUFFER_LIST {
-        self.head
-            .map_or(core::ptr::null_mut(), |ptr| ptr.as_ptr())
-            .cast()
+        let Self { head } = self;
+        NetBufferList::ptr_cast_to_raw(head)
     }
 
     /// Returns `true` if the chain has no elements.
@@ -224,8 +226,8 @@ impl NblChain {
         };
 
         // Convert head & tail into the appropriate pointer type
-        let head = head.cast().as_ptr();
-        let tail = tail.cast().as_ptr();
+        let head = NetBufferList::ptr_cast_to_raw(Some(head));
+        let tail = NetBufferList::ptr_cast_to_raw(Some(tail));
 
         // SAFETY:
         // - `head` came from a `NblChain`, which guarantees that all
@@ -273,8 +275,8 @@ impl NblChain {
         let count = count.checked_add(1).expect("overflow in length count");
 
         // Convert head & tail into the appropriate pointer type
-        let head = head.cast().as_ptr();
-        let tail = tail.cast().as_ptr();
+        let head = NetBufferList::ptr_cast_to_raw(Some(head));
+        let tail = NetBufferList::ptr_cast_to_raw(Some(tail));
 
         // SAFETY:
         // - `head` came from a `NblChain`, which guarantees that all
