@@ -12,6 +12,7 @@ use super::{IntoIter, Iter, IterMut, NetBufferList};
 ///
 /// A [`NblChain`] owns all of the [`NetBufferList`]s that it comprises.
 #[derive(Debug, Default)]
+#[repr(transparent)]
 pub struct NblChain {
     /// Invariant: `NblChain::new` and `NblChain::set_head` ensures that all of
     /// the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are valid.
@@ -53,9 +54,9 @@ impl NblChain {
         self.head.is_none()
     }
 
-    /// Gets the first element of the chain
+    /// Gets the first element of the chain.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn first(&self) -> Option<&NetBufferList> {
         // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that `head`
         // is a valid pointer to a `NetBufferList` (i.e. all of the accessible
@@ -66,9 +67,9 @@ impl NblChain {
         self.head.map(|head| unsafe { head.as_ref() })
     }
 
-    /// Gets a mutable reference to the first element of the chain
+    /// Gets a mutable reference to the first element of the chain.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn first_mut(&mut self) -> Option<&mut NetBufferList> {
         // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that `head`
         // is a valid pointer to a `NetBufferList` (i.e. all of the accessible
@@ -80,23 +81,23 @@ impl NblChain {
         self.head.map(|mut head| unsafe { head.as_mut() })
     }
 
-    /// Gets the last element in the chain
+    /// Gets the last element in the chain.
     ///
-    /// Completes in O(n) time
+    /// Completes in O(n) time.
     pub fn last(&self) -> Option<&NetBufferList> {
         self.iter().last()
     }
 
-    /// Gets a mutable reference to the last element in the chain
+    /// Gets a mutable reference to the last element in the chain.
     ///
-    /// Completes in O(n) time
+    /// Completes in O(n) time.
     pub fn last_mut(&mut self) -> Option<&mut NetBufferList> {
         self.iter_mut().last()
     }
 
-    /// Pushes a [`NetBufferList`] at the front of the chain
+    /// Pushes a [`NetBufferList`] at the front of the chain.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn push_front(&mut self, nbl: &'static mut NetBufferList) {
         debug_assert!(
             nbl.next_nbl().is_none(),
@@ -122,9 +123,9 @@ impl NblChain {
         }
     }
 
-    /// Pops the next [`NetBufferList`] from the front of the chain
+    /// Pops the next [`NetBufferList`] from the front of the chain.
     ///
-    /// Completes in O(1) time
+    /// Completes in O(1) time.
     pub fn pop_front(&mut self) -> Option<&'static mut NetBufferList> {
         let mut current = self.head.take()?;
 
@@ -157,7 +158,7 @@ impl NblChain {
         };
 
         if let Some(this_tail) = self.last_mut() {
-            // Queue is not empty, steal the tail.
+            // Queue is not empty, steal the head.
             //
             // SAFETY: New next nbl comes from another `NblChain`s' head, which
             // is guaranteed to have all of the accessible `NET_BUFFER_LIST`s,
@@ -166,7 +167,7 @@ impl NblChain {
         } else {
             debug_assert!(self.is_empty());
 
-            // No last entry, so the queue must be empty so we can replace the
+            // No last entry, so the chain must be empty so we can replace the
             // head.
             //
             // SAFETY: New head comes from another `NblChain`s' head, which is
@@ -291,12 +292,12 @@ impl NblChain {
         unsafe { NblCountedQueue::from_raw_parts(head, tail, count) }
     }
 
-    /// Sets the head of the chain
+    /// Sets the head of the chain.
     ///
     /// # Safety
     ///
     /// If `nbl` is not `None`, then all of the accessible `NET_BUFFER_LIST`s,
-    /// `NET_BUFFER`s, and `MDL`s must be valid
+    /// `NET_BUFFER`s, and `MDL`s must be valid.
     #[inline]
     unsafe fn set_head(&mut self, nbl: Option<NonNull<NetBufferList>>) {
         self.head = nbl;

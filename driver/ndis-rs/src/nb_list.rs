@@ -4,7 +4,7 @@ use core::{marker::PhantomData, ptr::NonNull};
 
 use windows_kernel_sys::{NET_BUFFER_LIST, PNET_BUFFER_LIST};
 
-use crate::NblChain;
+use crate::{NbChain, NblChain};
 
 pub mod chain;
 pub mod counted_queue;
@@ -46,6 +46,26 @@ impl NetBufferList {
         // This is sound because `NetBufferList` and `NET_BUFFER_LIST` have the same
         // layout due to `NetBufferList` being `repr(transparent)`
         nb.map_or(core::ptr::null_mut(), |ptr| ptr.cast().as_ptr())
+    }
+
+    pub fn nb_chain(&self) -> &NbChain {
+        // SAFETY: Having a `&self` transitively guarantees that all fields are
+        // properly initialized.
+        let first_nb_field = unsafe {
+            core::ptr::addr_of!(self.nbl.__bindgen_anon_1.__bindgen_anon_1.FirstNetBuffer)
+        };
+
+        unsafe { NbChain::from_raw_field(first_nb_field) }
+    }
+
+    pub fn nb_chain_mut(&mut self) -> &mut NbChain {
+        // SAFETY: Having a `&self` transitively guarantees that all fields are
+        // properly initialized.
+        let first_nb_field = unsafe {
+            core::ptr::addr_of_mut!(self.nbl.__bindgen_anon_1.__bindgen_anon_1.FirstNetBuffer)
+        };
+
+        unsafe { NbChain::from_raw_field_mut(first_nb_field) }
     }
 
     /// Gets the ??? flags of the nbl
@@ -228,10 +248,13 @@ impl core::iter::FusedIterator for IntoIter {}
 #[allow(dead_code)]
 fn assert_properties() {
     fn is_send<T: Send>() {}
-    fn is_sync<T: Send>() {}
+    fn is_sync<T: Sync>() {}
 
     is_send::<crate::NetBufferList>();
     is_sync::<crate::NetBufferList>();
+
+    is_send::<crate::NblChain>();
+    is_sync::<crate::NblChain>();
 
     is_send::<crate::NblQueue>();
     is_sync::<crate::NblQueue>();

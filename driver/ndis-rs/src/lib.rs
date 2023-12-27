@@ -30,12 +30,20 @@ pub use nb_list::{
 pub(crate) mod test {
     use std::boxed::Box;
 
-    use crate::NetBufferList;
+    use crate::{NetBuffer, NetBufferList};
 
     /// Allocates a [`NetBufferList`]
     pub(crate) fn alloc_nbl() -> Box<NetBufferList> {
         use std::alloc::Layout;
         let layout = Layout::new::<NetBufferList>();
+        let blah = unsafe { std::alloc::alloc_zeroed(layout).cast() };
+        unsafe { Box::from_raw(blah) }
+    }
+
+    /// Allocates a [`NetBuffer`]
+    pub(crate) fn alloc_nb() -> Box<NetBuffer> {
+        use std::alloc::Layout;
+        let layout = Layout::new::<NetBuffer>();
         let blah = unsafe { std::alloc::alloc_zeroed(layout).cast() };
         unsafe { Box::from_raw(blah) }
     }
