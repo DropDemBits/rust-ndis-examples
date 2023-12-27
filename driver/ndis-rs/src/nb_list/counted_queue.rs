@@ -151,6 +151,18 @@ impl NblCountedQueue {
         self.assert_valid();
     }
 
+    /// Moves all elements from `other`'s chain into `self`, leaving `other` empty.
+    ///
+    /// Completes in O(n) time.
+    pub fn append_slow(&mut self, other: &mut NblChain) {
+        self.assert_valid();
+
+        let other = core::mem::take(other);
+        self.append(&mut other.into_counted_queue());
+
+        self.assert_valid();
+    }
+
     /// Creates an iterator over all of the [`NetBufferList`]s in the queue.
     pub fn iter(&self) -> Iter<'_> {
         self.queue.iter()
@@ -198,7 +210,7 @@ mod test {
     use std::vec;
     use std::vec::Vec;
 
-    use crate::NblCountedQueue;
+    use crate::{NblChain, NblCountedQueue};
 
     #[test]
     fn create_empty_queue() {
@@ -337,5 +349,42 @@ mod test {
             &queue_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
             &elements
         );
+    }
+
+    #[test]
+    fn queue_append_slow() {
+        let elements = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let (elem_a, elem_b) = elements.split_at(elements.len() / 2);
+
+        // don't need to reverse because we can `push_back`
+        let nbl_elements_a = elem_a.iter().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut queue_a = NblCountedQueue::new();
+        for nbl in nbl_elements_a {
+            queue_a.push_back(nbl);
+        }
+
+        let nbl_elements_b = elem_b.iter().rev().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut chain_b = NblChain::new();
+        for nbl in nbl_elements_b {
+            chain_b.push_front(nbl);
+        }
+
+        queue_a.append_slow(&mut chain_b);
+        assert!(chain_b.is_empty());
+        assert_eq!(
+            &queue_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
+            &elements
+        );
+        assert_eq!(queue_a.len(), elements.len());
     }
 }

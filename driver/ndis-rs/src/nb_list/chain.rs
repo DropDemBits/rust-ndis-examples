@@ -4,12 +4,14 @@ use core::ptr::NonNull;
 
 use windows_kernel_sys::PNET_BUFFER_LIST;
 
+use crate::{NblCountedQueue, NblQueue};
+
 use super::{IntoIter, Iter, IterMut, NetBufferList};
 
 /// A singly-linked list of [`NetBufferList`]s.
 ///
 /// A [`NblChain`] owns all of the [`NetBufferList`]s that it comprises.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct NblChain {
     /// Invariant: `NblChain::new` ensures that all of the accessible
     /// `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are valid.
@@ -144,6 +146,34 @@ impl NblChain {
         Some(current)
     }
 
+    /// Moves all elements of `other` into `self`, leaving `other` empty.
+    ///
+    /// Completes in O(n) time.
+    pub fn append_slow(&mut self, other: &mut NblChain) {
+        let Some(other_head) = other.head.take() else {
+            return;
+        };
+
+        if let Some(this_tail) = self.last_mut() {
+            // Queue is not empty, steal the tail.
+            //
+            // SAFETY: New next nbl comes from another `NblChain`s' head, which
+            // is guaranteed to have all of the accessible `NET_BUFFER_LIST`s,
+            // `NET_BUFFER`s, and `MDL`s be valid.
+            unsafe { this_tail.set_next_nbl(Some(other_head)) };
+        } else {
+            debug_assert!(self.is_empty());
+
+            // No last entry, so the queue must be empty so we can replace the
+            // head.
+            //
+            // SAFETY: New head comes from another `NblChain`s' head, which is
+            // guaranteed to have all of the accessible `NET_BUFFER_LIST`s,
+            // `NET_BUFFER`s, and `MDL`s be valid.
+            unsafe { self.set_head(Some(other_head)) };
+        }
+    }
+
     /// Creates an iterator over all of the [`NetBufferList`]s in the chain.
     pub fn iter(&self) -> Iter<'_> {
         // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that all
@@ -166,6 +196,97 @@ impl NblChain {
     /// Creates an owning iterator consuming all of the [`NetBufferList`]s in the chain.
     pub fn into_iter(self) -> IntoIter {
         IntoIter::new(self)
+    }
+
+    /// Converts the chain into a [`NblQueue`].
+    ///
+    /// Completes in O(n) time.
+    pub fn into_queue(self) -> NblQueue {
+        // Get the first element from the head
+        let Self { head: Some(head) } = self else {
+            return NblQueue::new();
+        };
+
+        // Get the last element
+        //
+        // SAFETY:
+        // - `head` came from a `NblChain`, which guarantees that all
+        //   `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from
+        //   `head` are valid.
+        //
+        // - No other mutable references to any other elements are live at this
+        //   point (we don't dereference `head` at all), and the ones that we do
+        //   generate are quickly killed off, or in the case of the last element
+        //   we immediately turn that into a `NonNull` pointer.
+        let iter_mut = unsafe { IterMut::new(Some(head)) };
+        let Some(tail) = iter_mut.last().map(NonNull::from) else {
+            return NblQueue::new();
+        };
+
+        // Convert head & tail into the appropriate pointer type
+        let head = head.cast().as_ptr();
+        let tail = tail.cast().as_ptr();
+
+        // SAFETY:
+        // - `head` came from a `NblChain`, which guarantees that all
+        //   `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from
+        //   `head` are valid.
+        // - `tail` was derived from an `IterMut` from `head` and is the last
+        //   element of the chain
+        // - both `head` and `tail` are not null since they both came from
+        //   `NonNull` pointers
+        unsafe { NblQueue::from_raw_parts(head, tail) }
+    }
+
+    /// Converts the chain into a [`NblCountedQueue`].
+    ///
+    /// Completes in O(n) time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the original chain exceeds `usize::MAX` elements.
+    pub fn into_counted_queue(self) -> NblCountedQueue {
+        // Get the first element from the head
+        let Self { head: Some(head) } = self else {
+            return NblCountedQueue::new();
+        };
+
+        // Get the last element along with the count
+        //
+        // SAFETY:
+        // - `head` came from a `NblChain`, which guarantees that all
+        //   `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from
+        //   `head` are valid.
+        //
+        // - No other mutable references to any other elements are live at this
+        //   point (we don't dereference `head` at all), and the ones that we do
+        //   generate are quickly killed off, or in the case of the last element
+        //   we immediately turn that into a `NonNull` pointer.
+        let iter_mut = unsafe { IterMut::new(Some(head)) };
+        let Some((count, tail)) = iter_mut
+            .enumerate()
+            .last()
+            .map(|(count, tail)| (count, NonNull::from(tail)))
+        else {
+            return NblCountedQueue::new();
+        };
+        let count = count.checked_add(1).expect("overflow in length count");
+
+        // Convert head & tail into the appropriate pointer type
+        let head = head.cast().as_ptr();
+        let tail = tail.cast().as_ptr();
+
+        // SAFETY:
+        // - `head` came from a `NblChain`, which guarantees that all
+        //   `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from
+        //   `head` are valid.
+        //
+        // - `tail` and count were derived from an `IterMut` from `head` and
+        //   `tail` is the last element of the chain
+        //
+        // - both `head` and `tail` are not null since they both came from
+        //   `NonNull` pointers
+        unsafe { NblCountedQueue::from_raw_parts(head, tail, count) }
     }
 
     /// Sets the head of the chain
@@ -251,5 +372,40 @@ mod test {
         flags.reverse();
 
         assert_eq!(&flags, &elements);
+    }
+
+    #[test]
+    fn chain_append_slow() {
+        let elements = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let (elem_a, elem_b) = elements.split_at(elements.len() / 2);
+
+        let nbl_elements_a = elem_a.iter().rev().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut chain_a = NblChain::new();
+        for nbl in nbl_elements_a {
+            chain_a.push_front(nbl);
+        }
+
+        let nbl_elements_b = elem_b.iter().rev().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut chain_b = NblChain::new();
+        for nbl in nbl_elements_b {
+            chain_b.push_front(nbl);
+        }
+
+        chain_a.append_slow(&mut chain_b);
+        assert!(chain_b.is_empty());
+        assert_eq!(
+            &chain_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
+            &elements
+        );
     }
 }
