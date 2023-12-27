@@ -16,7 +16,8 @@ pub mod queue;
 ///
 /// A pointer to a [`NetBufferList`] is valid if:
 ///
-/// - All of the following `NET_BUFFER_LIST`s in the chain are vaild
+/// - All of the following `NET_BUFFER_LIST`s in the chain are valid
+// FIXME: Include NblContext as part of the validity invariant (although it's just a blob of bytes)
 /// - All of the `NET_BUFFER` that are a part of each `NET_BUFFER_LIST`s are
 ///   valid, and
 /// - All of the `MDL` of each `NET_BUFFER` are valid

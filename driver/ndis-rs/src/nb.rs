@@ -13,7 +13,7 @@ pub mod chain;
 ///
 /// A pointer to a [`NetBuffer`] is valid if:
 ///
-/// - All of the following `NET_BUFFER`s in the chain are vaild
+/// - All of the following `NET_BUFFER`s in the chain are valid
 /// - All of the `MDL` of each `NET_BUFFER` are valid
 ///
 /// i.e. the validity of a [`NetBuffer`] transitively depends on the validity of
