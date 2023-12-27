@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 
 use windows_kernel_sys::PNET_BUFFER_LIST;
 
-use super::{Iter, IterMut, NetBufferList};
+use super::{IntoIter, Iter, IterMut, NetBufferList};
 
 /// A singly-linked list of [`NetBufferList`]s.
 ///
@@ -42,6 +42,11 @@ impl NblChain {
         self.head
             .map_or(core::ptr::null_mut(), |ptr| ptr.as_ptr())
             .cast()
+    }
+
+    /// Returns `true` if the chain has no elements.
+    pub fn is_empty(&self) -> bool {
+        self.head.is_none()
     }
 
     /// Gets the first element of the chain
@@ -139,7 +144,7 @@ impl NblChain {
         Some(current)
     }
 
-    /// Creates an iterator over all of the [`NetBufferList`]s in the chain
+    /// Creates an iterator over all of the [`NetBufferList`]s in the chain.
     pub fn iter(&self) -> Iter<'_> {
         // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that all
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s from
@@ -147,7 +152,7 @@ impl NblChain {
         unsafe { Iter::new(self.head) }
     }
 
-    /// Creates a mutable iterator over all of the [`NetBufferList`]s in the chain
+    /// Creates a mutable iterator over all of the [`NetBufferList`]s in the chain.
     pub fn iter_mut(&mut self) -> IterMut<'_> {
         // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that all
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s from
@@ -156,6 +161,11 @@ impl NblChain {
         // We also tie the lifetime of the iterator to the chain so that no
         // other mutable iterators can be constructed.
         unsafe { IterMut::new(self.head) }
+    }
+
+    /// Creates an owning iterator consuming all of the [`NetBufferList`]s in the chain.
+    pub fn into_iter(self) -> IntoIter {
+        IntoIter::new(self)
     }
 
     /// Sets the head of the chain

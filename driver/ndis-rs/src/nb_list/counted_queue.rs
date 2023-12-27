@@ -2,9 +2,9 @@
 
 use windows_kernel_sys::PNET_BUFFER_LIST;
 
-use crate::{NblQueue, NetBufferList};
+use crate::{NblChain, NblQueue, NetBufferList};
 
-use super::{Iter, IterMut};
+use super::{IntoIter, Iter, IterMut};
 
 /// A [`NblQueue`] that keeps track of the queue length.
 #[derive(Debug, Default)]
@@ -86,6 +86,11 @@ impl NblCountedQueue {
         self.queue.last_mut()
     }
 
+    /// Returns `true` if the queue contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
     /// Pushes a [`NetBufferList`] at the front of the queue.
     ///
     /// Completes in O(1) time.
@@ -124,6 +129,28 @@ impl NblCountedQueue {
         element
     }
 
+    /// Moves all elements of `other` into `self`, leaving `other` empty.
+    ///
+    /// Completes in O(1) time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new length exceeds `usize::MAX` elements.
+    pub fn append(&mut self, other: &mut NblCountedQueue) {
+        self.assert_valid();
+
+        self.queue.append(&mut other.queue);
+
+        let other_length = core::mem::take(&mut other.length);
+
+        self.length = self
+            .length
+            .checked_add(other_length)
+            .expect("overflow in length count");
+
+        self.assert_valid();
+    }
+
     /// Creates an iterator over all of the [`NetBufferList`]s in the queue.
     pub fn iter(&self) -> Iter<'_> {
         self.queue.iter()
@@ -134,6 +161,12 @@ impl NblCountedQueue {
         self.queue.iter_mut()
     }
 
+    /// Creates an owning iterator consuming all of the [`NetBufferList`]s in
+    /// the queue.
+    pub fn into_iter(self) -> IntoIter {
+        IntoIter::new(self.into())
+    }
+
     /// Ensures that the counted queue is valid.
     fn assert_valid(&self) {
         if cfg!(debug_assertions) {
@@ -142,6 +175,20 @@ impl NblCountedQueue {
             let real_len = self.iter().count();
             debug_assert_eq!(self.length, real_len, "mismatch in counted queue length");
         }
+    }
+}
+
+impl From<NblCountedQueue> for NblChain {
+    fn from(value: NblCountedQueue) -> Self {
+        // SAFETY: `NblCountedQueue` ensures that `head` is a valid pointer to
+        // an `NblChain` from it's internal validity invariants.
+        unsafe { Self::from_raw(value.into_raw_parts().0) }
+    }
+}
+
+impl From<NblCountedQueue> for NblQueue {
+    fn from(value: NblCountedQueue) -> Self {
+        value.queue
     }
 }
 
@@ -255,5 +302,40 @@ mod test {
 
         assert_eq!(&flags, &elements);
         assert_eq!(queue.len(), 5);
+    }
+
+    #[test]
+    fn queue_append() {
+        let elements = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let (elem_a, elem_b) = elements.split_at(elements.len() / 2);
+
+        let nbl_elements_a = elem_a.iter().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut queue_a = NblCountedQueue::new();
+        for nbl in nbl_elements_a {
+            queue_a.push_back(nbl);
+        }
+
+        let nbl_elements_b = elem_b.iter().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut queue_b = NblCountedQueue::new();
+        for nbl in nbl_elements_b {
+            queue_b.push_back(nbl);
+        }
+
+        queue_a.append(&mut queue_b);
+        assert!(queue_b.is_empty());
+        assert_eq!(
+            &queue_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
+            &elements
+        );
     }
 }

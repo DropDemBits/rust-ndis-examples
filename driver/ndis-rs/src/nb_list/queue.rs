@@ -4,9 +4,9 @@ use core::ptr::NonNull;
 
 use windows_kernel_sys::PNET_BUFFER_LIST;
 
-use crate::NetBufferList;
+use crate::{NblChain, NetBufferList};
 
-use super::{Iter, IterMut};
+use super::{IntoIter, Iter, IterMut};
 
 /// A queue of [`NetBufferList`]s with O(1) append of single elements.
 #[derive(Debug, Default)]
@@ -107,6 +107,11 @@ impl NblQueue {
         self.tail.map(|mut tail| unsafe { tail.as_mut() })
     }
 
+    /// Returns `true` if the queue contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.head.is_none()
+    }
+
     /// Pushes a [`NetBufferList`] at the front of the queue.
     ///
     /// Completes in O(1) time.
@@ -203,6 +208,49 @@ impl NblQueue {
         Some(current)
     }
 
+    /// Moves all elements of `other` into `self`, leaving `other` empty.
+    ///
+    /// Completes in O(1) time.
+    pub fn append(&mut self, other: &mut NblQueue) {
+        self.assert_valid();
+
+        // `other` should be a valid queue
+        other.assert_valid();
+
+        let other = core::mem::take(other);
+
+        let Some(other_head) = other.head else {
+            return;
+        };
+        // Note: could be `unwrap_unchecked` if llvm can't optimize out the
+        // unwrap
+        let other_tail = other.tail.unwrap();
+
+        // Check if there's a last element to append to
+        if let Some(last) = self.last_mut() {
+            // Link the chains together
+            //
+            // SAFETY: `NblQueue::new` and `NblQueue::set_head` ensures that all
+            // the `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from
+            // `other_head` are valid.
+            unsafe { last.set_next_nbl(Some(other_head)) };
+
+            // Update the tail to be from the queue
+            //
+            // SAFETY: `other_tail` comes from an `NblQueue`, and
+            // `NblQueue::set_head` `NblQueue::set_tail` ensures that all the
+            // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from
+            // `other_tail` are valid and that it actually points to the tail.
+            unsafe { self.set_tail(Some(other_tail)) };
+        } else {
+            // No last element to append to (i.e. the queue was empty),
+            // so we can just replace this queue with `other`.
+            *self = other;
+        }
+
+        self.assert_valid();
+    }
+
     /// Creates an iterator over all of the [`NetBufferList`]s in the queue.
     pub fn iter(&self) -> Iter<'_> {
         // SAFETY: The validity invariant of a `NetBufferList` ensures that all
@@ -217,6 +265,12 @@ impl NblQueue {
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are
         // valid.
         unsafe { IterMut::new(self.head) }
+    }
+
+    /// Creates an owning iterator consuming all of the [`NetBufferList`]s in
+    /// the queue.
+    pub fn into_iter(self) -> IntoIter {
+        IntoIter::new(self.into())
     }
 
     /// Sets the head of the queue, and updates the tail pointer as appropriate.
@@ -285,6 +339,14 @@ impl NblQueue {
                 );
             }
         }
+    }
+}
+
+impl From<NblQueue> for NblChain {
+    fn from(value: NblQueue) -> Self {
+        // SAFETY: `NblQueue` ensures that `head` is a valid pointer to an
+        // `NblChain` from it's internal validity invariants.x
+        unsafe { Self::from_raw(value.into_raw_parts().0) }
     }
 }
 
@@ -390,5 +452,40 @@ mod test {
         let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
 
         assert_eq!(&flags, &elements);
+    }
+
+    #[test]
+    fn queue_append() {
+        let elements = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let (elem_a, elem_b) = elements.split_at(elements.len() / 2);
+
+        let nbl_elements_a = elem_a.iter().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut queue_a = NblQueue::new();
+        for nbl in nbl_elements_a {
+            queue_a.push_back(nbl);
+        }
+
+        let nbl_elements_b = elem_b.iter().map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = *index;
+            Box::leak(nbl)
+        });
+
+        let mut queue_b = NblQueue::new();
+        for nbl in nbl_elements_b {
+            queue_b.push_back(nbl);
+        }
+
+        queue_a.append(&mut queue_b);
+        assert!(queue_b.is_empty());
+        assert_eq!(
+            &queue_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
+            &elements
+        );
     }
 }
