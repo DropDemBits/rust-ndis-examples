@@ -349,6 +349,12 @@ impl NblQueue {
                     real_tail as *const _,
                     "tail should point to the actual last element"
                 );
+
+                // SAFETY: Comes from `self.tail`, which is guaranteed by
+                // `NblQueue::new` and `NblQueue::set_tail` to point to a valid
+                // `NetBufferList`
+                let after_tail = unsafe { tail.as_ref().next_nbl() };
+                assert_eq!(after_tail, None);
             } else {
                 // Both the head and tail should be `None` if the queue is empty
                 debug_assert!(

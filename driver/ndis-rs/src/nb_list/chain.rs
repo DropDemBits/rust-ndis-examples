@@ -177,6 +177,110 @@ impl NblChain {
         }
     }
 
+    /// Extracts all similar [`NetBufferList`]s and puts it into a [`NblQueue`].
+    /// Also returns the `usize` that all the [`NetBufferList`]s are classfied
+    /// as, according to `classifier`.
+    ///
+    /// Two [`NetBufferList`]s are considered similar if `classifier` returns
+    /// the same `usize` for both of them.
+    pub fn take_similar(
+        &mut self,
+        classifier: impl FnMut(&NetBufferList) -> usize,
+    ) -> Option<(NblQueue, usize)> {
+        self.take_similar_counted(classifier)
+            .map(|(queue, class)| (queue.into(), class))
+    }
+
+    /// Extracts all similar [`NetBufferList`]s and puts it into a [`NblCountedQueue`].
+    /// Also returns the `usize` that all the [`NetBufferList`]s are classfied
+    /// as, according to `classifier`.
+    ///
+    /// Two [`NetBufferList`]s are considered similar if `classifier` returns
+    /// the same `usize` for both of them.
+    pub fn take_similar_counted(
+        &mut self,
+        mut classifier: impl FnMut(&NetBufferList) -> usize,
+    ) -> Option<(NblCountedQueue, usize)> {
+        // Take the head as the first similar nbl
+        let first_similar = self.head.take()?;
+
+        let (mut next_nbl, first_class) = {
+            // SAFETY: `first_similar` comes from `head`, and
+            // `NblChain::from_raw` and `NblChain::set_head` ensures that `head`
+            // is always a valid pointer to a `NetBufferList` (i.e. satisfying
+            // the `NetBufferList` validity invariant).
+            let first_similar = unsafe { first_similar.as_ref() };
+
+            // Classify the first nbl, and get the next nbl
+            (first_similar.next_nbl(), classifier(first_similar))
+        };
+        let first_similar = Some(first_similar);
+        let mut last_similar = first_similar;
+        let mut count = 1_usize;
+
+        // Find the first nbl that isn't of the same class
+        let first_different = loop {
+            let Some(current) = next_nbl else {
+                // We've exhausted the chain, so all of the nbls we have are of
+                // the same class.
+                break None;
+            };
+
+            let (current_class, next) = {
+                // SAFETY: `next` comes from the same chain as `head`, and
+                // `NblChain::from_raw` and `NblChain::set_head` ensures that
+                // `head` is always a valid pointer to a `NetBufferList` (i.e.
+                // satisfying the `NetBufferList` validity invariant).
+                let current = unsafe { current.as_ref() };
+
+                (classifier(current), current.next_nbl())
+            };
+
+            if current_class != first_class {
+                // First different class
+                break Some(current);
+            } else {
+                // Of the same class, is the new last similar
+                last_similar = Some(current);
+                next_nbl = next;
+                count = count.saturating_add(1);
+            }
+        };
+
+        // Detach the last similar nbl from the queue
+        if let Some(mut last_similar) = last_similar {
+            // SAFETY: `last_similar` came from a `&mut NetBufferList` which
+            // guarantees that `last_similar` points to a valid `NetBufferList`.
+            //
+            // No other references to `last_similar` exist at this point,
+            // as the only two places that a reference is manifested
+            // (the `first_different` loop and the `first_similar` block)
+            // do not escape the block.
+            let first_real_different = unsafe { last_similar.as_mut().take_next_nbl() };
+            debug_assert_eq!(first_different, first_real_different);
+        }
+
+        // Take the similar bits from the queue
+        //
+        // SAFETY: `first_different` comes from an `IterMut` derived from this
+        // `NblChain`, which guarantees that the pointed-to `NetBufferList`
+        // is valid.
+        unsafe { self.set_head(first_different) };
+
+        // SAFETY:
+        // - `head` comes from `iter_mut`
+        // - `tail` comes from `iter_mut`
+        let queue = unsafe {
+            NblCountedQueue::from_raw_parts(
+                NetBufferList::ptr_cast_to_raw(first_similar),
+                NetBufferList::ptr_cast_to_raw(last_similar),
+                count,
+            )
+        };
+
+        Some((queue, first_class))
+    }
+
     /// Creates an iterator over all of the [`NetBufferList`]s in the chain.
     pub fn iter(&self) -> Iter<'_> {
         // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that all
@@ -313,7 +417,7 @@ mod test {
     use std::vec;
     use std::vec::Vec;
 
-    use crate::NblChain;
+    use crate::{NblChain, NblQueue};
 
     #[test]
     fn create_empty_chain() {
@@ -411,4 +515,131 @@ mod test {
             &elements
         );
     }
+
+    // empty
+    // all_same
+    // tail_same
+    // mixed (runs of varying lengths)
+
+    #[test]
+    fn chain_take_similar_empty() {
+        let mut chain = NblChain::new();
+        let similar = chain.take_similar_counted(|nbl| nbl.cancel_id());
+        assert!(chain.is_empty());
+        assert!(similar.is_none());
+    }
+
+    #[test]
+    fn chain_take_similar_all_same() {
+        let elements = [1, 1, 1, 1, 1];
+        let mut queue = NblQueue::new();
+        for element in elements {
+            let nbl = Box::leak(crate::test::alloc_nbl());
+            nbl.set_cancel_id(element);
+            queue.push_back(nbl);
+        }
+        let mut chain = NblChain::from(queue);
+
+        let (similar_queue, class) = chain
+            .take_similar_counted(|nbl| nbl.cancel_id())
+            .expect("should have found nbl run");
+        assert!(chain.is_empty());
+        assert_eq!(class, 1);
+        assert_eq!(similar_queue.len(), 5);
+
+        // Exhaust it
+        let similar = chain.take_similar_counted(|nbl| nbl.cancel_id());
+        assert!(chain.is_empty());
+        assert!(similar.is_none());
+    }
+
+    #[test]
+    fn chain_take_similar_different_runs() {
+        let elements = [1, 1, 1, 1, 1, 2, 2, 2];
+        let mut queue = NblQueue::new();
+        for element in elements {
+            let nbl = Box::leak(crate::test::alloc_nbl());
+            nbl.set_cancel_id(element);
+            queue.push_back(nbl);
+        }
+        let mut chain = NblChain::from(queue);
+
+        // Get the run of 1's
+        let (similar_queue, class) = chain
+            .take_similar_counted(|nbl| nbl.cancel_id())
+            .expect("should have found nbl run");
+        assert_eq!(chain.iter().count(), 3);
+        assert_eq!(class, 1);
+        assert_eq!(similar_queue.len(), 5);
+
+        // Get the run of 2's
+        let (similar_queue, class) = chain
+            .take_similar_counted(|nbl| nbl.cancel_id())
+            .expect("should have found nbl run");
+        assert!(chain.is_empty());
+        assert_eq!(class, 2);
+        assert_eq!(similar_queue.len(), 3);
+    }
+
+    #[test]
+    fn chain_take_similar_interspered_run() {
+        let elements = [1, 1, 1, 2, 2, 2, 1, 1, 1, 1];
+        let mut queue = NblQueue::new();
+        for element in elements {
+            let nbl = Box::leak(crate::test::alloc_nbl());
+            nbl.set_cancel_id(element);
+            queue.push_back(nbl);
+        }
+        let mut chain = NblChain::from(queue);
+
+        // Get the first run of 1's
+        let (similar_queue, class) = chain
+            .take_similar_counted(|nbl| nbl.cancel_id())
+            .expect("should have found nbl run");
+        assert_eq!(chain.iter().count(), 7);
+        assert_eq!(class, 1);
+        assert_eq!(similar_queue.len(), 3);
+
+        // Get the run of 2's
+        let (similar_queue, class) = chain
+            .take_similar_counted(|nbl| nbl.cancel_id())
+            .expect("should have found nbl run");
+        assert_eq!(chain.iter().count(), 4);
+        assert_eq!(class, 2);
+        assert_eq!(similar_queue.len(), 3);
+
+        // Get the second run of 1's
+        let (similar_queue, class) = chain
+            .take_similar_counted(|nbl| nbl.cancel_id())
+            .expect("should have found nbl run");
+        assert!(chain.is_empty());
+        assert_eq!(class, 1);
+        assert_eq!(similar_queue.len(), 4);
+    }
 }
+
+// mapping:
+//
+// delegates to partition_bins::<const N: usize>()
+// - Classify2
+// - ClassifyByIndex
+//
+// delegates to partition_bins_counted::<const N: usize>()
+// - Classify2WithCount
+// - ClassifyByIndexWithCount
+//
+// delegates to partition_by{_counted}()
+// - ClassifyByValue
+// - ClassifyByValueWithCount
+//
+// delegates to partition_by{_counted}_lookahead::<const LOOKAHEAD_BINS: usize = 4>()
+// - ClassifyByValueLookahed
+// - ClassifyByValueLookaheadWithCount
+//
+// delegates to NblChain::take_similar, via NblQueue::from(counted_queue)
+// - PartialClassifyByValue
+//
+// delegates to NblChain::take_similar_counted
+// - PartialClassifyByValueWithCount
+// delegates to NblChain::take_similar_counted
+// - PartialClassifyByValueWithCount
