@@ -183,57 +183,42 @@ impl NblChain {
     ///
     /// Two [`NetBufferList`]s are considered similar if `classifier` returns
     /// the same `usize` for both of them.
-    pub fn take_similar(
-        &mut self,
-        classifier: impl FnMut(&NetBufferList) -> usize,
-    ) -> Option<(NblQueue, usize)> {
-        self.take_similar_counted(classifier)
-            .map(|(queue, class)| (queue.into(), class))
-    }
-
-    /// Extracts all similar [`NetBufferList`]s and puts it into a [`NblCountedQueue`].
-    /// Also returns the `usize` that all the [`NetBufferList`]s are classfied
-    /// as, according to `classifier`.
-    ///
-    /// Two [`NetBufferList`]s are considered similar if `classifier` returns
-    /// the same `usize` for both of them.
-    pub fn take_similar_counted(
-        &mut self,
+    pub fn take_similar<'chain>(
+        &'chain mut self,
         mut classifier: impl FnMut(&NetBufferList) -> usize,
-    ) -> Option<(NblCountedQueue, usize)> {
-        // Take the head as the first similar nbl
-        let first_similar = self.head.take()?;
+    ) -> Option<(NblQueue, usize)> {
+        // Take the head so as to guarantee that we won't accidentally
+        // any extra mutable iterators.
+        //
+        // Note that `NblChain` effectively owns `&mut NetBufferList` and not the `NetBufferList`s themselves,
+        // so we won't accidentally double-free the `NetBufferList` even in the case of a panic.
+        let head = self.head.take()?;
 
-        let (mut next_nbl, first_class) = {
-            // SAFETY: `first_similar` comes from `head`, and
-            // `NblChain::from_raw` and `NblChain::set_head` ensures that `head`
-            // is always a valid pointer to a `NetBufferList` (i.e. satisfying
-            // the `NetBufferList` validity invariant).
-            let first_similar = unsafe { first_similar.as_ref() };
+        // Create a mutable iterator over all of the nbls, while also
+        // classifying them at the same time.
+        //
+        // SAFETY: `NblChain::new` and `NblChain::set_head` ensures that all
+        // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s from
+        // `head` are valid.
+        //
+        // We also tie the lifetime of the iterator to the chain so that no
+        // other mutable iterators can be constructed, and we also set the head
+        // to `None` so that even if we do, the iterator yields no elements.
+        let nbl_iter = unsafe { IterMut::<'chain>::new(Some(head)) };
+        let mut nbl_iter = nbl_iter.map(|nbl| (classifier(nbl), NonNull::from(nbl)));
 
-            // Classify the first nbl, and get the next nbl
-            (first_similar.next_nbl(), classifier(first_similar))
+        let Some((first_class, first_similar)) = nbl_iter.next() else {
+            // Note: Techically unreachable since we assert that `head` is not `None` at the start.
+            return None;
         };
-        let first_similar = Some(first_similar);
         let mut last_similar = first_similar;
-        let mut count = 1_usize;
 
         // Find the first nbl that isn't of the same class
         let first_different = loop {
-            let Some(current) = next_nbl else {
+            let Some((current_class, current)) = nbl_iter.next() else {
                 // We've exhausted the chain, so all of the nbls we have are of
                 // the same class.
                 break None;
-            };
-
-            let (current_class, next) = {
-                // SAFETY: `next` comes from the same chain as `head`, and
-                // `NblChain::from_raw` and `NblChain::set_head` ensures that
-                // `head` is always a valid pointer to a `NetBufferList` (i.e.
-                // satisfying the `NetBufferList` validity invariant).
-                let current = unsafe { current.as_ref() };
-
-                (classifier(current), current.next_nbl())
             };
 
             if current_class != first_class {
@@ -241,22 +226,20 @@ impl NblChain {
                 break Some(current);
             } else {
                 // Of the same class, is the new last similar
-                last_similar = Some(current);
-                next_nbl = next;
-                count = count.saturating_add(1);
+                last_similar = current;
             }
         };
 
         // Detach the last similar nbl from the queue
-        if let Some(mut last_similar) = last_similar {
-            // SAFETY: `last_similar` came from a `&mut NetBufferList` which
-            // guarantees that `last_similar` points to a valid `NetBufferList`.
-            //
-            // No other references to `last_similar` exist at this point,
-            // as the only two places that a reference is manifested
-            // (the `first_different` loop and the `first_similar` block)
-            // do not escape the block.
-            let first_real_different = unsafe { last_similar.as_mut().take_next_nbl() };
+        //
+        // SAFETY: `last_similar` came from a `&mut NetBufferList` which
+        // guarantees that `last_similar` points to a valid `NetBufferList`.
+        //
+        // No other references to `last_similar` exist at this point, as the
+        // only place we do (inside of `nbl_iter`'s map closure) never escape
+        // outside the closure.
+        unsafe {
+            let first_real_different = last_similar.as_mut().take_next_nbl();
             debug_assert_eq!(first_different, first_real_different);
         }
 
@@ -268,17 +251,54 @@ impl NblChain {
         unsafe { self.set_head(first_different) };
 
         // SAFETY:
-        // - `head` comes from `iter_mut`
-        // - `tail` comes from `iter_mut`
+        // - `first_similar` and `last_similar` come from an `IterMut`
+        //   derived from this `NblChain`, which guarantees that the pointed-to
+        //   `NetBufferList` is valid.
         let queue = unsafe {
-            NblCountedQueue::from_raw_parts(
-                NetBufferList::ptr_cast_to_raw(first_similar),
-                NetBufferList::ptr_cast_to_raw(last_similar),
-                count,
+            NblQueue::from_raw_parts(
+                NetBufferList::ptr_cast_to_raw(Some(first_similar)),
+                NetBufferList::ptr_cast_to_raw(Some(last_similar)),
             )
         };
 
         Some((queue, first_class))
+    }
+
+    /// Extracts all similar [`NetBufferList`]s and puts it into a [`NblCountedQueue`].
+    /// Also returns the `usize` that all the [`NetBufferList`]s are classfied
+    /// as, according to `classifier`.
+    ///
+    /// Two [`NetBufferList`]s are considered similar if `classifier` returns
+    /// the same `usize` for both of them.
+    ///
+    /// # Panics
+    ///
+    /// Might panic if the similar element count exceeds `usize::MAX`.
+    pub fn take_similar_counted<'chain>(
+        &'chain mut self,
+        mut classifier: impl FnMut(&NetBufferList) -> usize,
+    ) -> Option<(NblCountedQueue, usize)> {
+        let mut length = 0;
+        let (queue, class) = self.take_similar(|nbl| {
+            length += 1;
+            classifier(nbl)
+        })?;
+
+        // Check if we've over-counted the number of nbls
+        if self.head.is_some() {
+            // There's still nbls remaining, so we accidentally included the
+            // first different nbl in the count
+            length -= 1;
+        }
+
+        // Convert the queue into a counted version
+        let (head, tail) = queue.into_raw_parts();
+        // SAFETY:
+        // - `head` and `tail` both come from a `NblQueue`, which guarantees that they are both valid pointers to a `NetBufferList`.
+        // - `length` blah
+        let queue = unsafe { NblCountedQueue::from_raw_parts(head, tail, length) };
+
+        Some((queue, class))
     }
 
     /// Creates an iterator over all of the [`NetBufferList`]s in the chain.
