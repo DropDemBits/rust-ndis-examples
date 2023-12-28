@@ -177,6 +177,68 @@ impl NblChain {
         }
     }
 
+    /// Splits a [`NblChain`] into `BINS` [`NblQueue`] bins, based on
+    /// `classifier`.
+    ///
+    /// The `usize` returned from `classifier` determines which bin the
+    /// [`NetBufferList`] will go to, e.g. `0` means it goes into bin 0, `1`
+    /// means it goes into bin 1, et cetera.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `classifier` returns a `usize` that's not in the range of `0..BINS`.
+    pub fn partition_bins<const BINS: usize>(
+        mut self,
+        mut classifier: impl FnMut(&NetBufferList) -> usize,
+    ) -> [NblQueue; BINS] {
+        assert!(BINS != 0, "bins must not be empty");
+
+        let mut bins: [NblQueue; BINS] = core::array::from_fn(|_| NblQueue::new());
+
+        while let Some((mut queue, class)) = self.take_similar(&mut classifier) {
+            assert!(
+                (0..BINS).contains(&class),
+                "classifier returned value outside of 0..{BINS}"
+            );
+
+            bins[class].append(&mut queue);
+        }
+
+        bins
+    }
+
+    /// Splits a [`NblChain`] into `BINS` [`NblCountedQueue`] bins, based on
+    /// `classifier`.
+    ///
+    /// The `usize` returned from `classifier` determines which bin the
+    /// [`NetBufferList`] will go to, e.g. `0` means it goes into bin 0, `1`
+    /// means it goes into bin 1, et cetera.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `classifier` returns a `usize` that's not in the range of `0..BINS`.
+    /// May panic if there are more than `usize::MAX` elements in any bin or run
+    /// of similar elements.
+    pub fn partition_counted_bins<const BINS: usize>(
+        mut self,
+        mut classifier: impl FnMut(&NetBufferList) -> usize,
+    ) -> [NblCountedQueue; BINS] {
+        assert!(BINS != 0, "bins must not be empty");
+
+        let mut bins: [NblCountedQueue; BINS] = core::array::from_fn(|_| NblCountedQueue::new());
+
+        while let Some((mut queue, class)) = self.take_counted_similar(&mut classifier) {
+            assert!(
+                (0..BINS).contains(&class),
+                "classifier returned value outside of 0..{BINS}"
+            );
+
+            bins[class].append(&mut queue);
+        }
+
+        bins
+    }
+
     /// Extracts all similar [`NetBufferList`]s and puts it into a [`NblQueue`].
     /// Also returns the `usize` that all the [`NetBufferList`]s are classfied
     /// as, according to `classifier`.
@@ -274,7 +336,7 @@ impl NblChain {
     /// # Panics
     ///
     /// Might panic if the similar element count exceeds `usize::MAX`.
-    pub fn take_similar_counted<'chain>(
+    pub fn take_counted_similar<'chain>(
         &'chain mut self,
         mut classifier: impl FnMut(&NetBufferList) -> usize,
     ) -> Option<(NblCountedQueue, usize)> {
@@ -544,7 +606,7 @@ mod test {
     #[test]
     fn chain_take_similar_empty() {
         let mut chain = NblChain::new();
-        let similar = chain.take_similar_counted(|nbl| nbl.cancel_id());
+        let similar = chain.take_counted_similar(|nbl| nbl.cancel_id());
         assert!(chain.is_empty());
         assert!(similar.is_none());
     }
@@ -561,14 +623,14 @@ mod test {
         let mut chain = NblChain::from(queue);
 
         let (similar_queue, class) = chain
-            .take_similar_counted(|nbl| nbl.cancel_id())
+            .take_counted_similar(|nbl| nbl.cancel_id())
             .expect("should have found nbl run");
         assert!(chain.is_empty());
         assert_eq!(class, 1);
         assert_eq!(similar_queue.len(), 5);
 
         // Exhaust it
-        let similar = chain.take_similar_counted(|nbl| nbl.cancel_id());
+        let similar = chain.take_counted_similar(|nbl| nbl.cancel_id());
         assert!(chain.is_empty());
         assert!(similar.is_none());
     }
@@ -586,7 +648,7 @@ mod test {
 
         // Get the run of 1's
         let (similar_queue, class) = chain
-            .take_similar_counted(|nbl| nbl.cancel_id())
+            .take_counted_similar(|nbl| nbl.cancel_id())
             .expect("should have found nbl run");
         assert_eq!(chain.iter().count(), 3);
         assert_eq!(class, 1);
@@ -594,7 +656,7 @@ mod test {
 
         // Get the run of 2's
         let (similar_queue, class) = chain
-            .take_similar_counted(|nbl| nbl.cancel_id())
+            .take_counted_similar(|nbl| nbl.cancel_id())
             .expect("should have found nbl run");
         assert!(chain.is_empty());
         assert_eq!(class, 2);
@@ -614,7 +676,7 @@ mod test {
 
         // Get the first run of 1's
         let (similar_queue, class) = chain
-            .take_similar_counted(|nbl| nbl.cancel_id())
+            .take_counted_similar(|nbl| nbl.cancel_id())
             .expect("should have found nbl run");
         assert_eq!(chain.iter().count(), 7);
         assert_eq!(class, 1);
@@ -622,7 +684,7 @@ mod test {
 
         // Get the run of 2's
         let (similar_queue, class) = chain
-            .take_similar_counted(|nbl| nbl.cancel_id())
+            .take_counted_similar(|nbl| nbl.cancel_id())
             .expect("should have found nbl run");
         assert_eq!(chain.iter().count(), 4);
         assert_eq!(class, 2);
@@ -630,11 +692,45 @@ mod test {
 
         // Get the second run of 1's
         let (similar_queue, class) = chain
-            .take_similar_counted(|nbl| nbl.cancel_id())
+            .take_counted_similar(|nbl| nbl.cancel_id())
             .expect("should have found nbl run");
         assert!(chain.is_empty());
         assert_eq!(class, 1);
         assert_eq!(similar_queue.len(), 4);
+    }
+
+    #[test]
+    fn chain_partition_bins_2_interspered_run() {
+        let elements = [1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 3, 4];
+        let mut queue = NblQueue::new();
+        for element in elements {
+            let nbl = Box::leak(crate::test::alloc_nbl());
+            nbl.set_cancel_id(element);
+            queue.push_back(nbl);
+        }
+        let chain = NblChain::from(queue);
+
+        let [not_1, is_1] = chain.partition_bins(|nbl| (nbl.cancel_id() == 1) as usize);
+
+        assert_eq!(not_1.iter().count(), 5);
+        assert_eq!(is_1.iter().count(), 7)
+    }
+
+    #[test]
+    fn chain_partition_counted_bins_2_interspered_run() {
+        let elements = [1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 3, 4];
+        let mut queue = NblQueue::new();
+        for element in elements {
+            let nbl = Box::leak(crate::test::alloc_nbl());
+            nbl.set_cancel_id(element);
+            queue.push_back(nbl);
+        }
+        let chain = NblChain::from(queue);
+
+        let [not_1, is_1] = chain.partition_counted_bins(|nbl| (nbl.cancel_id() == 1) as usize);
+
+        assert_eq!(not_1.len(), 5);
+        assert_eq!(is_1.len(), 7)
     }
 }
 
