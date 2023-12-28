@@ -11,12 +11,16 @@ use super::{IntoIter, Iter, IterMut};
 /// A queue of [`NetBufferList`]s with O(1) append of single elements.
 #[derive(Debug, Default)]
 pub struct NblQueue {
-    /// Points to the head of the queue (the next element to pop), or `None` if
-    /// the queue is empty.
-    head: Option<NonNull<NetBufferList>>,
-    /// Points to the tail of the queue (the next element to append after), or
-    /// `None` if the queue is empty;
-    tail: Option<NonNull<NetBufferList>>,
+    /// `head` and `tail` pointers of the queue, or `None` if the queue is empty.
+    inner: Option<QueueInner>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QueueInner {
+    /// Points to the head of the queue (the next element to pop).
+    head: NonNull<NetBufferList>,
+    /// Points to the tail of the queue (the next element to append after).
+    tail: NonNull<NetBufferList>,
 }
 
 impl NblQueue {
@@ -40,7 +44,8 @@ impl NblQueue {
         // SAFETY: Caller ensures that `tail` is a valid pointer
         let tail = unsafe { NetBufferList::ptr_cast_from_raw(tail) };
 
-        let queue = Self { head, tail };
+        let inner = head.zip(tail).map(|(head, tail)| QueueInner { head, tail });
+        let queue = Self { inner };
         queue.assert_valid();
         queue
     }
@@ -51,11 +56,13 @@ impl NblQueue {
     pub fn into_raw_parts(self) -> (PNET_BUFFER_LIST, PNET_BUFFER_LIST) {
         self.assert_valid();
 
-        let Self { head, tail } = self;
+        let Some(QueueInner { head, tail }) = self.inner else {
+            return (core::ptr::null_mut(), core::ptr::null_mut());
+        };
 
         (
-            NetBufferList::ptr_cast_to_raw(head),
-            NetBufferList::ptr_cast_to_raw(tail),
+            NetBufferList::ptr_cast_to_raw(Some(head)),
+            NetBufferList::ptr_cast_to_raw(Some(tail)),
         )
     }
 
@@ -69,7 +76,7 @@ impl NblQueue {
         //
         // Also, we tie the lifetime of the reference to the `NetBufferList` to
         // the queue so that no element in the queue will be mutated.
-        self.head.map(|head| unsafe { head.as_ref() })
+        Some(unsafe { self.inner?.head.as_ref() })
     }
 
     /// Gets a mutable reference to the first element of the queue.
@@ -83,7 +90,7 @@ impl NblQueue {
         // Also, we tie the lifetime of the mutable reference to the
         // `NetBufferList` to the queue so that only the yielded element will
         // be mutated.
-        self.head.map(|mut head| unsafe { head.as_mut() })
+        Some(unsafe { self.inner?.head.as_mut() })
     }
 
     /// Gets the last element of the queue.
@@ -96,7 +103,7 @@ impl NblQueue {
         //
         // Also, we tie the lifetime of the reference to the `NetBufferList` to
         // the queue so that no element in the queue will be mutated.
-        self.tail.map(|tail| unsafe { tail.as_ref() })
+        Some(unsafe { self.inner?.tail.as_ref() })
     }
 
     /// Gets a mutable reference to the last element of the queue.
@@ -110,12 +117,12 @@ impl NblQueue {
         // Also, we tie the lifetime of the mutable reference to the
         // `NetBufferList` to the queue so that only the yielded element will
         // be mutated.
-        self.tail.map(|mut tail| unsafe { tail.as_mut() })
+        Some(unsafe { self.inner?.tail.as_mut() })
     }
 
     /// Returns `true` if the queue contains no elements.
     pub fn is_empty(&self) -> bool {
-        self.head.is_none()
+        self.inner.is_none()
     }
 
     /// Pushes a [`NetBufferList`] at the front of the queue.
@@ -134,7 +141,7 @@ impl NblQueue {
         // SAFETY: `NblQueue::new` and `NblQueue::set_head` ensures that all the
         // `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s accessible from `head`
         // are valid.
-        unsafe { nbl.set_next_nbl(self.head) };
+        unsafe { nbl.set_next_nbl(self.inner.map(|inner| inner.head)) };
 
         // Replace the head with the new nbl
         //
@@ -190,7 +197,7 @@ impl NblQueue {
     pub fn pop_front(&mut self) -> Option<&'static mut NetBufferList> {
         self.assert_valid();
 
-        let mut current = self.head.take()?;
+        let mut current = self.inner?.head;
 
         // SAFETY: `NblQueue::new` ensures that all `NetBufferList`s in the
         // chain are valid, and since an `NblChain` has ownership over all of
@@ -225,12 +232,13 @@ impl NblQueue {
 
         let other = core::mem::take(other);
 
-        let Some(other_head) = other.head else {
+        let Some(QueueInner {
+            head: other_head,
+            tail: other_tail,
+        }) = other.inner
+        else {
             return;
         };
-        // Note: could be `unwrap_unchecked` if llvm can't optimize out the
-        // unwrap
-        let other_tail = other.tail.unwrap();
 
         // Check if there's a last element to append to
         if let Some(last) = self.last_mut() {
@@ -251,7 +259,7 @@ impl NblQueue {
         } else {
             // No last element to append to (i.e. the queue was empty),
             // so we can just replace this queue with `other`.
-            *self = other;
+            self.inner = other.inner;
         }
 
         self.assert_valid();
@@ -274,7 +282,7 @@ impl NblQueue {
         // SAFETY: The validity invariant of a `NetBufferList` ensures that all
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are
         // valid.
-        unsafe { Iter::new(self.head) }
+        unsafe { Iter::new(self.inner.map(|inner| inner.head)) }
     }
 
     /// Creates a mutable iterator over all of the [`NetBufferList`]s in the queue.
@@ -282,7 +290,7 @@ impl NblQueue {
         // SAFETY: The validity invariant of a `NetBufferList` ensures that all
         // of the accessible `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s are
         // valid.
-        unsafe { IterMut::new(self.head) }
+        unsafe { IterMut::new(self.inner.map(|inner| inner.head)) }
     }
 
     /// Creates an owning iterator consuming all of the [`NetBufferList`]s in
@@ -300,17 +308,19 @@ impl NblQueue {
     #[inline]
     unsafe fn set_head(&mut self, nbl: Option<NonNull<NetBufferList>>) {
         if let Some(nbl) = nbl {
-            // `nbl` is a valid pointer to a `NetBufferList` so we can update the head.
-            self.head = Some(nbl);
-
-            if self.tail.is_none() {
-                // Queue was empty so set the tail too
-                self.tail = Some(nbl);
+            if let Some(inner) = &mut self.inner {
+                // `nbl` is a valid pointer to a `NetBufferList` so we can update the head.
+                inner.head = nbl;
+            } else {
+                // Queue was empty so set the head and tail
+                self.inner = Some(QueueInner {
+                    head: nbl,
+                    tail: nbl,
+                });
             }
         } else {
             // Clearing the queue, can set both to `None`
-            self.head = None;
-            self.tail = None;
+            self.inner = None;
         }
     }
 
@@ -323,26 +333,27 @@ impl NblQueue {
     #[inline]
     unsafe fn set_tail(&mut self, nbl: Option<NonNull<NetBufferList>>) {
         if let Some(nbl) = nbl {
-            // `nbl` is a valid pointer to a `NetBufferList` so we can update the tail.
-            self.tail = Some(nbl);
-
-            if self.head.is_none() {
-                // Queue was empty so set the tail too
-                self.head = Some(nbl);
+            if let Some(inner) = &mut self.inner {
+                // `nbl` is a valid pointer to a `NetBufferList` so we can update the tail.
+                inner.tail = nbl;
+            } else {
+                // Queue was empty so set the head and tail
+                self.inner = Some(QueueInner {
+                    head: nbl,
+                    tail: nbl,
+                });
             }
         } else {
             // Clearing the queue, can set both to `None`
-            self.head = None;
-            self.tail = None;
+            self.inner = None;
         }
     }
 
     /// Ensures that the queue is valid (only up to all of the nbls in the chain)
     pub(super) fn assert_valid(&self) {
         if cfg!(debug_assertions) {
-            if let Some(_) = self.head.as_ref() {
-                // `self.tail` should be equal to the last element in the queue
-                let tail = self.tail.expect("tail should be Some if head is Some");
+            if let Some(QueueInner { head: _, tail }) = self.inner.as_ref() {
+                // `inner.tail` should be equal to the last element in the queue
                 let real_tail = self.iter().last().expect("queue is not empty");
                 debug_assert_eq!(
                     tail.as_ptr().cast_const(),
@@ -350,17 +361,18 @@ impl NblQueue {
                     "tail should point to the actual last element"
                 );
 
+                // `inner.tail` shouldn't be linked to any elements
+                //
                 // SAFETY: Comes from `self.tail`, which is guaranteed by
                 // `NblQueue::new` and `NblQueue::set_tail` to point to a valid
                 // `NetBufferList`
                 let after_tail = unsafe { tail.as_ref().next_nbl() };
-                assert_eq!(after_tail, None);
-            } else {
-                // Both the head and tail should be `None` if the queue is empty
-                debug_assert!(
-                    self.tail.as_ref().is_none(),
-                    "head and tail in an empty NblQueue must both be None"
+                assert_eq!(
+                    after_tail, None,
+                    "tail should not have elements following it"
                 );
+            } else {
+                // Both the head and tail should be `None` if the queue is empty, which is always true because `inner` is `None` here.
             }
         }
     }
@@ -390,6 +402,38 @@ mod test {
         let queue = NblQueue::new();
 
         assert_eq!(queue.iter().count(), 0);
+    }
+
+    #[test]
+    fn queue_first_and_last() {
+        let elements = [1, 2, 3, 4, 5];
+        let nbl_elements = elements.map(|index| {
+            let mut nbl = crate::test::alloc_nbl();
+            *nbl.flags_mut() = index;
+            Box::leak(nbl)
+        });
+
+        let mut queue = NblQueue::new();
+        for nbl in nbl_elements {
+            queue.push_front(nbl);
+        }
+
+        assert_eq!(
+            queue.first().map(|it| it as *const _),
+            queue.iter().next().map(|it| it as *const _),
+        );
+        assert_eq!(
+            queue.last().map(|it| it as *const _),
+            queue.iter().last().map(|it| it as *const _),
+        );
+        assert_eq!(
+            queue.first_mut().map(|it| it as *mut _),
+            queue.iter_mut().next().map(|it| it as *mut _),
+        );
+        assert_eq!(
+            queue.last_mut().map(|it| it as *mut _),
+            queue.iter_mut().last().map(|it| it as *mut _),
+        );
     }
 
     #[test]
