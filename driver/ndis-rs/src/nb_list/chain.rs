@@ -4,9 +4,9 @@ use core::ptr::NonNull;
 
 use windows_kernel_sys::PNET_BUFFER_LIST;
 
-use crate::{NblCountedQueue, NblQueue};
+use crate::{NblCountedQueue, NblQueue, NetBufferList};
 
-use super::{IntoIter, Iter, IterMut, NetBufferList};
+use super::iter::{IntoIter, Iter, IterMut};
 
 /// A singly-linked list of [`NetBufferList`]s.
 ///

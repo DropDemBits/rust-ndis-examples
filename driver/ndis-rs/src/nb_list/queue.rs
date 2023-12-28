@@ -6,7 +6,7 @@ use windows_kernel_sys::PNET_BUFFER_LIST;
 
 use crate::{NblChain, NetBufferList};
 
-use super::{IntoIter, Iter, IterMut};
+use super::iter::{IntoIter, Iter, IterMut};
 
 /// A queue of [`NetBufferList`]s with O(1) append of single elements.
 #[derive(Debug, Default)]

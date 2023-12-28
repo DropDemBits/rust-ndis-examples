@@ -4,7 +4,7 @@ use windows_kernel_sys::PNET_BUFFER_LIST;
 
 use crate::{NblChain, NblQueue, NetBufferList};
 
-use super::{IntoIter, Iter, IterMut};
+use super::iter::{IntoIter, Iter, IterMut};
 
 /// A [`NblQueue`] that keeps track of the queue length.
 #[derive(Debug, Default)]
