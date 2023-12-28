@@ -70,13 +70,14 @@ impl NetBufferList {
         unsafe { NbChain::from_raw_field_mut(first_nb_field) }
     }
 
-    /// Gets the ??? flags of the nbl
-    pub fn flags(&self) -> u32 {
+    // FIXME: reserved flag wrapper structs?
+    /// Gets the protocol/miniport/NDIS reserved flags of the nbl
+    pub fn reserved_flags(&self) -> u32 {
         self.nbl.Flags
     }
 
-    /// Gets a mutable reference to the ??? flags of the nbl
-    pub fn flags_mut(&mut self) -> &mut u32 {
+    /// Gets a mutable reference to the protocol/miniport/NDIS reserved flags of the nbl
+    pub fn reserved_flags_mut(&mut self) -> &mut u32 {
         &mut self.nbl.Flags
     }
 

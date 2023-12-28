@@ -513,7 +513,7 @@ mod test {
         let elements = [1, 2, 3, 4, 5];
         let nbl_elements = elements.map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = index;
+            nbl.set_cancel_id(index);
             Box::leak(nbl)
         });
 
@@ -522,14 +522,14 @@ mod test {
             chain.push_front(nbl);
         }
 
-        let mut flags = chain.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        let mut flags = chain.iter().map(|nbl| nbl.cancel_id()).collect::<Vec<_>>();
         flags.reverse();
 
         assert_eq!(&flags, &elements);
 
         let mut nbls = vec![];
         while let Some(nbl) = chain.pop_front() {
-            nbls.push(nbl.flags());
+            nbls.push(nbl.cancel_id());
             let _ = unsafe { Box::from_raw(nbl) };
         }
         nbls.reverse();
@@ -542,7 +542,7 @@ mod test {
         let elements = [1, 2, 3, 4, 5];
         let nbl_elements = elements.map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = index;
+            nbl.set_cancel_id(index);
             Box::leak(nbl)
         });
 
@@ -557,7 +557,7 @@ mod test {
         };
 
         // should be pushed in reverse order
-        let mut flags = chain.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        let mut flags = chain.iter().map(|nbl| nbl.cancel_id()).collect::<Vec<_>>();
         flags.reverse();
 
         assert_eq!(&flags, &elements);
@@ -570,7 +570,7 @@ mod test {
 
         let nbl_elements_a = elem_a.iter().rev().map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = *index;
+            nbl.set_cancel_id(*index);
             Box::leak(nbl)
         });
 
@@ -581,7 +581,7 @@ mod test {
 
         let nbl_elements_b = elem_b.iter().rev().map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = *index;
+            nbl.set_cancel_id(*index);
             Box::leak(nbl)
         });
 
@@ -593,7 +593,7 @@ mod test {
         chain_a.append_slow(&mut chain_b);
         assert!(chain_b.is_empty());
         assert_eq!(
-            &chain_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
+            &chain_a.iter().map(|it| it.cancel_id()).collect::<Vec<_>>(),
             &elements
         );
     }

@@ -224,7 +224,7 @@ mod test {
         let elements = [1, 2, 3, 4, 5];
         let nbl_elements = elements.map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = index;
+            nbl.set_cancel_id(index);
             Box::leak(nbl)
         });
 
@@ -234,7 +234,7 @@ mod test {
         }
 
         // should be pushed in reverse order
-        let mut flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        let mut flags = queue.iter().map(|nbl| nbl.cancel_id()).collect::<Vec<_>>();
         flags.reverse();
 
         assert_eq!(&flags, &elements);
@@ -243,7 +243,7 @@ mod test {
         // should be pushed in normal order
         let mut nbls = vec![];
         while let Some(nbl) = queue.pop_front() {
-            nbls.push(nbl.flags());
+            nbls.push(nbl.cancel_id());
             let _ = unsafe { Box::from_raw(nbl) };
         }
         nbls.reverse();
@@ -257,7 +257,7 @@ mod test {
         let elements = [1, 2, 3, 4, 5];
         let nbl_elements = elements.map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = index;
+            nbl.set_cancel_id(index);
             Box::leak(nbl)
         });
 
@@ -267,7 +267,7 @@ mod test {
         }
 
         // should be pushed in normal order
-        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        let flags = queue.iter().map(|nbl| nbl.cancel_id()).collect::<Vec<_>>();
 
         assert_eq!(&flags, &elements);
         assert_eq!(queue.len(), 5);
@@ -275,7 +275,7 @@ mod test {
         // should be popped in normal order
         let mut nbls = vec![];
         while let Some(nbl) = queue.pop_front() {
-            nbls.push(nbl.flags());
+            nbls.push(nbl.cancel_id());
             let _ = unsafe { Box::from_raw(nbl) };
         }
 
@@ -288,7 +288,7 @@ mod test {
         let elements = [1, 2, 3, 4, 5];
         let nbl_elements = elements.map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = index;
+            nbl.set_cancel_id(index);
             Box::leak(nbl)
         });
 
@@ -298,7 +298,7 @@ mod test {
         }
 
         // should be pushed in normal order
-        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        let flags = queue.iter().map(|nbl| nbl.cancel_id()).collect::<Vec<_>>();
 
         assert_eq!(&flags, &elements);
         assert_eq!(queue.len(), 5);
@@ -310,7 +310,7 @@ mod test {
         };
 
         // should be pushed in normal order
-        let flags = queue.iter().map(|nbl| nbl.flags()).collect::<Vec<_>>();
+        let flags = queue.iter().map(|nbl| nbl.cancel_id()).collect::<Vec<_>>();
 
         assert_eq!(&flags, &elements);
         assert_eq!(queue.len(), 5);
@@ -323,7 +323,7 @@ mod test {
 
         let nbl_elements_a = elem_a.iter().map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = *index;
+            nbl.set_cancel_id(*index);
             Box::leak(nbl)
         });
 
@@ -334,7 +334,7 @@ mod test {
 
         let nbl_elements_b = elem_b.iter().map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = *index;
+            nbl.set_cancel_id(*index);
             Box::leak(nbl)
         });
 
@@ -346,7 +346,7 @@ mod test {
         queue_a.append(&mut queue_b);
         assert!(queue_b.is_empty());
         assert_eq!(
-            &queue_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
+            &queue_a.iter().map(|it| it.cancel_id()).collect::<Vec<_>>(),
             &elements
         );
     }
@@ -359,7 +359,7 @@ mod test {
         // don't need to reverse because we can `push_back`
         let nbl_elements_a = elem_a.iter().map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = *index;
+            nbl.set_cancel_id(*index);
             Box::leak(nbl)
         });
 
@@ -370,7 +370,7 @@ mod test {
 
         let nbl_elements_b = elem_b.iter().rev().map(|index| {
             let mut nbl = crate::test::alloc_nbl();
-            *nbl.flags_mut() = *index;
+            nbl.set_cancel_id(*index);
             Box::leak(nbl)
         });
 
@@ -382,7 +382,7 @@ mod test {
         queue_a.append_slow(&mut chain_b);
         assert!(chain_b.is_empty());
         assert_eq!(
-            &queue_a.iter().map(|it| it.flags()).collect::<Vec<_>>(),
+            &queue_a.iter().map(|it| it.cancel_id()).collect::<Vec<_>>(),
             &elements
         );
         assert_eq!(queue_a.len(), elements.len());
