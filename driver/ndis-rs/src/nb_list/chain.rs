@@ -177,6 +177,35 @@ impl NblChain {
         }
     }
 
+    /// Splits a [`NblChain`] into 2 [`NblQueue`] bins, based on whether
+    /// `filter` returns `true` or `false`.
+    ///
+    /// All [`NetBufferList`]s that produce `false` from `filter` are put in
+    /// bin 0, and all that produce `true` are put in bin 1.
+    pub fn partition_filtered(
+        self,
+        mut filter: impl FnMut(&mut NetBufferList) -> bool,
+    ) -> [NblQueue; 2] {
+        self.partition_bins(|nbl| filter(nbl) as usize)
+    }
+
+    /// Splits a [`NblChain`] into 2 [`NblCountedQueue`] bins, based on whether
+    /// `filter` returns `true` or `false`.
+    ///
+    /// All [`NetBufferList`]s that produce `false` from `filter` are put in
+    /// bin 0, and all that produce `true` are put in bin 1.
+    ///
+    /// # Panics
+    ///
+    /// May panic if there are more than `usize::MAX` elements in any bin or run
+    /// of similar elements.
+    pub fn partition_counted_filtered(
+        self,
+        mut filter: impl FnMut(&mut NetBufferList) -> bool,
+    ) -> [NblCountedQueue; 2] {
+        self.partition_counted_bins(|nbl| filter(nbl) as usize)
+    }
+
     /// Splits a [`NblChain`] into `BINS` [`NblQueue`] bins, based on
     /// `classifier`.
     ///
