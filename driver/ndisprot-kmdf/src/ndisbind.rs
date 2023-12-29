@@ -1456,112 +1456,112 @@ pub(crate) fn query_binding(
     let driver = unsafe { Driver::<NdisProt>::wrap(driver) };
     let globals = driver.get_context();
 
-    let mut status;
-
-    'out: {
+    let status = 'out: {
         if input_length < core::mem::size_of::<QueryBinding>() {
-            status = STATUS::INSUFFICIENT_RESOURCES;
-            break 'out;
+            break 'out STATUS::INSUFFICIENT_RESOURCES;
         }
 
         if output_length < core::mem::size_of::<QueryBinding>() {
-            status = STATUS::BUFFER_TOO_SMALL;
-            break 'out;
+            // need at least `QueryBinding` size bytes
+            *bytes_returned = core::mem::size_of::<QueryBinding>();
+            break 'out STATUS::BUFFER_TOO_SMALL;
         }
 
         let remaining = output_length - core::mem::size_of::<QueryBinding>();
-        let mut binding_index = unsafe { *buffer.cast::<QueryBinding>() }.binding_index;
-
-        status = STATUS::NO_MORE_ENTRIES;
+        let binding_index = unsafe { *buffer.cast::<QueryBinding>() }.binding_index;
 
         let open_list = globals.open_list.lock();
 
-        for open in open_list.iter() {
-            // Skip placeholders
-            let Some(open) = open.as_ref() else {
-                continue;
-            };
-            let open_context = open.get_context();
-
-            // ... or if not bound.
-            if !open_context
-                .inner
-                .lock()
-                .flags
-                .contains(OpenContextFlags::BIND_ACTIVE)
-            {
-                continue;
-            }
-
-            if let Some(next_index) = binding_index.checked_sub(1) {
-                binding_index = next_index;
-            } else {
-                log::info!("query_binding: found open {open:x?}");
-                // found the binding context we are looking for, copy device
-                // name & description to the output buffer
-
-                let name_len = (open_context.device_name.len() as usize)
-                    .saturating_add(core::mem::size_of::<WCHAR>());
-                let desc_len = (open_context.device_desc.len() as usize)
-                    .saturating_add(core::mem::size_of::<WCHAR>());
-
-                let name_offset = core::mem::size_of::<QueryBinding>();
-                let desc_offset = name_offset.saturating_add(name_len);
-
-                let required_size = name_len.saturating_add(desc_len);
-
-                if remaining < required_size {
-                    status = STATUS::BUFFER_TOO_SMALL;
-                    break 'out;
-                }
-
-                let header = unsafe { &mut *buffer.cast::<u8>().add(0).cast::<QueryBinding>() };
-
-                // Note: apparently `INVALID_BUFFER_SIZE` is the one we should
-                // use if it's bigger than what we can handle?
-                if let Ok(offset) = u32::try_from(name_offset) {
-                    header.device_name_offset = offset;
-                } else {
-                    status = STATUS::INVALID_BUFFER_SIZE;
-                    break 'out;
-                }
-
-                if let Ok(offset) = u32::try_from(desc_offset) {
-                    header.device_descr_offset = offset;
-                } else {
-                    status = STATUS::INVALID_BUFFER_SIZE;
-                    break 'out;
-                }
-
-                let name_bytes = unsafe { buffer.cast::<u8>().add(name_offset) };
-                unsafe { name_bytes.write_bytes(0, name_len) };
-                unsafe {
-                    name_bytes.copy_from_nonoverlapping(
-                        open_context.device_name.as_slice().as_ptr().cast(),
-                        open_context.device_name.len().into(),
-                    )
+        // get the `binding_index`th binding context
+        let Some(open) = open_list
+            .iter()
+            .filter_map(|open| {
+                // Skip placeholders
+                let Some(open) = open.as_ref() else {
+                    return None;
                 };
+                let open_context = open.get_context();
 
-                let desc_bytes = unsafe { buffer.cast::<u8>().add(desc_offset) };
-                unsafe { desc_bytes.write_bytes(0, desc_len) };
-                unsafe {
-                    desc_bytes.copy_from_nonoverlapping(
-                        open_context.device_desc.as_slice().as_ptr().cast(),
-                        open_context.device_desc.len().into(),
-                    );
+                // ... or if not bound.
+                if !open_context
+                    .inner
+                    .lock()
+                    .flags
+                    .contains(OpenContextFlags::BIND_ACTIVE)
+                {
+                    return None;
                 }
 
-                header.device_name_length = open_context.device_name.len().into();
-                header.device_descr_length = open_context.device_desc.len().into();
+                Some(open)
+            })
+            .nth(binding_index as usize)
+        else {
+            break 'out STATUS::NO_MORE_ENTRIES;
+        };
 
-                *bytes_returned =
-                    core::mem::size_of::<QueryBinding>().saturating_add(required_size);
+        let open_context = open.get_context();
 
-                status = STATUS::SUCCESS;
-                break;
-            }
+        log::info!("query_binding: found open {open:x?}");
+        // found the binding context we are looking for, copy device
+        // name & description to the output buffer
+
+        let name_len =
+            (open_context.device_name.len() as usize).saturating_add(core::mem::size_of::<WCHAR>());
+        let desc_len =
+            (open_context.device_desc.len() as usize).saturating_add(core::mem::size_of::<WCHAR>());
+
+        let name_offset = core::mem::size_of::<QueryBinding>();
+        let desc_offset = name_offset.saturating_add(name_len);
+
+        let required_size = name_len.saturating_add(desc_len);
+
+        if remaining < required_size {
+            // Indicate what size we'd need
+            *bytes_returned = required_size;
+            break 'out STATUS::BUFFER_TOO_SMALL;
         }
-    }
+
+        let header = unsafe { &mut *buffer.cast::<u8>().add(0).cast::<QueryBinding>() };
+
+        // Note: apparently `INVALID_BUFFER_SIZE` is the one we should
+        // use if it's bigger than what we can handle?
+        if let Ok(offset) = u32::try_from(name_offset) {
+            header.device_name_offset = offset;
+        } else {
+            break 'out STATUS::INVALID_BUFFER_SIZE;
+        }
+
+        if let Ok(offset) = u32::try_from(desc_offset) {
+            header.device_descr_offset = offset;
+        } else {
+            break 'out STATUS::INVALID_BUFFER_SIZE;
+        }
+
+        let name_bytes = unsafe { buffer.cast::<u8>().add(name_offset) };
+        unsafe { name_bytes.write_bytes(0, name_len) };
+        unsafe {
+            name_bytes.copy_from_nonoverlapping(
+                open_context.device_name.as_slice().as_ptr().cast(),
+                open_context.device_name.len().into(),
+            )
+        };
+
+        let desc_bytes = unsafe { buffer.cast::<u8>().add(desc_offset) };
+        unsafe { desc_bytes.write_bytes(0, desc_len) };
+        unsafe {
+            desc_bytes.copy_from_nonoverlapping(
+                open_context.device_desc.as_slice().as_ptr().cast(),
+                open_context.device_desc.len().into(),
+            );
+        }
+
+        header.device_name_length = open_context.device_name.len().into();
+        header.device_descr_length = open_context.device_desc.len().into();
+
+        *bytes_returned = required_size;
+
+        STATUS::SUCCESS
+    };
 
     status.to_u32()
 }
