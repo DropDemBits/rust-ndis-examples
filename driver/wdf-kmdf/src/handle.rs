@@ -678,19 +678,6 @@ pub trait HandleWrapper: Sized {
     fn as_object_handle(&self) -> WDFOBJECT;
 }
 
-// FIXME: Just to bridge the gap between `AsObjectHandle` and `HandleWrapper`
-impl<T: HandleWrapper> object::AsObjectHandle for T {
-    #[inline]
-    fn as_handle(&self) -> WDFOBJECT {
-        self.as_object_handle()
-    }
-
-    #[inline]
-    fn as_handle_mut(&mut self) -> WDFOBJECT {
-        self.as_object_handle()
-    }
-}
-
 /// A raw framework handle
 pub trait WdfHandle: Copy {
     /// Gets a typed raw handle from an object handle

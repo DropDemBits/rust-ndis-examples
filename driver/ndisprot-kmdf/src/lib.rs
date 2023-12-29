@@ -26,7 +26,7 @@ use wdf_kmdf::{
     driver::Driver,
     file_object::FileObject,
     handle::{HandleWrapper, HasContext, Ref},
-    object::{AsObjectHandle, GeneralObject},
+    object::GeneralObject,
     sync::{SpinMutex, SpinPinMutex},
 };
 use wdf_kmdf_sys::{
@@ -186,7 +186,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     Error::to_err(unsafe {
         windows_kernel_sys::NdisRegisterProtocolDriver(
             // Pass in the driver context so that `BindAdapter` has access to the driver globals
-            driver.as_handle().cast(),
+            driver.raw_handle().cast(),
             &mut proto_char,
             handle_place,
         )
@@ -1245,8 +1245,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             'out: {
                 if open_context.is_some() {
                     log::warn!(
-                        "IoControl: OPEN_DEVICE: FileObj {:x?} already associated with an open",
-                        file_object.as_handle()
+                        "IoControl: OPEN_DEVICE: FileObj {file_object:x?} already associated with an open",
                     );
                     nt_status = STATUS::DEVICE_BUSY;
                     break 'out;

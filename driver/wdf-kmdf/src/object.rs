@@ -179,25 +179,6 @@ pub fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES
     object_attrs
 }
 
-/// Converts the typed handle into the generic version
-pub trait AsObjectHandle {
-    fn as_handle(&self) -> WDFOBJECT;
-    fn as_handle_mut(&mut self) -> WDFOBJECT;
-}
-
-/// Wraps a raw object pointer in a handle
-pub struct RawObjectHandle(pub WDFOBJECT);
-
-impl AsObjectHandle for RawObjectHandle {
-    fn as_handle(&self) -> WDFOBJECT {
-        self.0
-    }
-
-    fn as_handle_mut(&mut self) -> WDFOBJECT {
-        self.0
-    }
-}
-
 pub struct GeneralObject<T: IntoContextSpace> {
     handle: RawHandleWithContext<WDFOBJECT, T, DriverOwned>,
 }
@@ -490,12 +471,12 @@ unsafe fn mark_context_space_init<T: IntoContextSpace>(
     unsafe { drop_lock.mark_initialized() };
 }
 
-fn get_context_space_ptr<T: IntoContextSpace, H: AsObjectHandle>(
+fn get_context_space_ptr<T: IntoContextSpace, H: HandleWrapper>(
     handle: &H,
 ) -> Result<*mut ContextSpaceWithDropLock<T>, GetContextSpaceError> {
-    let handle = handle.as_handle();
+    let handle = handle.as_object_handle();
 
-    // SAFETY: `handle` validity assured by `AsObjectHandle`, and context info validity assured by `IntoContextSpace`
+    // SAFETY: `handle` validity assured by `HandleWrapper`, and context info validity assured by `IntoContextSpace`
     let context_space = unsafe { raw::WdfObjectGetTypedContextWorker(handle, T::CONTEXT_INFO) };
 
     if context_space.is_null() {
@@ -511,7 +492,7 @@ fn get_context_space_ptr<T: IntoContextSpace, H: AsObjectHandle>(
 }
 
 /// Gets a ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
-pub(crate) fn get_context<T: IntoContextSpace, H: AsObjectHandle>(
+pub(crate) fn get_context<T: IntoContextSpace, H: HandleWrapper>(
     handle: &H,
 ) -> Result<Pin<&T>, GetContextSpaceError> {
     let context_space = get_context_space_ptr::<T, H>(handle)?;
@@ -548,7 +529,7 @@ pub(crate) fn get_context<T: IntoContextSpace, H: AsObjectHandle>(
 /// ## Safety
 ///
 /// Must have exclusive access to the context space, which is guaranteed to happen inside of `EvtDestroy`.
-pub(crate) unsafe fn drop_context_space<T: IntoContextSpace, H: AsObjectHandle>(
+pub(crate) unsafe fn drop_context_space<T: IntoContextSpace, H: HandleWrapper>(
     handle: &H,
     additional_work: impl FnOnce(Pin<&mut T>),
 ) -> Result<(), GetContextSpaceError> {
