@@ -434,6 +434,8 @@ mod test {
             queue.last_mut().map(|it| it as *mut _),
             queue.iter_mut().last().map(|it| it as *mut _),
         );
+
+        crate::test::free_nbls(queue.into());
     }
 
     #[test]
@@ -465,6 +467,8 @@ mod test {
         nbls.reverse();
 
         assert_eq!(&nbls, &elements);
+
+        crate::test::free_nbls(queue.into());
     }
 
     #[test]
@@ -494,6 +498,8 @@ mod test {
         }
 
         assert_eq!(&nbls, &elements);
+
+        crate::test::free_nbls(queue.into());
     }
 
     #[test]
@@ -520,6 +526,8 @@ mod test {
         let flags = queue.iter().map(|nbl| nbl.cancel_id()).collect::<Vec<_>>();
 
         assert_eq!(&flags, &elements);
+
+        crate::test::free_nbls(queue.into());
     }
 
     #[test]
@@ -555,6 +563,8 @@ mod test {
             &queue_a.iter().map(|it| it.cancel_id()).collect::<Vec<_>>(),
             &elements
         );
+
+        crate::test::free_nbls(queue_a.into());
     }
 
     #[test]
@@ -591,5 +601,7 @@ mod test {
             &queue_a.iter().map(|it| it.cancel_id()).collect::<Vec<_>>(),
             &elements
         );
+
+        crate::test::free_nbls(queue_a.into());
     }
 }

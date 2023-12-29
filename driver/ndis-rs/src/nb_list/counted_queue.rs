@@ -250,6 +250,8 @@ mod test {
 
         assert_eq!(&nbls, &elements);
         assert_eq!(queue.len(), 0);
+
+        crate::test::free_nbls(queue.into());
     }
 
     #[test]
@@ -281,6 +283,8 @@ mod test {
 
         assert_eq!(&nbls, &elements);
         assert_eq!(queue.len(), 0);
+
+        crate::test::free_nbls(queue.into());
     }
 
     #[test]
@@ -314,6 +318,8 @@ mod test {
 
         assert_eq!(&flags, &elements);
         assert_eq!(queue.len(), 5);
+
+        crate::test::free_nbls(queue.into());
     }
 
     #[test]
@@ -349,6 +355,8 @@ mod test {
             &queue_a.iter().map(|it| it.cancel_id()).collect::<Vec<_>>(),
             &elements
         );
+
+        crate::test::free_nbls(queue_a.into());
     }
 
     #[test]
@@ -386,5 +394,7 @@ mod test {
             &elements
         );
         assert_eq!(queue_a.len(), elements.len());
+
+        crate::test::free_nbls(queue_a.into());
     }
 }

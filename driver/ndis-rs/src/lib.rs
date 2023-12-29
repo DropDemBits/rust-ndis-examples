@@ -30,7 +30,7 @@ pub use nb_list::{
 pub(crate) mod test {
     use std::boxed::Box;
 
-    use crate::{NetBuffer, NetBufferList};
+    use crate::{NbChain, NblChain, NetBuffer, NetBufferList};
 
     /// Allocates a [`NetBufferList`]
     pub(crate) fn alloc_nbl() -> Box<NetBufferList> {
@@ -46,5 +46,19 @@ pub(crate) mod test {
         let layout = Layout::new::<NetBuffer>();
         let blah = unsafe { std::alloc::alloc_zeroed(layout).cast() };
         unsafe { Box::from_raw(blah) }
+    }
+
+    pub(crate) fn free_nbls(nbls: NblChain) {
+        for nbl in nbls.into_iter() {
+            let nb_chain = std::mem::take(nbl.nb_chain_mut());
+            free_nbs(nb_chain);
+            unsafe { drop(Box::from_raw(nbl)) };
+        }
+    }
+
+    pub(crate) fn free_nbs(nbs: NbChain) {
+        for nb in nbs.into_iter() {
+            unsafe { drop(Box::from_raw(nb)) };
+        }
     }
 }

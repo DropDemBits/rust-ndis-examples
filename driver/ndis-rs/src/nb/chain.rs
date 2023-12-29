@@ -300,6 +300,8 @@ mod test {
         nbs.reverse();
 
         assert_eq!(&nbs, &elements);
+
+        crate::test::free_nbs(chain);
     }
 
     #[test]
@@ -329,6 +331,7 @@ mod test {
         data_length.reverse();
 
         assert_eq!(&data_length, &elements);
+        crate::test::free_nbs(chain);
     }
 
     #[test]
@@ -367,5 +370,22 @@ mod test {
                 .collect::<Vec<_>>(),
             &elements
         );
+        crate::test::free_nbs(chain_a);
+    }
+
+    #[test]
+    fn chain_from_nbl() {
+        let mut nbl = crate::test::alloc_nbl();
+        let chain = nbl.nb_chain_mut();
+
+        assert!(chain.is_empty());
+
+        for i in 1..=4 {
+            let mut nb = crate::test::alloc_nb();
+            *nb.data_length_mut() = i;
+            chain.push_front(Box::leak(nb));
+        }
+
+        crate::test::free_nbs(core::mem::take(chain));
     }
 }

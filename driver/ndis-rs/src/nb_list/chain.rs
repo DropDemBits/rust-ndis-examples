@@ -535,6 +535,8 @@ mod test {
         nbls.reverse();
 
         assert_eq!(&nbls, &elements);
+
+        crate::test::free_nbls(chain);
     }
 
     #[test]
@@ -561,6 +563,8 @@ mod test {
         flags.reverse();
 
         assert_eq!(&flags, &elements);
+
+        crate::test::free_nbls(chain);
     }
 
     #[test]
@@ -596,6 +600,8 @@ mod test {
             &chain_a.iter().map(|it| it.cancel_id()).collect::<Vec<_>>(),
             &elements
         );
+
+        crate::test::free_nbls(chain_a);
     }
 
     // empty
@@ -629,6 +635,8 @@ mod test {
         assert_eq!(class, 1);
         assert_eq!(similar_queue.len(), 5);
 
+        crate::test::free_nbls(similar_queue.into());
+
         // Exhaust it
         let similar = chain.take_counted_similar(|nbl| nbl.cancel_id());
         assert!(chain.is_empty());
@@ -654,6 +662,8 @@ mod test {
         assert_eq!(class, 1);
         assert_eq!(similar_queue.len(), 5);
 
+        crate::test::free_nbls(similar_queue.into());
+
         // Get the run of 2's
         let (similar_queue, class) = chain
             .take_counted_similar(|nbl| nbl.cancel_id())
@@ -661,6 +671,8 @@ mod test {
         assert!(chain.is_empty());
         assert_eq!(class, 2);
         assert_eq!(similar_queue.len(), 3);
+
+        crate::test::free_nbls(similar_queue.into());
     }
 
     #[test]
@@ -682,6 +694,8 @@ mod test {
         assert_eq!(class, 1);
         assert_eq!(similar_queue.len(), 3);
 
+        crate::test::free_nbls(similar_queue.into());
+
         // Get the run of 2's
         let (similar_queue, class) = chain
             .take_counted_similar(|nbl| nbl.cancel_id())
@@ -690,6 +704,8 @@ mod test {
         assert_eq!(class, 2);
         assert_eq!(similar_queue.len(), 3);
 
+        crate::test::free_nbls(similar_queue.into());
+
         // Get the second run of 1's
         let (similar_queue, class) = chain
             .take_counted_similar(|nbl| nbl.cancel_id())
@@ -697,6 +713,8 @@ mod test {
         assert!(chain.is_empty());
         assert_eq!(class, 1);
         assert_eq!(similar_queue.len(), 4);
+
+        crate::test::free_nbls(similar_queue.into());
     }
 
     #[test]
@@ -713,7 +731,10 @@ mod test {
         let [not_1, is_1] = chain.partition_bins(|nbl| (nbl.cancel_id() == 1) as usize);
 
         assert_eq!(not_1.iter().count(), 5);
-        assert_eq!(is_1.iter().count(), 7)
+        assert_eq!(is_1.iter().count(), 7);
+
+        crate::test::free_nbls(not_1.into());
+        crate::test::free_nbls(is_1.into());
     }
 
     #[test]
@@ -730,7 +751,10 @@ mod test {
         let [not_1, is_1] = chain.partition_counted_bins(|nbl| (nbl.cancel_id() == 1) as usize);
 
         assert_eq!(not_1.len(), 5);
-        assert_eq!(is_1.len(), 7)
+        assert_eq!(is_1.len(), 7);
+
+        crate::test::free_nbls(not_1.into());
+        crate::test::free_nbls(is_1.into());
     }
 }
 
