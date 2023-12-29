@@ -1,5 +1,6 @@
 use core::{pin::Pin, sync::atomic::Ordering};
 
+use ndis_rs::{NblChain, NetBufferList};
 use wdf_kmdf::{driver::Driver, file_object::FileObject, object::GeneralObject, raw};
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
@@ -315,178 +316,100 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
         return;
     }
 
-    // note: we assume that we'll always have at least 1 nbl in the nbl_queue
-    // note: NblQueue terminology comes from ndis-driver-library
-    let mut nbl_queue = core::iter::successors(Some(net_buffer_lists), |nbl| {
-        match unsafe { NET_BUFFER_LIST::next_nbl(*nbl) } {
-            nbl if nbl.is_null() => None,
-            nbl => Some(nbl),
-        }
-    });
-    let mut return_nbl_queue = None;
+    // SAFETY: We assume NDIS gives us a valid chain of `NET_BUFFER_LIST`s,
+    // `NET_BUFFER_LIST_CONTEXT`s, `NET_BUFFER`s, and `MDL`s.
+    let chain = unsafe { NblChain::from_raw(net_buffer_lists) };
 
-    while let Some(nbl) = nbl_queue.next() {
-        let mut accepted_receive;
-
+    let [ignored_nbls, accepted_nbls] = chain.partition_filtered(|nbl| {
         // Note: since we're not using NDIS 6.30, the bottom two bits are reserved for NDIS
-        NET_BUFFER_LIST::clear_flag(nbl, windows_kernel_sys::NBL_FLAGS_PROTOCOL_RESERVED & !0x3);
-        accepted_receive = false;
+        *nbl.reserved_flags_mut() &= !(windows_kernel_sys::NBL_FLAGS_PROTOCOL_RESERVED & !0x3);
 
         // Get the first mdl and data length in the list
-        let first_nb = unsafe { NET_BUFFER_LIST::first_nb(nbl) };
-
-        let mdl = unsafe { (*first_nb).__bindgen_anon_1.__bindgen_anon_1.CurrentMdl };
-        let offset = unsafe {
-            (*first_nb)
-                .__bindgen_anon_1
-                .__bindgen_anon_1
-                .CurrentMdlOffset
+        let Some(first_nb) = nbl.nb_chain().first() else {
+            return false;
         };
-        let total_length = unsafe {
-            (*first_nb)
-                .__bindgen_anon_1
-                .__bindgen_anon_1
-                .__bindgen_anon_1
-                .DataLength
-        };
-        let mut buffer_length = 0;
 
-        'err: {
-            assert!(!mdl.is_null());
+        let (eth_header, buffer_length) = {
+            let (mdl, offset) = first_nb.current_mdl_offset();
+            let mut buffer_length = 0;
             let mut eth_header = core::ptr::null_mut();
 
+            assert!(!mdl.is_null());
+
             if !mdl.is_null() {
+                let mut length = 0;
                 windows_kernel_sys::NdisQueryMdl(
                     mdl,
                     &mut eth_header,
-                    &mut buffer_length,
+                    &mut length,
                     MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
                 );
+                buffer_length = length as usize;
             }
 
             if eth_header.is_null() {
                 // System is low on resources, setup error case below
                 buffer_length = 0;
-                break 'err;
+                return false;
             }
 
             if buffer_length == 0 {
                 // Can't inspect the header if it's 0 sized
-                break 'err;
+                return false;
             }
 
             assert!(buffer_length > offset);
             buffer_length = buffer_length.saturating_sub(offset);
-            eth_header = unsafe { eth_header.add(offset as usize) };
+            eth_header = unsafe { eth_header.add(offset) };
+            (eth_header, buffer_length)
+        };
 
-            if (buffer_length as usize) < core::mem::size_of::<EthHeader>() {
-                log::warn!("receive_net_buffer_list: open {open_object:#x?}, runt nbl {nbl:#x?}, first buffer length {buffer_length}");
-                break 'err;
-            }
-
-            let ether_type = {
-                let eth_header = eth_header.cast::<EthHeader>();
-
-                let mut ether_type = unsafe {
-                    eth_header
-                        .byte_add(core::mem::offset_of!(EthHeader, eth_type))
-                        .cast::<u16>()
-                        .read_unaligned()
-                };
-
-                if ether_type == crate::NPROT_8021P_TAG_TYPE {
-                    // Is a tagged ethernet packet, so need to use tagged version of the ethernet header
-                    if (buffer_length as usize) < core::mem::size_of::<TaggedEthHeader>() {
-                        break 'err;
-                    }
-
-                    ether_type = eth_header
-                        .byte_add(core::mem::offset_of!(TaggedEthHeader, eth_type))
-                        .cast::<u16>()
-                        .read_unaligned();
-                }
-
-                ether_type
-            };
-
-            if ether_type != globals.eth_type {
-                break 'err;
-            }
-
-            accepted_receive = true;
-            log::debug!(
-                "receive_net_buffer_list: open {open_object:#x?}, interesting nbl {nbl:#x?}"
-            );
-
-            // If the miniport is out of resources, we need to make a copy of the nbl so that the
-            // miniport can reclaim an nbl
-            let dispatch_level = receive_flags.at_dispatch_level();
-
-            let nbl_to_queue = if !receive_flags.can_pend() {
-                let copy_nbl = allocate_receive_net_buffer_list(open_context, total_length);
-                if copy_nbl.is_null() {
-                    log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to alloc copy of {total_length} bytes");
-                    break 'err;
-                }
-
-                let first_nb = NET_BUFFER_LIST::first_nb(nbl);
-                let mdl_chain = unsafe { (*first_nb).__bindgen_anon_1.__bindgen_anon_1.MdlChain };
-                let data_offset =
-                    unsafe { (*first_nb).__bindgen_anon_1.__bindgen_anon_1.DataOffset };
-
-                let copy_mdl_chain = unsafe {
-                    (*NET_BUFFER_LIST::first_nb(copy_nbl))
-                        .__bindgen_anon_1
-                        .__bindgen_anon_1
-                        .MdlChain
-                };
-
-                // Copy the data to the new nbl
-                let nt_status = copy_mdl_to_mdl(
-                    mdl_chain,
-                    data_offset as usize,
-                    copy_mdl_chain,
-                    0,
-                    total_length as usize,
-                );
-
-                let bytes_copied = match nt_status {
-                    Ok(len) => len,
-                    Err(_err) => {
-                        log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to copy the data, {total_length} bytes");
-                        // Free the copy_nbl
-                        free_receive_net_buffer_list(open_context, copy_nbl, dispatch_level);
-                        break 'err;
-                    }
-                };
-
-                debug_assert_eq!(bytes_copied, total_length as usize);
-                copy_nbl
-            } else {
-                // Miniport still has some resources and transferred ownership to us
-                // so we can queue this nbl directly
-                nbl
-            };
-
-            // Queue this nbl and service any pending read requests.
-            queue_receive_net_buffer_list(&open_object, nbl_to_queue, dispatch_level);
+        if buffer_length < core::mem::size_of::<EthHeader>() {
+            log::warn!("receive_net_buffer_list: open {open_object:#x?}, runt nbl {nbl:#x?}, first buffer length {buffer_length}");
+            return false;
         }
 
-        if !accepted_receive && receive_flags.can_pend() {
-            // We're not interested in this nbl, so return the nbl to the miniport if
-            // ownership was transferred to us
-            unsafe { *NET_BUFFER_LIST::next_nbl_mut(nbl) = core::ptr::null_mut() };
+        let ether_type = {
+            let eth_header = eth_header.cast::<EthHeader>();
 
-            if let Some((_head, tail)) = &mut return_nbl_queue {
-                unsafe { *NET_BUFFER_LIST::next_nbl_mut(*tail) = nbl };
-                *tail = nbl;
-            } else {
-                return_nbl_queue = Some((nbl, nbl));
+            let mut ether_type = unsafe {
+                eth_header
+                    .byte_add(core::mem::offset_of!(EthHeader, eth_type))
+                    .cast::<u16>()
+                    .read_unaligned()
+            };
+
+            if ether_type == crate::NPROT_8021P_TAG_TYPE {
+                // Is a tagged ethernet packet, so need to use tagged version of the ethernet header
+                if (buffer_length as usize) < core::mem::size_of::<TaggedEthHeader>() {
+                    return false;
+                }
+
+                ether_type = eth_header
+                    .byte_add(core::mem::offset_of!(TaggedEthHeader, eth_type))
+                    .cast::<u16>()
+                    .read_unaligned();
             }
-        }
-    }
 
-    if let Some((head, _)) = return_nbl_queue {
+            ether_type
+        };
+
+        if ether_type != globals.eth_type {
+            return false;
+        }
+
+        log::debug!(
+            "receive_net_buffer_list: open {open_object:#x?}, interesting nbl {nbl:#x?}"
+        );
+        return true;
+    });
+
+    // Take care of returning the ignored nbls first, if we need to
+    if receive_flags.can_pend() {
+        // The miniport transferred ownership of the nbls to us, so we need to
+        // give the nbls back to the miniport
+        let (head, _) = ignored_nbls.into_raw_parts();
+
         unsafe {
             windows_kernel_sys::NdisReturnNetBufferLists(
                 open_context.binding_handle.load(),
@@ -494,6 +417,70 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
                 return_flags.bits(),
             );
         }
+    } else {
+        // The miniport is running low on resources and will regain ownership
+        // of the nbls after we return.
+        //
+        // Presumably the miniport has its own way of tracking the nbls it owns,
+        // so we can safely forget the ignored nbl queue.
+        core::mem::forget(ignored_nbls);
+    }
+
+    for nbl in accepted_nbls.into_iter() {
+        let dispatch_level = receive_flags.at_dispatch_level();
+
+        // If the miniport is out of resources, we need to make a copy of
+        // the nbl so that the miniport can reclaim the nbl
+        let nbl_to_queue = if !receive_flags.can_pend() {
+            let Some(first_nb) = nbl.nb_chain().first() else {
+                // `nbl` should have a `NetBuffer`, but it's okay if it doesn't
+                // since we can just relinquish ownership of the nbl.
+                continue;
+            };
+            let mdl_chain = first_nb.mdl_chain();
+            let data_offset = first_nb.data_offset();
+            let total_length = first_nb.data_length();
+
+            let copy_nbl = allocate_receive_net_buffer_list(open_context, total_length as u32);
+            let Some(mut copy_nbl) = (unsafe { NetBufferList::ptr_cast_from_raw(copy_nbl) }) else {
+                log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to alloc copy of {total_length} bytes");
+                continue;
+            };
+            let copy_nbl = unsafe { copy_nbl.as_mut() };
+
+            let copy_mdl_chain = {
+                let first_nb = nbl.nb_chain().first().unwrap();
+                first_nb.mdl_chain()
+            };
+
+            // Copy the data to the new nbl
+            let nt_status =
+                copy_mdl_to_mdl(mdl_chain, data_offset, copy_mdl_chain, 0, total_length);
+
+            let bytes_copied = match nt_status {
+                Ok(len) => len,
+                Err(_err) => {
+                    log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to copy the data, {total_length} bytes");
+                    // Free the copy_nbl
+                    free_receive_net_buffer_list(
+                        open_context,
+                        NetBufferList::ptr_cast_to_raw(Some(copy_nbl.into())),
+                        dispatch_level,
+                    );
+                    continue;
+                }
+            };
+
+            debug_assert_eq!(bytes_copied, total_length as usize);
+            NetBufferList::ptr_cast_to_raw(Some(copy_nbl.into()))
+        } else {
+            // Miniport still has some resources and transferred ownership to us
+            // so we can queue this nbl directly
+            NetBufferList::ptr_cast_to_raw(Some(nbl.into()))
+        };
+
+        // Queue this nbl and service any pending read requests.
+        queue_receive_net_buffer_list(&open_object, nbl_to_queue, dispatch_level);
     }
 }
 

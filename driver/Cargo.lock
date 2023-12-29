@@ -284,6 +284,7 @@ dependencies = [
  "bitflags",
  "crossbeam-utils",
  "moveit",
+ "ndis-rs",
  "nt-list",
  "pinned-init",
  "scopeguard",
