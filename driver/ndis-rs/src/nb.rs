@@ -88,12 +88,18 @@ impl NetBuffer {
     ///
     /// Will never be larget than `u32::MAX`.
     pub fn data_length(&self) -> usize {
-        let data_length = unsafe {
-            self.nb
-                .__bindgen_anon_1
-                .__bindgen_anon_1
-                .__bindgen_anon_1
-                .DataLength
+        let data_length = {
+            // Split out access to the `data_length` union due to
+            // `clippy::multiple_unsafe_ops_per_block`
+            //
+            // SAFETY: Having a `&self` transitively guarantees that all fields are
+            // properly initialized.
+            let data_length_union =
+                unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.__bindgen_anon_1 };
+
+            // SAFETY: Having a `&self` transitively guarantees that all fields are
+            // properly initialized.
+            unsafe { data_length_union.DataLength }
         };
 
         // Note: Windows only supports `usize >= u32`, and `DataLength` is

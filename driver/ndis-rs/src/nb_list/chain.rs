@@ -365,8 +365,8 @@ impl NblChain {
     /// # Panics
     ///
     /// Might panic if the similar element count exceeds `usize::MAX`.
-    pub fn take_counted_similar<'chain>(
-        &'chain mut self,
+    pub fn take_counted_similar(
+        &mut self,
         mut classifier: impl FnMut(&mut NetBufferList) -> usize,
     ) -> Option<(NblCountedQueue, usize)> {
         let mut length = 0;
@@ -409,11 +409,6 @@ impl NblChain {
         // We also tie the lifetime of the iterator to the chain so that no
         // other mutable iterators can be constructed.
         unsafe { IterMut::new(self.head) }
-    }
-
-    /// Creates an owning iterator consuming all of the [`NetBufferList`]s in the chain.
-    pub fn into_iter(self) -> IntoIter {
-        IntoIter::new(self)
     }
 
     /// Converts the chain into a [`NblQueue`].
@@ -526,6 +521,33 @@ unsafe impl Send for NblChain {}
 // SAFETY: A `NblChain` can only mutate fields behind a `&mut`, so
 // `&NetBufferList` can safely be sent between threads.
 unsafe impl Sync for NblChain {}
+
+impl<'chain> core::iter::IntoIterator for &'chain NblChain {
+    type Item = &'chain NetBufferList;
+    type IntoIter = Iter<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'chain> core::iter::IntoIterator for &'chain mut NblChain {
+    type Item = &'chain mut NetBufferList;
+    type IntoIter = IterMut<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl core::iter::IntoIterator for NblChain {
+    type Item = &'static mut NetBufferList;
+    type IntoIter = IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter::new(self)
+    }
+}
 
 #[cfg(test)]
 mod test {

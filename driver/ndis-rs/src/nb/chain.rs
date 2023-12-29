@@ -239,11 +239,6 @@ impl NbChain {
         unsafe { IterMut::new(self.head) }
     }
 
-    /// Creates an owning iterator consuming all of the [`NetBuffer`]s in the chain.
-    pub fn into_iter(self) -> IntoIter {
-        IntoIter::new(self)
-    }
-
     /// Sets the head of the chain.
     ///
     /// # Safety
@@ -262,6 +257,33 @@ unsafe impl Send for NbChain {}
 // SAFETY: A `NbChain` can only mutate fields behind a `&mut`, so `&NbChain`
 // can safely be sent between threads.
 unsafe impl Sync for NbChain {}
+
+impl<'chain> core::iter::IntoIterator for &'chain NbChain {
+    type Item = &'chain NetBuffer;
+    type IntoIter = Iter<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'chain> core::iter::IntoIterator for &'chain mut NbChain {
+    type Item = &'chain mut NetBuffer;
+    type IntoIter = IterMut<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl core::iter::IntoIterator for NbChain {
+    type Item = &'static mut NetBuffer;
+    type IntoIter = IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter::new(self)
+    }
+}
 
 #[cfg(test)]
 mod test {

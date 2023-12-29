@@ -293,12 +293,6 @@ impl NblQueue {
         unsafe { IterMut::new(self.inner.map(|inner| inner.head)) }
     }
 
-    /// Creates an owning iterator consuming all of the [`NetBufferList`]s in
-    /// the queue.
-    pub fn into_iter(self) -> IntoIter {
-        IntoIter::new(self.into())
-    }
-
     /// Sets the head of the queue, and updates the tail pointer as appropriate.
     ///
     /// # Safety
@@ -393,6 +387,33 @@ unsafe impl Send for NblQueue {}
 // SAFETY: A `NblQueue` can only mutate fields behind a `&mut`, so
 // `&NetBufferList` can safely be sent between threads.
 unsafe impl Sync for NblQueue {}
+
+impl<'chain> core::iter::IntoIterator for &'chain NblQueue {
+    type Item = &'chain NetBufferList;
+    type IntoIter = Iter<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'chain> core::iter::IntoIterator for &'chain mut NblQueue {
+    type Item = &'chain mut NetBufferList;
+    type IntoIter = IterMut<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl core::iter::IntoIterator for NblQueue {
+    type Item = &'static mut NetBufferList;
+    type IntoIter = IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter::new(self.into())
+    }
+}
 
 #[cfg(test)]
 mod test {

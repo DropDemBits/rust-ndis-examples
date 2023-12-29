@@ -173,12 +173,6 @@ impl NblCountedQueue {
         self.queue.iter_mut()
     }
 
-    /// Creates an owning iterator consuming all of the [`NetBufferList`]s in
-    /// the queue.
-    pub fn into_iter(self) -> IntoIter {
-        IntoIter::new(self.into())
-    }
-
     /// Ensures that the counted queue is valid.
     fn assert_valid(&self) {
         if cfg!(debug_assertions) {
@@ -201,6 +195,33 @@ impl From<NblCountedQueue> for NblChain {
 impl From<NblCountedQueue> for NblQueue {
     fn from(value: NblCountedQueue) -> Self {
         value.queue
+    }
+}
+
+impl<'chain> core::iter::IntoIterator for &'chain NblCountedQueue {
+    type Item = &'chain NetBufferList;
+    type IntoIter = Iter<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'chain> core::iter::IntoIterator for &'chain mut NblCountedQueue {
+    type Item = &'chain mut NetBufferList;
+    type IntoIter = IterMut<'chain>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl core::iter::IntoIterator for NblCountedQueue {
+    type Item = &'static mut NetBufferList;
+    type IntoIter = IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter::new(self.into())
     }
 }
 
