@@ -20,8 +20,8 @@ impl<T: IntoContextSpace> HandleWrapper for ControlDevice<T> {
     type Handle = WDFDEVICE;
 
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
-        // SAFETY: uhhhhh caller's problem
         Self {
+            // SAFETY: Caller ensures that the handle is valid
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }

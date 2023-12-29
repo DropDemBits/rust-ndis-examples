@@ -221,6 +221,7 @@ where
         I: PinInit<T, Error>,
     {
         Self::_create(default_object_attributes::<T>(), init_context, |handle| {
+            // SAFETY: We own this handle as we take it from `WdfObjectCreate`.
             let handle = unsafe { RawHandleWithContext::create(handle) };
             Self { handle }
         })
@@ -247,8 +248,10 @@ where
         object_attrs.ParentObject = parent.as_object_handle();
 
         Self::_create(object_attrs, init_context, |handle| {
+            // SAFETY: We own this handle as we take it from `WdfObjectCreate`.
             let handle = unsafe { RawHandleWithContext::create_parented(handle) };
             let handle = Self { handle };
+            // SAFETY: `handle` comes from the `create_parented` call above
             unsafe { Ref::into_parented(handle) }
         })
     }

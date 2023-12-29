@@ -29,6 +29,7 @@ where
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
     pub fn file_object(&self) -> Wrapped<FileObject<F>> {
+        // SAFETY: `self.handle.as_handle()` always points to a valid request handle by construction.
         let file_object = unsafe { raw::WdfRequestGetFileObject(self.handle.as_handle()) };
         assert!(
             !file_object.is_null(),
@@ -36,6 +37,8 @@ where
             self.handle.as_handle()
         );
 
+        // SAFETY: We ensure that `file_object` is never null, and we trust WDF
+        // that the `file_object` we get is a vaild `WDFFILEOBJECT`
         unsafe { FileObject::wrap(file_object) }
     }
 
@@ -51,8 +54,8 @@ impl<F> HandleWrapper for FileRequest<F> {
     type Handle = WDFREQUEST;
 
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
-        // SAFETY: uhhhhh caller's problem
         Self {
+            // SAFETY: Caller ensures that the handle is valid
             handle: unsafe { RawHandle::wrap_raw(raw) },
             _file: PhantomData,
         }

@@ -405,6 +405,10 @@ impl<H: HandleWrapper, T: IntoContextSpace> UninitContextSpace<H, T> {
         let mut attributes = object::default_object_attributes::<T>();
         attributes.EvtDestroyCallback = Some(default_dispatch_evt_destroy::<T>);
 
+        // Note: we never use this context space handle as we get it through
+        // `HasContext::get_context`.
+        let mut _context_space = core::ptr::null_mut();
+
         // SAFETY:
         // `HandleWrapper` guarantees that the resultant object handle
         // is a valid handle to a WDF object.
@@ -415,12 +419,11 @@ impl<H: HandleWrapper, T: IntoContextSpace> UninitContextSpace<H, T> {
         // initialized once (see
         // https://github.com/microsoft/Windows-Driver-Frameworks/blob/a94b8c30dad524352fab90872aefc83920b98e56/src/framework/shared/object/fxobject.cpp#L649-L657
         // ).
-        let mut context_space = core::ptr::null_mut();
         let status = unsafe {
             Error::to_err(raw::WdfObjectAllocateContext(
                 handle.as_object_handle(),
                 &mut attributes,
-                &mut context_space,
+                &mut _context_space,
             ))
         };
         if let Err(err) = status {
@@ -665,7 +668,7 @@ pub trait HandleWrapper: Sized {
     type Handle;
     // type RefHandle;
 
-    /// ## Safety:
+    /// ## Safety
     ///
     /// Must be a valid handle of the correct type, and must not
     /// alias exclusive accesses on drop.

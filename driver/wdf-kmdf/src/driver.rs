@@ -35,7 +35,7 @@ where
     /// Respect aliasing rules, since this can be used to
     /// generate aliasing mutable references to the context space
     pub unsafe fn wrap(handle: WDFDRIVER) -> Wrapped<Self> {
-        // SAFETY: uhhhhh
+        // SAFETY: Is the correct handle type, and caller guarantees that
         unsafe { Wrapped::wrap_raw(handle.cast()) }
     }
 
@@ -146,7 +146,7 @@ where
         }
 
         // Make it!
-        let mut handle = {
+        let handle = {
             let driver_object = driver_object.into_raw();
 
             let mut handle = core::ptr::null_mut();
@@ -171,7 +171,7 @@ where
         // - It's WDF's responsibility to insert the context area, since we create
         //   the default object attributes with T's context area
         // - The driver object was just created
-        unsafe { object::context_pin_init(&mut handle, init_context)? };
+        unsafe { object::context_pin_init(&handle, init_context)? };
 
         // Return the wrapped handle since WDF owns the driver object
         Ok(handle)
@@ -248,8 +248,8 @@ impl<T: IntoContextSpace> HandleWrapper for Driver<T> {
     type Handle = WDFDRIVER;
 
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
-        // SAFETY: Caller ensures that the handle is valid
         Self {
+            // SAFETY: Caller ensures that the handle is valid
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }

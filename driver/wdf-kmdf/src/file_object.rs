@@ -92,8 +92,8 @@ impl<T: IntoContextSpace> HandleWrapper for FileObject<T> {
     type Handle = WDFFILEOBJECT;
 
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
-        // SAFETY: uhhhhh proc macro pls
         Self {
+            // SAFETY: Caller ensures that the handle is valid
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }
