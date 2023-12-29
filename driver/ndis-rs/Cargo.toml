@@ -8,3 +8,4 @@ license.workspace = true
 
 [dependencies]
 windows-kernel-sys.workspace = true
+static_assertions.workspace = true

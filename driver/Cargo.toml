@@ -22,6 +22,7 @@ nt-list = { version = "0.3.0", default-features = false }
 windows-kernel-sys = { path = "windows-kernel-sys" }
 windows-kernel-rs = { path = "windows-kernel-rs" }
 ndis-rs = { path = "ndis-rs" }
+static_assertions = "1.1.0"
 
 [profile.dev]
 panic = "abort"

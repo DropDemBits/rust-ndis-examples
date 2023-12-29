@@ -273,6 +273,7 @@ checksum = "87d7335204cb6ef7bd647fa6db0be3e4d7aa25b5823a7aa030027ddf512cefba"
 name = "ndis-rs"
 version = "0.1.0"
 dependencies = [
+ "static_assertions",
  "windows-kernel-sys",
 ]
 

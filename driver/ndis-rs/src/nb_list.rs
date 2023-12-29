@@ -50,6 +50,10 @@ impl NetBufferList {
         nb.map_or(core::ptr::null_mut(), |ptr| ptr.cast().as_ptr())
     }
 
+    pub fn as_ptr(&mut self) -> PNET_BUFFER_LIST {
+        Self::ptr_cast_to_raw(Some(NonNull::from(self)))
+    }
+
     pub fn nb_chain(&self) -> &NbChain {
         // SAFETY: Having a `&self` transitively guarantees that all fields are
         // properly initialized.

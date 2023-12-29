@@ -16,6 +16,10 @@ pub struct NbChain {
     head: Option<NonNull<NetBuffer>>,
 }
 
+// Must be the same size & alignment as a pointer to a `NET_BUFFER`
+static_assertions::assert_eq_size!(PNET_BUFFER, NbChain);
+static_assertions::assert_eq_align!(PNET_BUFFER, NbChain);
+
 impl NbChain {
     /// Creates a new empty [`NbChain`]
     pub fn new() -> Self {

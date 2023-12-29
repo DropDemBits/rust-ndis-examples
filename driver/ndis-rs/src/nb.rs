@@ -1,7 +1,7 @@
 //! Helpers for working with `NET_BUFFER`s
 use core::{marker::PhantomData, ptr::NonNull};
 
-use windows_kernel_sys::{NET_BUFFER, PNET_BUFFER};
+use windows_kernel_sys::{NET_BUFFER, PMDL, PNET_BUFFER};
 
 use crate::NbChain;
 
@@ -23,6 +23,10 @@ pub struct NetBuffer {
     nb: NET_BUFFER,
 }
 
+// For mdl apis, will likely have:
+// mdl_chain: to the whole MdlChain<'_>
+// data_mdl_span: to the used data as an `MdlSpan<'_>`
+// current_mdl_offset: to the used data as an `MdlOffset<'_>`
 impl NetBuffer {
     /// Casts a `PNET_BUFFER` into a `NetBuffer` pointer
     ///
@@ -40,6 +44,44 @@ impl NetBuffer {
         // This is sound because `NetBuffer` and `NET_BUFFER` have the same
         // layout due to `NetBuffer` being `repr(transparent)`
         nb.map_or(core::ptr::null_mut(), |ptr| ptr.cast().as_ptr())
+    }
+
+    /// Get the current `MDL` and offset into the `MDL` that the driver is using.
+    pub fn current_mdl_offset(&self) -> (PMDL, usize) {
+        // SAFETY: Having a `&self` transitively guarantees that all fields are
+        // properly initialized.
+        let mdl = unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.CurrentMdl };
+
+        // SAFETY: Having a `&self` transitively guarantees that all fields are
+        // properly initialized.
+        //
+        // Note: Windows only supports `usize >= u32`, and `CurrentMdlOffset` is
+        // guaranteed to be <= u32::MAX, so this will never truncate.
+        let offset = unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.CurrentMdlOffset as usize };
+
+        (mdl, offset)
+    }
+
+    /// Pointer to the start of a linked list that maps a data buffer holding
+    /// the network data.
+    pub fn mdl_chain(&self) -> PMDL {
+        // SAFETY: Having a `&self` transitively guarantees that all fields are
+        // properly initialized.
+        unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.MdlChain }
+    }
+
+    /// The offset (in bytes) from the beginning of the `MDL` chain to
+    /// the start of the used network data space in the MDL chain.
+    ///
+    /// Also the size of the unused data space (in bytes).
+    pub fn data_offset(&self) -> usize {
+        // SAFETY: Having a `&self` transitively guarantees that all fields are
+        // properly initialized.
+        let data_offset = unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.DataOffset };
+
+        // Note: Windows only supports `usize >= u32`, and `DataOffset` is
+        // guaranteed to be <= u32::MAX, so this will never truncate.
+        data_offset as usize
     }
 
     /// The data length (in bytes) of the used data space in the MDL chain.
