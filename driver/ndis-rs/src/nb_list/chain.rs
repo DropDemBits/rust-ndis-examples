@@ -189,7 +189,7 @@ impl NblChain {
     /// Panics if `classifier` returns a `usize` that's not in the range of `0..BINS`.
     pub fn partition_bins<const BINS: usize>(
         mut self,
-        mut classifier: impl FnMut(&NetBufferList) -> usize,
+        mut classifier: impl FnMut(&mut NetBufferList) -> usize,
     ) -> [NblQueue; BINS] {
         assert!(BINS != 0, "bins must not be empty");
 
@@ -221,7 +221,7 @@ impl NblChain {
     /// of similar elements.
     pub fn partition_counted_bins<const BINS: usize>(
         mut self,
-        mut classifier: impl FnMut(&NetBufferList) -> usize,
+        mut classifier: impl FnMut(&mut NetBufferList) -> usize,
     ) -> [NblCountedQueue; BINS] {
         assert!(BINS != 0, "bins must not be empty");
 
@@ -247,7 +247,7 @@ impl NblChain {
     /// the same `usize` for both of them.
     pub fn take_similar<'chain>(
         &'chain mut self,
-        mut classifier: impl FnMut(&NetBufferList) -> usize,
+        mut classifier: impl FnMut(&mut NetBufferList) -> usize,
     ) -> Option<(NblQueue, usize)> {
         // Take the head so as to guarantee that we won't accidentally
         // any extra mutable iterators.
@@ -338,7 +338,7 @@ impl NblChain {
     /// Might panic if the similar element count exceeds `usize::MAX`.
     pub fn take_counted_similar<'chain>(
         &'chain mut self,
-        mut classifier: impl FnMut(&NetBufferList) -> usize,
+        mut classifier: impl FnMut(&mut NetBufferList) -> usize,
     ) -> Option<(NblCountedQueue, usize)> {
         let mut length = 0;
         let (queue, class) = self.take_similar(|nbl| {
