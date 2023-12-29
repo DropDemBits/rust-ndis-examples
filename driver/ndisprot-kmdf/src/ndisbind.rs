@@ -14,7 +14,12 @@ use nt_list::{
 };
 use pinned_init::{pin_data, InPlaceInit, PinInit};
 use scopeguard::ScopeGuard;
-use wdf_kmdf::{driver::Driver, handle::Ref, object::GeneralObject, sync::SpinPinMutex};
+use wdf_kmdf::{
+    driver::Driver,
+    handle::{HasContext, Ref},
+    object::GeneralObject,
+    sync::SpinPinMutex,
+};
 use wdf_kmdf_sys::WDF_IO_QUEUE_CONFIG;
 use windows_kernel_rs::{
     log,

@@ -1,7 +1,7 @@
 use wdf_kmdf_sys::WDFDEVICE;
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext},
+    handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext},
     object::IntoContextSpace,
 };
 
@@ -30,3 +30,5 @@ impl<T: IntoContextSpace> HandleWrapper for ControlDevice<T> {
         self.handle.as_object_handle()
     }
 }
+
+impl<T: IntoContextSpace> HasContext<T> for ControlDevice<T> {}

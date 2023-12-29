@@ -7,7 +7,7 @@ use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
 use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext, Ref, Wrapped},
+    handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
     object::{self, default_object_attributes, IntoContextSpace},
     raw,
 };
@@ -42,10 +42,6 @@ where
     /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
     pub fn raw_handle(&self) -> WDFDRIVER {
         self.handle.as_handle()
-    }
-
-    pub fn get_context(&self) -> Pin<&T> {
-        crate::object::get_context(self).expect("context space must be initialized")
     }
 }
 
@@ -258,6 +254,8 @@ impl<T: IntoContextSpace> HandleWrapper for Driver<T> {
         self.handle.as_object_handle()
     }
 }
+
+impl<T: IntoContextSpace> HasContext<T> for Driver<T> {}
 
 impl<T: IntoContextSpace> AsRef<Driver<T>> for Driver<T> {
     fn as_ref(&self) -> &Driver<T> {

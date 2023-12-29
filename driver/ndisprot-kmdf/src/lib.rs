@@ -25,7 +25,7 @@ use wdf_kmdf::{
     device::ControlDevice,
     driver::Driver,
     file_object::FileObject,
-    handle::{HandleWrapper, Ref},
+    handle::{HandleWrapper, HasContext, Ref},
     object::{AsObjectHandle, GeneralObject},
     sync::{SpinMutex, SpinPinMutex},
 };

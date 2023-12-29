@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use wdf_kmdf::{
-    handle::{HandleWrapper, Ref, WithContext},
+    handle::{HandleWrapper, HasContext, Ref, WithContext},
     object::GeneralObject,
     raw,
     request::FileRequest,

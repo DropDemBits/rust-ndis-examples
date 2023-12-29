@@ -1,7 +1,9 @@
 use core::{pin::Pin, sync::atomic::Ordering};
 
 use ndis_rs::{NblChain, NetBufferList};
-use wdf_kmdf::{driver::Driver, file_object::FileObject, object::GeneralObject, raw};
+use wdf_kmdf::{
+    driver::Driver, file_object::FileObject, handle::HasContext, object::GeneralObject, raw,
+};
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{

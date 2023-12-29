@@ -5,7 +5,7 @@ use wdf_kmdf_sys::WDFFILEOBJECT;
 use windows_kernel_sys::Error;
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext, Ref, Wrapped},
+    handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
     object::{self, IntoContextSpace},
 };
 
@@ -102,6 +102,8 @@ impl<T: IntoContextSpace> HandleWrapper for FileObject<T> {
         self.handle.as_object_handle()
     }
 }
+
+impl<T: IntoContextSpace> HasContext<T> for FileObject<T> {}
 
 impl<T: IntoContextSpace> AsRef<FileObject<T>> for FileObject<T> {
     fn as_ref(&self) -> &FileObject<T> {

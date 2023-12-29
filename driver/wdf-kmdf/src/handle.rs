@@ -453,7 +453,7 @@ impl<H: HandleWrapper, T: IntoContextSpace> UninitContextSpace<H, T> {
         // Object has the context space since `self` existing means that
         // the object does have T's context space, and that the context
         // space hasn't been initialized yet.
-        let status = unsafe { object::context_pin_init::<T, H, _, _>(&handle, init) };
+        let status = unsafe { object::context_pin_init::<T, _, _, _>(&handle, init) };
         if let Err(err) = status {
             return Err((err, handle));
         }

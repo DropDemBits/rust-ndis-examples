@@ -12,7 +12,7 @@ use wdf_kmdf_sys::{
 use windows_kernel_sys::{result::STATUS, Error};
 
 use crate::{
-    handle::{DriverOwned, HandleWrapper, RawHandleWithContext, Ref, Wrapped},
+    handle::{DriverOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
     raw,
 };
 
@@ -303,10 +303,6 @@ where
         self.handle.as_handle()
     }
 
-    pub fn get_context(&self) -> Pin<&T> {
-        crate::object::get_context(self).expect("context space must be initialized")
-    }
-
     /// Makes a shared reference to the object
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
@@ -345,6 +341,8 @@ impl<T: IntoContextSpace> HandleWrapper for GeneralObject<T> {
         self.handle.as_object_handle()
     }
 }
+
+impl<T: IntoContextSpace> HasContext<T> for GeneralObject<T> {}
 
 impl<T: IntoContextSpace> AsRef<GeneralObject<T>> for GeneralObject<T> {
     fn as_ref(&self) -> &GeneralObject<T> {
@@ -513,8 +511,7 @@ fn get_context_space_ptr<T: IntoContextSpace, H: AsObjectHandle>(
 }
 
 /// Gets a ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
-// FIXME: Temporarily `pub` until we have something like `WithContextSpace`
-pub fn get_context<T: IntoContextSpace, H: AsObjectHandle>(
+pub(crate) fn get_context<T: IntoContextSpace, H: AsObjectHandle>(
     handle: &H,
 ) -> Result<Pin<&T>, GetContextSpaceError> {
     let context_space = get_context_space_ptr::<T, H>(handle)?;
@@ -551,8 +548,7 @@ pub fn get_context<T: IntoContextSpace, H: AsObjectHandle>(
 /// ## Safety
 ///
 /// Must have exclusive access to the context space, which is guaranteed to happen inside of `EvtDestroy`.
-// FIXME: Temporarily `pub` until we have something like `WithContextSpace`
-pub unsafe fn drop_context_space<T: IntoContextSpace, H: AsObjectHandle>(
+pub(crate) unsafe fn drop_context_space<T: IntoContextSpace, H: AsObjectHandle>(
     handle: &H,
     additional_work: impl FnOnce(Pin<&mut T>),
 ) -> Result<(), GetContextSpaceError> {
@@ -629,8 +625,7 @@ impl From<GetContextSpaceError> for Error {
 ///
 /// - Must not reinitialize an object's context space
 /// - Object must actually have the context space
-// FIXME: Temporarily `pub` until we have something like `WithContextSpace`
-pub unsafe fn context_pin_init<T, Handle, I, Err>(
+pub(crate) unsafe fn context_pin_init<T, Handle, I, Err>(
     handle: &Handle,
     init_context: impl FnOnce(&Handle) -> Result<I, Err>,
 ) -> Result<(), Err>
