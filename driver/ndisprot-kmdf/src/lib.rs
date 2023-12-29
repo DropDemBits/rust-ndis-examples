@@ -1027,7 +1027,7 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
     let mut file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    debug!("Open: FileObject {:#x?}", file_object);
+    debug!("Open: FileObject {file_object:#x?}");
 
     let status = unsafe {
         file_object.init_context_space(pinned_init::try_init!(FileObjectContext {
@@ -1065,16 +1065,12 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
     let file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    let open_context = file_object.get_context().open_context();
+    let open_object = file_object.get_context().open_context();
 
-    debug!(
-        "Cleanup: FileObject {:#x?}, Open: {:#x?}",
-        file_object,
-        open_context.is_some()
-    );
+    debug!("Cleanup: FileObject {file_object:x?}, Open: {open_object:x?}",);
 
-    if let Some(open_context) = open_context {
-        let open_context = open_context.get_context();
+    if let Some(open_object) = &open_object {
+        let open_context = open_object.get_context();
 
         // Mark this endpoint
         {
@@ -1098,8 +1094,7 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         );
         if let Err(err) = Error::to_err(status) {
             debug!(
-                "Cleanup: set packet filter ({:#x?}) failed {:#x?}",
-                packet_filter, err
+                "Cleanup: open {open_object:x?}, set packet filter ({packet_filter:#x?}) failed {err:#x?}",
             );
 
             // Ignore the result
@@ -1121,10 +1116,10 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         }
 
         // Cleanup the receive packet queue
-        recv::flush_receive_queue(open_context.as_ref());
+        recv::flush_receive_queue(&open_object);
     }
 
-    debug!("Cleanup");
+    debug!("Cleanup: {open_object:x?}");
 }
 
 const FSCTL_NDISPROT_BASE: DeviceType = DeviceType::Network;
@@ -1178,7 +1173,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(file_object) };
 
     let file_object_ctx = file_object.get_context();
-    let open_context = file_object_ctx.open_context();
+    let open_object = file_object_ctx.open_context();
 
     let mut bytes_returned = 0;
 
@@ -1243,9 +1238,9 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
 
             'out: {
-                if open_context.is_some() {
+                if let Some(open_object) = open_object {
                     log::warn!(
-                        "IoControl: OPEN_DEVICE: FileObj {file_object:x?} already associated with an open",
+                        "IoControl: OPEN_DEVICE: FileObj {file_object:x?} already associated with open {open_object:x?}",
                     );
                     nt_status = STATUS::DEVICE_BUSY;
                     break 'out;
@@ -1265,7 +1260,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                 };
 
                 if !nt_status.is_success() {
-                    log::warn!("WdfRequestRetrieveInputBuffer failed {:x?}", nt_status);
+                    log::warn!("WdfRequestRetrieveInputBuffer failed {nt_status:x?}");
                     break 'out;
                 }
 
@@ -1275,9 +1270,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                 match open_device(device_name, file_object.clone_ref()) {
                     Ok(open_context) => {
                         log::trace!(
-                            "IoControl OPEN_DEVICE: Open {:x?} <-> FileObject {:x?}",
-                            open_context,
-                            file_object
+                            "IoControl OPEN_DEVICE: Open {open_context:x?} <-> FileObject {file_object:x?}",
                         )
                     }
                     Err(err) => nt_status = err.0,
@@ -1306,7 +1299,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                     break 'out;
                 }
 
-                if let Some(open_context) = open_context {
+                if let Some(open_context) = open_object {
                     let open_context = open_context.get_context();
 
                     let status = ndisbind::query_oid_value(
@@ -1343,7 +1336,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
                     break 'out;
                 }
 
-                if let Some(open_context) = open_context {
+                if let Some(open_context) = open_object {
                     let open_context = open_context.get_context();
 
                     let status = ndisbind::set_oid_value(&*open_context, sys_buffer, buf_size);
@@ -1359,7 +1352,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
         IOCTL_NDISPROT_INDICATE_STATUS => {
             assert_eq!(control_code.transfer_method(), TransferMethod::Buffered);
 
-            if let Some(open_context) = open_context {
+            if let Some(open_context) = open_object {
                 let open_context = open_context.get_context();
 
                 let status = Error::to_err(unsafe {
@@ -1426,19 +1419,19 @@ fn open_device(
             )
         };
 
-        let Some(open_context_obj) = ndisbind::ndisprot_lookup_device(globals, device_name) else {
+        let Some(open_object) = ndisbind::ndisprot_lookup_device(globals, device_name) else {
             log::warn!("open_device: couldn't find device {device_name}");
             break 'out Err(Error(STATUS::OBJECT_NAME_NOT_FOUND));
         };
 
-        let open_context = open_context_obj.get_context();
+        let open_context = open_object.get_context();
 
         let mut inner = open_context.inner.lock();
 
         if !inner.flags.contains(OpenContextFlags::OPEN_IDLE) {
             log::warn!(
                 "open_device: open {:x?}/{:x?} already associated with another file object {:x?}",
-                open_context_obj,
+                open_object,
                 inner.flags,
                 inner.file_object
             );
@@ -1451,7 +1444,7 @@ fn open_device(
             match inner.as_ref() {
                 Some(old) => Err(old.clone_ref()),
                 None => {
-                    *inner = Some(open_context_obj.clone_ref());
+                    *inner = Some(open_object.clone_ref());
                     Ok(())
                 }
             }
@@ -1498,7 +1491,7 @@ fn open_device(
 
             log::warn!(
                 "open_device: open {:x?}: set packet filter ({:x?}) failed: {:x?}",
-                open_context_obj,
+                open_object,
                 packet_filter,
                 err
             );
@@ -1508,7 +1501,7 @@ fn open_device(
 
             // Need to set OpenContext to null again, so others can open for this file object later
             let current_open_context_obj = file_context.open_context.lock().take();
-            assert_eq!(current_open_context_obj.as_ref(), Some(&open_context_obj));
+            assert_eq!(current_open_context_obj.as_ref(), Some(&open_object));
 
             inner.flags.remove(OpenContextFlags::OPEN_FLAGS);
             inner.flags.set(OpenContextFlags::OPEN_IDLE, true);
@@ -1518,7 +1511,7 @@ fn open_device(
             break 'out Err(err);
         }
 
-        Ok(open_context_obj)
+        Ok(open_object)
     };
 
     status

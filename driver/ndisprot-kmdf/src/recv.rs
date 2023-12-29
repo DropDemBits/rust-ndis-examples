@@ -2,7 +2,11 @@ use core::{pin::Pin, sync::atomic::Ordering};
 
 use ndis_rs::{NblChain, NetBufferList};
 use wdf_kmdf::{
-    driver::Driver, file_object::FileObject, handle::HasContext, object::GeneralObject, raw,
+    driver::Driver,
+    file_object::FileObject,
+    handle::{HasContext, Ref},
+    object::GeneralObject,
+    raw,
 };
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
@@ -27,9 +31,7 @@ pub(crate) struct RecvNblRsvd {
     link: nt_list::list::NtListEntry<Self, RecvNblList>,
     /// Used if we had to partial-map
     nbl: PNET_BUFFER_LIST,
-    // FIXME: want to have this in here so that open context is alive while there are enqueued recvs.
-    // Would likely need to be `Ref<GeneralObject<OpenContext>>`
-    // _open_context: GeneralObject<OpenContext>,
+    _open_object: Ref<GeneralObject<OpenContext>>,
 }
 
 // `ProtocolReserved` is a `[PVOID; 4]`
@@ -42,11 +44,15 @@ impl RecvNblRsvd {
         unsafe { core::ptr::addr_of_mut!((*net_buffer_list).ProtocolReserved) }.cast()
     }
 
-    unsafe fn init_recv_nbl<'a>(net_buffer_list: PNET_BUFFER_LIST) {
+    unsafe fn init_recv_nbl<'a>(
+        net_buffer_list: PNET_BUFFER_LIST,
+        open_object: Ref<GeneralObject<OpenContext>>,
+    ) {
         let element = Self::from_nbl_raw(net_buffer_list);
         element.write(RecvNblRsvd {
             link: nt_list::list::NtListEntry::new(),
             nbl: net_buffer_list,
+            _open_object: open_object,
         });
     }
 
@@ -443,7 +449,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
             let data_offset = first_nb.data_offset();
             let total_length = first_nb.data_length();
 
-            let copy_nbl = allocate_receive_net_buffer_list(open_context, total_length as u32);
+            let copy_nbl = allocate_receive_net_buffer_list(&open_object, total_length as u32);
             let Some(mut copy_nbl) = (unsafe { NetBufferList::ptr_cast_from_raw(copy_nbl) }) else {
                 log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to alloc copy of {total_length} bytes");
                 continue;
@@ -502,6 +508,7 @@ fn queue_receive_net_buffer_list(
             open_context.inner.lock().state,
             OpenState::Pausing | OpenState::Paused
         ) {
+            // Binding cannot receive the nbl right now, so let go of it.
             free_receive_net_buffer_list(open_context, recv_nbl, at_dispatch_level);
             break 'out;
         }
@@ -516,7 +523,7 @@ fn queue_receive_net_buffer_list(
         {
             // Translation Note: `init_recv_nbl` sets `nbl` to itself, since we can't
             // queue and then set `nbl` in case the queue becomes full.
-            unsafe { RecvNblRsvd::init_recv_nbl(recv_nbl) };
+            unsafe { RecvNblRsvd::init_recv_nbl(recv_nbl, open_object.clone_ref()) };
 
             // Queue the nbl
             let mut entry = unsafe { RecvNblRsvd::from_nbl(recv_nbl) };
@@ -555,9 +562,10 @@ fn queue_receive_net_buffer_list(
 // Translation Note: We don't have `data_buffer` as an out parameter since the only caller (`receive_net_buffer_lists`)
 // doesn't end up using the buffer.
 fn allocate_receive_net_buffer_list(
-    open_context: Pin<&OpenContext>,
+    open_object: &GeneralObject<OpenContext>,
     data_length: UINT,
 ) -> PNET_BUFFER_LIST {
+    let open_context = open_object.get_context();
     let mut nbl = core::ptr::null_mut();
     let mut mdl = core::ptr::null_mut();
     let data_buffer;
@@ -567,7 +575,7 @@ fn allocate_receive_net_buffer_list(
         data_buffer = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if data_buffer.is_null() {
             log::error!(
-                "alloc_recv_nbl: open ???, failed to alloc data buffer {data_length} bytes"
+                "alloc_recv_nbl: open {open_object:x?}, failed to alloc data buffer {data_length} bytes"
             );
             break 'out;
         }
@@ -581,7 +589,9 @@ fn allocate_receive_net_buffer_list(
             )
         };
         if mdl.is_null() {
-            log::error!("alloc_recv_nbl: open ???, failed to alloc mdl, {data_length} bytes");
+            log::error!(
+                "alloc_recv_nbl: open {open_object:x?}, failed to alloc mdl, {data_length} bytes"
+            );
             break 'out;
         }
 
@@ -597,7 +607,9 @@ fn allocate_receive_net_buffer_list(
             )
         };
         if nbl.is_null() {
-            log::error!("alloc_recv_nbl: open ???, failed to alloc nbl, {data_length} bytes");
+            log::error!(
+                "alloc_recv_nbl: open {open_object:x?}, failed to alloc nbl, {data_length} bytes"
+            );
             break 'out;
         }
 
@@ -679,7 +691,8 @@ fn free_receive_net_buffer_list(
     }
 }
 
-pub(crate) fn flush_receive_queue(open_context: Pin<&OpenContext>) {
+pub(crate) fn flush_receive_queue(open_object: &GeneralObject<OpenContext>) {
+    let open_context = open_object.get_context();
     let mut recv_queue = open_context.recv_queue.lock();
 
     while !recv_queue.as_ref().is_empty() {
@@ -688,7 +701,7 @@ pub(crate) fn flush_receive_queue(open_context: Pin<&OpenContext>) {
         };
 
         let nbl = entry.take_nbl();
-        log::debug!("flush_receive_queue: open ???, nbl {nbl:#x?}");
+        log::debug!("flush_receive_queue: open {open_object:x?}, nbl {nbl:#x?}");
         drop(recv_queue);
 
         free_receive_net_buffer_list(open_context.as_ref(), nbl, false);

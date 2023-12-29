@@ -174,10 +174,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     {
         let mut open_list = globals.open_list.lock();
         if let Err(err) = open_list.try_reserve(1) {
-            log::error!(
-                "reserving space for adding open context to list failed ({})",
-                err
-            );
+            log::error!("reserving space for adding open context to list failed ({err})",);
             return STATUS::INSUFFICIENT_RESOURCES.to_u32();
         }
 
@@ -206,9 +203,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
     // so this seems to be just for checking if we're leaking bindings
     if let Some(other_context) = ndisprot_lookup_device(globals, adapter_name) {
         log::warn!(
-            "bind_adapter: binding to {} already exists on binding {:#x?}",
-            adapter_name,
-            other_context.raw_handle()
+            "bind_adapter: binding to {adapter_name} already exists on binding {other_context:x?}",
         );
 
         return STATUS::UNSUCCESSFUL.to_u32();
@@ -703,7 +698,8 @@ pub(crate) unsafe extern "C" fn close_adapter_complete(ProtocolBindingContext: N
 }
 
 fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
-    let open_context = protocol_binding_context.open_context.get_context();
+    let open_object = &protocol_binding_context.open_context;
+    let open_context = open_object.get_context();
 
     pinned_init::stack_pin_init!(let closing_event = KeEvent::new(crate::EventType::Notification, false));
     let mut do_close_binding = false;
@@ -780,7 +776,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         }
 
         // discard any queued recieves
-        recv::flush_receive_queue(open_context.as_ref());
+        recv::flush_receive_queue(&open_object);
 
         // close the binding now
         log::info!(
@@ -840,7 +836,8 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
     match event_notif.NetPnPEvent.NetEvent {
         NET_PNP_EVENT_CODE::NetEventSetPower => {
             if let Some(binding_ctx) = protocol_binding_context {
-                let open_context = binding_ctx.open_context.get_context();
+                let open_object = &binding_ctx.open_context;
+                let open_context = open_object.get_context();
 
                 let power_state = unsafe {
                     event_notif
@@ -876,7 +873,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                     // wait_for_pending_io(&open_context, false);
 
                     // Return any receives taht we have queued up
-                    recv::flush_receive_queue(open_context.as_ref());
+                    recv::flush_receive_queue(open_object);
 
                     log::info!(
                         "pnp_event: SetPower to {}",
@@ -913,7 +910,8 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
         }
         NET_PNP_EVENT_CODE::NetEventPause => {
             if let Some(binding_ctx) = protocol_binding_context {
-                let open_context = binding_ctx.open_context.get_context();
+                let open_object = &binding_ctx.open_context;
+                let open_context = open_object.get_context();
 
                 // Wait for all sends to complete
                 let mut open_context_inner = open_context.inner.lock();
@@ -940,7 +938,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
                 drop(open_context_inner);
 
                 // Return all queued receives
-                recv::flush_receive_queue(open_context.as_ref());
+                recv::flush_receive_queue(&open_object);
 
                 open_context.inner.lock().state = OpenState::Paused;
 
@@ -1519,17 +1517,19 @@ pub(crate) fn query_binding(
 
                 let header = unsafe { &mut *buffer.cast::<u8>().add(0).cast::<QueryBinding>() };
 
+                // Note: apparently `INVALID_BUFFER_SIZE` is the one we should
+                // use if it's bigger than what we can handle?
                 if let Ok(offset) = u32::try_from(name_offset) {
                     header.device_name_offset = offset;
                 } else {
-                    status = STATUS::BUFFER_TOO_SMALL;
+                    status = STATUS::INVALID_BUFFER_SIZE;
                     break 'out;
                 }
 
                 if let Ok(offset) = u32::try_from(desc_offset) {
                     header.device_descr_offset = offset;
                 } else {
-                    status = STATUS::BUFFER_TOO_SMALL;
+                    status = STATUS::INVALID_BUFFER_SIZE;
                     break 'out;
                 }
 
@@ -1673,10 +1673,8 @@ pub(crate) fn query_oid_value(
     }
 
     log::debug!(
-        "query_oid: open {:x?}, OID {:x?}, Status {:x?}",
+        "query_oid: open {:x?}, OID {oid:x?}, Status {status:x?}",
         open_context.inner.lock().flags,
-        oid,
-        status
     );
 
     status.to_u32()
@@ -1772,10 +1770,8 @@ pub(crate) fn set_oid_value(
     }
 
     log::debug!(
-        "set_oid: open {:x?}, OID {:x?}, Status {:x?}",
+        "set_oid: open {:x?}, OID {oid:x?}, Status {status:x?}",
         open_context.inner.lock().flags,
-        oid,
-        status
     );
 
     status.to_u32()
