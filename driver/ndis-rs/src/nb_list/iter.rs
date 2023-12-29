@@ -45,7 +45,9 @@ impl<'chain> Iterator for Iter<'chain> {
 
 impl<'a> core::iter::FusedIterator for Iter<'a> {}
 
+/// SAFETY: Equivalent to a `&NetBufferList` inside of the chain.
 unsafe impl<'a> Send for Iter<'a> {}
+/// SAFETY: Equivalent to a `&NetBufferList` inside of the chain.
 unsafe impl<'a> Sync for Iter<'a> {}
 
 /// A mutable iterator over [`NetBufferList`]s in the same chain.
@@ -95,7 +97,9 @@ impl<'chain> Iterator for IterMut<'chain> {
 
 impl<'a> core::iter::FusedIterator for IterMut<'a> {}
 
+/// SAFETY: Equivalent to a `&mut NetBufferList` inside of the chain.
 unsafe impl<'a> Send for IterMut<'a> {}
+/// SAFETY: Equivalent to a `&mut NetBufferList` inside of the chain.
 unsafe impl<'a> Sync for IterMut<'a> {}
 
 /// An owning iterator over all of the [`NetBufferList`]s in the same chain.

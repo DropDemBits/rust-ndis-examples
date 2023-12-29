@@ -256,7 +256,11 @@ impl NbChain {
     }
 }
 
+// SAFETY: `NbChain` effectively owns all of the accessible `NET_BUFFER`s and
+// `MDL`s, so there won't be any foreign unsynchronized mutable accesses.
 unsafe impl Send for NbChain {}
+// SAFETY: A `NbChain` can only mutate fields behind a `&mut`, so `&NbChain`
+// can safely be sent between threads.
 unsafe impl Sync for NbChain {}
 
 #[cfg(test)]

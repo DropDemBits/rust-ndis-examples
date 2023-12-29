@@ -61,6 +61,11 @@ impl NetBufferList {
             core::ptr::addr_of!(self.nbl.__bindgen_anon_1.__bindgen_anon_1.FirstNetBuffer)
         };
 
+        // SAFETY: `first_nb_field` is a pointer to
+        // `self.[union projections].FirstNetBuffer` which is a `PNET_BUFFER`,
+        // and the `NetBufferList` validity invariant asserted by having a
+        // `&self` ensures that all of the accessible `NET_BUFFER`s and `MDL`s
+        // are valid.
         unsafe { NbChain::from_raw_field(first_nb_field) }
     }
 
@@ -71,6 +76,14 @@ impl NetBufferList {
             core::ptr::addr_of_mut!(self.nbl.__bindgen_anon_1.__bindgen_anon_1.FirstNetBuffer)
         };
 
+        // SAFETY: `first_nb_field` is a pointer to
+        // `self.[union projections].FirstNetBuffer` which is a `PNET_BUFFER`,
+        // and the `NetBufferList` validity invariant asserted by having a `&mut
+        // self` ensures that all of the accessible `NET_BUFFER`s and `MDL`s
+        // are valid.
+        //
+        // We also have exclusive access over the `NbChain` as we have a `&mut
+        // self`.
         unsafe { NbChain::from_raw_field_mut(first_nb_field) }
     }
 
@@ -151,7 +164,12 @@ impl core::fmt::Debug for NetBufferList {
     }
 }
 
+// SAFETY: `NetBufferList` effectively owns all of the accessible
+// `NET_BUFFER_LIST`s, `NET_BUFFER_LIST_CONTEXT`s, `NET_BUFFER`s, and `MDL`s, so
+// there won't be any foreign unsynchronized mutable accesses.
 unsafe impl Send for NetBufferList {}
+// SAFETY: A `NetBufferList` can only mutate fields behind a `&mut`, so
+// `&NetBufferList` can safely be sent between threads.
 unsafe impl Sync for NetBufferList {}
 
 #[allow(dead_code)]

@@ -386,7 +386,12 @@ impl From<NblQueue> for NblChain {
     }
 }
 
+// SAFETY: `NblQueue` effectively owns all of the accessible `NET_BUFFER_LIST`s,
+// `NET_BUFFER_LIST_CONTEXT`s, `NET_BUFFER`s, and `MDL`s, so there won't be any
+// foreign unsynchronized mutable accesses.
 unsafe impl Send for NblQueue {}
+// SAFETY: A `NblQueue` can only mutate fields behind a `&mut`, so
+// `&NetBufferList` can safely be sent between threads.
 unsafe impl Sync for NblQueue {}
 
 #[cfg(test)]

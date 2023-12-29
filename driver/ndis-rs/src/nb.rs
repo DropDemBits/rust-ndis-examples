@@ -158,7 +158,11 @@ impl NetBuffer {
     }
 }
 
+// SAFETY: `NetBuffer` effectively owns all of the accessible `NET_BUFFER`s and
+// `MDL`s, so there won't be any foreign unsynchronized mutable accesses.
 unsafe impl Send for NetBuffer {}
+// SAFETY: A `NetBuffer` can only mutate fields behind a `&mut`, so `&NetBuffer`
+// can safely be sent between threads.
 unsafe impl Sync for NetBuffer {}
 
 /// An iterator over [`NetBuffer`]s in the same chain.
@@ -204,7 +208,9 @@ impl<'chain> Iterator for Iter<'chain> {
 
 impl<'a> core::iter::FusedIterator for Iter<'a> {}
 
+// SAFETY: Effectively a `&NetBuffer` into the chain.
 unsafe impl<'a> Send for Iter<'a> {}
+// SAFETY: Effectively a `&NetBuffer` into the chain.
 unsafe impl<'a> Sync for Iter<'a> {}
 
 /// A mutable iterator over [`NetBuffer`]s in the same chain.
@@ -254,7 +260,9 @@ impl<'chain> Iterator for IterMut<'chain> {
 
 impl<'a> core::iter::FusedIterator for IterMut<'a> {}
 
+// SAFETY: Effectively a `&mut NetBuffer` into the chain.
 unsafe impl<'a> Send for IterMut<'a> {}
+// SAFETY: Effectively a `&mut NetBuffer` into the chain.
 unsafe impl<'a> Sync for IterMut<'a> {}
 
 /// An owning iterator over all of the [`NetBuffer`]s in the same chain.

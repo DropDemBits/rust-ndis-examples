@@ -2,9 +2,14 @@
 //!
 //! Based off of [ndis-driver-library](https://github.com/microsoft/ndis-driver-library).
 #![no_std]
+#![deny(
+    unsafe_op_in_unsafe_fn,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::undocumented_unsafe_blocks
+)]
 
 // During tests, allow importing std
-#[cfg(any(test))]
+#[cfg(test)]
 extern crate std;
 
 pub mod nb;
