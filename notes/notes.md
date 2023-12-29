@@ -174,3 +174,29 @@ Interestingly on x64 there's a free bit that can be used due to allocations bein
 
 - Pool leakage? Look at `!wdfkd.wdfpoolusage` to find more details on what was leaked.
 - [NDIS Debug Tracing](https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/enabling-ndis-debug-tracing)
+
+## `ndis-driver-library` MDL subset
+
+`MDL_CHAIN` == `MdlChain<'a>(LinkedList<'a, Mdl>)`.
+`MDL_POINTER` == `MdlOffset<'a> { at_mdl: &'a Mdl, offset: usize }` (a `MdlOffset` is always bound to a specific `Mdl` when normalized, otherwise is relative to an `Mdl`).
+`MDL_SPAN` == `MdlSpan<'a'> { offset: MdlOffset<'a'>, length: Option<usize> }`
+
+Q: Do all  `MdlChain-AtOffset` require `MdlPointer` + length?
+
+Does, could probably use `MdlOffset` -> `MdlSpan`:
+- `MdlChainZeroBuffersAtOffset`
+- `MdlChainZeroBuffersAtOffsetNonTemporal`
+- `MdlChainZeroBuffersAtOffsetSecure`
+- `MdlChainFillBuffersAtOffset`
+- `MdlChainFillBuffersAtOffsetNonTemporal`
+
+Does, but shared:
+- `MdlCopyFlatBufferToMdlChainAtOffset` (shared with `SourceBuffer`)
+- `MdlCopyFlatBufferToMdlChainAtOffsetNonTemporal` (shared with `SourceBuffer`)
+- `MdlCopyMdlChainAtOffsetToFlatBuffer` (shared with `DestinationBuffer`)
+- `MdlCopyMdlChainAtOffsetToFlatBufferNonTemporal` (shared with `DestinationBuffer`)
+- `MdlCopyMdlChainToMdlChainAtOffset` (shared between `DestinationMdlChain` and `SourceMdlChain`)
+- `MdlCopyMdlChainToMdlChainAtOffsetNonTemporal` (shared between `DestinationMdlChain` and `SourceMdlChain`)
+- `MdlEqualBufferContentsAtOffset` (shared between `MdlChain1` and `MdlChain2`)
+
+Want an api that can do `MdlOffset<'a>` -> `Spans<'a'>` so that we can inspect the ethernet header by picking the first buffer. I guess we want a `MdlSpan::map_view`? Although we'd probably want to guarantee that it's within a particular `MDL`, so maybe a separate `MdlBuffer::map_buffer`?
