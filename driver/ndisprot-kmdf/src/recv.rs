@@ -1,4 +1,4 @@
-use core::{pin::Pin, sync::atomic::Ordering};
+use core::{mem::MaybeUninit, pin::Pin, sync::atomic::Ordering};
 
 use ndis_rs::{NblChain, NetBufferList};
 use wdf_kmdf::{
@@ -26,11 +26,7 @@ pub(crate) enum RecvNblList {}
 /// `ProtocolReserved` in received packets: we link these packets up in a queue waiting for read io requests.
 /// We stuff this inside of NET_BUFFER_LIST.ProtocolReserved
 #[repr(C)]
-#[derive(nt_list::NtListElement)]
 pub(crate) struct RecvNblRsvd {
-    link: nt_list::list::NtListEntry<Self, RecvNblList>,
-    /// Used if we had to partial-map
-    nbl: PNET_BUFFER_LIST,
     _open_object: Ref<GeneralObject<OpenContext>>,
 }
 
@@ -40,31 +36,30 @@ static_assertions::const_assert!(
 );
 
 impl RecvNblRsvd {
-    fn from_nbl_raw(net_buffer_list: PNET_BUFFER_LIST) -> *mut Self {
-        unsafe { core::ptr::addr_of_mut!((*net_buffer_list).ProtocolReserved) }.cast()
+    fn from_nbl_raw(nbl: &mut NetBufferList) -> &mut MaybeUninit<Self> {
+        let reserved_area = core::ptr::addr_of_mut!(*nbl.protocol_reserved_area_mut());
+        unsafe { &mut *reserved_area.cast() }
     }
 
-    unsafe fn init_recv_nbl<'a>(
-        net_buffer_list: PNET_BUFFER_LIST,
+    /// # Safety
+    ///
+    /// Must not initialize the area more than once.
+    unsafe fn init_recv_nbl(
+        net_buffer_list: &mut NetBufferList,
         open_object: Ref<GeneralObject<OpenContext>>,
     ) {
         let element = Self::from_nbl_raw(net_buffer_list);
         element.write(RecvNblRsvd {
-            link: nt_list::list::NtListEntry::new(),
-            nbl: net_buffer_list,
             _open_object: open_object,
         });
     }
 
-    unsafe fn from_nbl<'a>(net_buffer_list: PNET_BUFFER_LIST) -> Pin<&'a mut Self> {
+    /// # Safety
+    ///
+    /// Assumes that the area has been initialized.
+    unsafe fn drop_init_recv_nbl(net_buffer_list: &mut NetBufferList) {
         let element = Self::from_nbl_raw(net_buffer_list);
-        let element = unsafe { &mut *element };
-        unsafe { Pin::new_unchecked(element) }
-    }
-
-    fn take_nbl(self: Pin<&mut Self>) -> PNET_BUFFER_LIST {
-        let this = unsafe { self.get_unchecked_mut() };
-        core::mem::replace(&mut this.nbl, core::ptr::null_mut())
+        MaybeUninit::assume_init_drop(element);
     }
 }
 
@@ -485,21 +480,19 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
                 Err(_err) => {
                     log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to copy the data, {total_length} bytes");
                     // Free the copy_nbl
-                    free_receive_net_buffer_list(
-                        open_context,
-                        NetBufferList::ptr_cast_to_raw(Some(copy_nbl.into())),
-                        dispatch_level,
-                    );
+                    free_receive_net_buffer_list(open_context, copy_nbl, dispatch_level);
                     continue;
                 }
             };
 
             debug_assert_eq!(bytes_copied, total_length as usize);
-            NetBufferList::ptr_cast_to_raw(Some(copy_nbl.into()))
+            // NetBufferList::ptr_cast_to_raw(Some(copy_nbl.into()))
+            copy_nbl
         } else {
             // Miniport still has some resources and transferred ownership to us
             // so we can queue this nbl directly
-            NetBufferList::ptr_cast_to_raw(Some(nbl.into()))
+            // NetBufferList::ptr_cast_to_raw(Some(nbl.into()))
+            nbl
         };
 
         // Queue this nbl and service any pending read requests.
@@ -511,7 +504,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
 /// Afterwards, runs the queue service routine.
 fn queue_receive_net_buffer_list(
     open_object: &GeneralObject<OpenContext>,
-    recv_nbl: PNET_BUFFER_LIST,
+    recv_nbl: &'static mut NetBufferList,
     at_dispatch_level: bool,
 ) {
     let open_context = open_object.get_context();
@@ -541,26 +534,28 @@ fn queue_receive_net_buffer_list(
             unsafe { RecvNblRsvd::init_recv_nbl(recv_nbl, open_object.clone_ref()) };
 
             // Queue the nbl
-            let mut entry = unsafe { RecvNblRsvd::from_nbl(recv_nbl) };
-            if let Some(trimmed_entry) = recv_queue.as_mut().enqueue(entry.as_mut()) {
+            // let mut entry = unsafe { RecvNblRsvd::from_nbl(recv_nbl) };
+
+            if let Some(trimmed_entry) = recv_queue.as_mut().enqueue(recv_nbl) {
                 // Queue has grown too big
 
-                let nbl = trimmed_entry.take_nbl();
+                let nbl = trimmed_entry;
                 drop(recv_queue);
 
-                assert!(!nbl.is_null());
-
                 log::info!(
-                    "queue_recv_nbl: open {open_object:#x?} queue too long, discarded {nbl:#x?}"
+                    "queue_recv_nbl: open {open_object:x?} queue too long, discarded {:x?}",
+                    nbl.as_ptr()
                 );
+
+                unsafe { RecvNblRsvd::drop_init_recv_nbl(nbl) };
 
                 free_receive_net_buffer_list(open_context, nbl, at_dispatch_level);
             } else {
                 log::trace!(
-                    "queue_recv_nbl: open {open_object:#x?}, queued nbl {recv_nbl:#x?}, queue len {}",
+                    "queue_recv_nbl: open {open_object:x?}, queued nbl {:x?}, queue len {}",
+                    recv_queue.as_ref().front().map(|it| it as *const _),
                     recv_queue.as_ref().len()
                 );
-
                 drop(recv_queue);
             }
         } else {
@@ -647,9 +642,10 @@ fn allocate_receive_net_buffer_list(
 
 fn free_receive_net_buffer_list(
     open_context: Pin<&OpenContext>,
-    net_buffer_list: PNET_BUFFER_LIST,
+    net_buffer_list: &'static mut NetBufferList,
     dispatch_level: bool,
 ) {
+    let net_buffer_list = NetBufferList::as_ptr(net_buffer_list);
     'out: {
         if unsafe { NET_BUFFER_LIST::test_flag(net_buffer_list, NPROT_FLAGS_ALLOCATED_NBL) } {
             // This is a local copy
@@ -684,24 +680,24 @@ fn free_receive_net_buffer_list(
             unsafe { windows_kernel_sys::NdisFreeMdl(mdl) };
             unsafe { windows_kernel_sys::NdisFreeMemory(copy_data.cast(), 0, 0) };
             break 'out;
-        }
+        } else {
+            // The NetBufferList should be returned
+            unsafe {
+                (*net_buffer_list).__bindgen_anon_1.__bindgen_anon_1.Next = core::ptr::null_mut()
+            };
 
-        // The NetBufferList should be returned
-        unsafe {
-            (*net_buffer_list).__bindgen_anon_1.__bindgen_anon_1.Next = core::ptr::null_mut()
-        };
+            let mut return_flags = 0;
+            if dispatch_level {
+                return_flags |= windows_kernel_sys::NDIS_RETURN_FLAGS_DISPATCH_LEVEL;
+            }
 
-        let mut return_flags = 0;
-        if dispatch_level {
-            return_flags |= windows_kernel_sys::NDIS_RETURN_FLAGS_DISPATCH_LEVEL;
-        }
-
-        unsafe {
-            windows_kernel_sys::NdisReturnNetBufferLists(
-                open_context.binding_handle.load(),
-                net_buffer_list,
-                return_flags,
-            );
+            unsafe {
+                windows_kernel_sys::NdisReturnNetBufferLists(
+                    open_context.binding_handle.load(),
+                    net_buffer_list,
+                    return_flags,
+                );
+            }
         }
     }
 }
@@ -715,10 +711,14 @@ pub(crate) fn flush_receive_queue(open_object: &GeneralObject<OpenContext>) {
             break;
         };
 
-        let nbl = entry.take_nbl();
-        log::debug!("flush_receive_queue: open {open_object:x?}, nbl {nbl:#x?}");
+        let nbl = entry;
+        log::debug!(
+            "flush_receive_queue: open {open_object:x?}, nbl {:#x?}",
+            nbl.as_ptr()
+        );
         drop(recv_queue);
 
+        unsafe { RecvNblRsvd::drop_init_recv_nbl(nbl) };
         free_receive_net_buffer_list(open_context.as_ref(), nbl, false);
 
         recv_queue = open_context.recv_queue.lock();

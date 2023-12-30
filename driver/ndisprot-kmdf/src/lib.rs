@@ -11,7 +11,7 @@ mod send;
 mod recv;
 
 use core::{
-    mem::{ManuallyDrop, MaybeUninit},
+    mem::ManuallyDrop,
     pin::Pin,
     ptr::addr_of_mut,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -19,7 +19,7 @@ use core::{
 
 use alloc::vec::Vec;
 use crossbeam_utils::atomic::AtomicCell;
-use nt_list::list::NtListHead;
+use ndis_rs::NetBufferList;
 use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
     device::ControlDevice,
@@ -62,7 +62,7 @@ unsafe extern "system" fn DriverEntry(
     static ALLOCATOR: windows_kernel_rs::allocator::KernelAlloc =
         windows_kernel_rs::allocator::KernelAlloc;
 
-    windows_kernel_rs::init_kernel_logger!(log::COMPONENT_IHVDRIVER, log::LevelFilter::Debug);
+    windows_kernel_rs::init_kernel_logger!(log::COMPONENT_IHVDRIVER, log::LevelFilter::Trace);
 
     // SAFETY: This is the driver entry point
     let driver_object = unsafe { DriverObject::new(driver_object) };
@@ -692,106 +692,114 @@ struct OpenContextInner {
     file_object: Option<Ref<FileObject<FileObjectContext>>>,
 }
 
-#[pin_data]
-struct RecvQueue<const LEN: u32> {
+struct RecvQueue<const LEN: usize> {
     // Used in
     // - recv::ServiceReads (read, technically write into_iter)
     // - recv::QueueReceiveNBL (write)
     // - recv::FlushReceiveQueue (write into_iter)
     // - BindAdapter (write)
-    #[pin]
-    recv_nbl_queue: NtListHead<recv::RecvNblRsvd, recv::RecvNblList>,
-    // protected by `lock`
-    // - recv::ServiceReads (write dec)
-    // - recv::QueueReceiveNBL (write inc + dec, read)
-    // - recv::FlushReceiveQueue (write dec)
-    recv_nbl_len: u32,
+    queue: [Option<&'static mut NetBufferList>; LEN],
+
+    // read == write
+    // write is always ahead or at read
+    //
+    // ???: wrapping behaviour?
+    //
+    // replacement behaviour:
+    // bump read head
+    // take element
+    // bump write head
+
+    //
+    // |  0  |  0  |  0  |  0  |
+    // ^
+    // read (0, 0)
+    // write (0, 0)
+    //
+    // |  a  |  0  |  0  |  0  |
+    // ^     ^
+    // read  |
+    //       write (0, 1)
+    //
+    // |  a  |  b  |  0  |  0  |
+    // ^           ^
+    // read        |
+    //             write (0, 2)
+    //
+    // |  a  |  b  |  c  |  0  |
+    // ^                 ^
+    // read              |
+    //                   write (0, 3)
+    //
+    // |  a  |  b  |  c  |  d  |
+    // ^                       ^
+    // read                    |
+    //                         write (1, 0)
+
+    // read head & write head are composed of a
+    // - lap portion (head / LEN)
+    // - index portion (head % LEN)
+    //
+    // the queue is empty if they're on the same index & lap
+    read_head: usize,
+    write_head: usize,
 }
 
-impl<const LEN: u32> RecvQueue<LEN> {
-    fn new() -> impl PinInit<Self, Error> {
-        use moveit::New;
-
-        let init_queue = unsafe {
-            pinned_init::pin_init_from_closure(
-                |place: *mut NtListHead<recv::RecvNblRsvd, recv::RecvNblList>| {
-                    let place = place
-                        .cast::<MaybeUninit<NtListHead<recv::RecvNblRsvd, recv::RecvNblList>>>();
-                    let place = Pin::new_unchecked(&mut *place);
-
-                    NtListHead::new().new(place);
-
-                    Ok::<_, Error>(())
-                },
-            )
-        };
-
-        pinned_init::try_pin_init! {
-            RecvQueue {
-                recv_nbl_queue <- init_queue,
-                recv_nbl_len: 0
-            }? Error
+impl<const LEN: usize> RecvQueue<LEN> {
+    fn new() -> Self {
+        Self {
+            queue: core::array::from_fn(|_| None),
+            read_head: 0,
+            write_head: 0,
         }
     }
 
-    fn queue(self: Pin<&Self>) -> Pin<&NtListHead<recv::RecvNblRsvd, recv::RecvNblList>> {
-        // SAFETY: We only project the recv queue
-        unsafe { self.map_unchecked(|this| &this.recv_nbl_queue) }
+    fn is_empty(&self) -> bool {
+        self.read_head == self.write_head
     }
 
-    fn project(
-        self: Pin<&mut Self>,
-    ) -> (
-        Pin<&mut NtListHead<recv::RecvNblRsvd, recv::RecvNblList>>,
-        &mut u32,
-    ) {
-        unsafe {
-            let this = self.get_unchecked_mut();
-
-            (
-                Pin::new_unchecked(&mut this.recv_nbl_queue),
-                &mut this.recv_nbl_len,
-            )
-        }
-    }
-
-    fn is_empty(self: Pin<&Self>) -> bool {
-        self.queue().is_empty()
-    }
-
-    fn len(self: Pin<&Self>) -> u32 {
-        self.recv_nbl_len
+    fn len(&self) -> u32 {
+        (self.write_head.wrapping_sub(self.read_head) % LEN) as u32
     }
 
     fn enqueue(
-        self: Pin<&mut Self>,
-        element: Pin<&mut recv::RecvNblRsvd>,
-    ) -> Option<Pin<&mut recv::RecvNblRsvd>> {
-        let (mut queue, len) = self.project();
-        {
-            // SAFETY: the `element` reference never leaves this block, and we don't
-            // swap out the data.
-            let element = unsafe { element.get_unchecked_mut() };
-            unsafe { queue.as_mut().push_back(element) }
+        &mut self,
+        element: &'static mut NetBufferList,
+    ) -> Option<&'static mut NetBufferList> {
+        let new_write_head = self.write_head.wrapping_add(1) % LEN;
+
+        let old_element = if new_write_head == self.read_head {
+            // queue is full, need to move the read head
+            let old_element = self.queue[self.read_head].replace(element);
+            self.read_head = self.read_head.wrapping_add(1) % LEN;
+            old_element
+        } else {
+            // there's still room, so we can write to the write head
+            self.queue[self.write_head] = Some(element);
+            None
         };
 
-        if *len == LEN {
-            // Queue is full, remove the least recently added nbl
-            let to_remove = unsafe { queue.pop_front().expect("queue is not empty") };
-            let to_remove = unsafe { Pin::new_unchecked(to_remove) };
-            Some(to_remove)
-        } else {
-            // Queue isn't full yet, bump up the count
-            *len = len.saturating_add(1);
-            None
-        }
+        self.write_head = new_write_head;
+        old_element
     }
 
-    fn dequeue(self: Pin<&mut Self>) -> Option<Pin<&mut recv::RecvNblRsvd>> {
-        let (queue, len) = self.project();
-        *len = len.saturating_sub(1);
-        let element = unsafe { queue.pop_front() };
-        element.map(|it| unsafe { Pin::new_unchecked(it) })
+    fn dequeue(&mut self) -> Option<&'static mut NetBufferList> {
+        if self.read_head == self.write_head {
+            // queue is empty
+            return None;
+        }
+
+        let element = self.queue[self.read_head].take();
+        self.read_head = self.read_head.wrapping_add(1) % LEN;
+        element
+    }
+
+    fn front(&self) -> Option<&NetBufferList> {
+        if self.is_empty() {
+            return None;
+        }
+
+        self.queue[self.read_head].as_ref().map(|it| &**it)
     }
 }
 

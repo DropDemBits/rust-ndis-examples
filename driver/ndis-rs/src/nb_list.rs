@@ -98,6 +98,14 @@ impl NetBufferList {
         &mut self.nbl.Flags
     }
 
+    pub fn protocol_reserved_area(&self) -> &[PVOID; 4] {
+        &self.nbl.ProtocolReserved
+    }
+
+    pub fn protocol_reserved_area_mut(&mut self) -> &mut [PVOID; 4] {
+        &mut self.nbl.ProtocolReserved
+    }
+
     /// Gets the cancellation id from the `NetBufferListCancelId` info field.
     pub fn cancel_id(&self) -> usize {
         self.nbl_info(NDIS_NET_BUFFER_LIST_INFO::NetBufferListCancelId)
