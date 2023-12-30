@@ -12,7 +12,7 @@ use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{
     result::STATUS, Error, MdlMappingNoExecute, MM_PAGE_PRIORITY, NDIS_HANDLE, NDIS_PORT_NUMBER,
-    NET_BUFFER_LIST, NET_DEVICE_POWER_STATE, PMDL, PNET_BUFFER_LIST, PUCHAR, PVOID, UINT, ULONG,
+    NET_DEVICE_POWER_STATE, PMDL, PNET_BUFFER_LIST, PUCHAR, PVOID, ULONG,
 };
 
 use crate::{
@@ -459,12 +459,13 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
             let data_offset = first_nb.data_offset();
             let total_length = first_nb.data_length();
 
-            let copy_nbl = allocate_receive_net_buffer_list(&open_object, total_length as u32);
-            let Some(mut copy_nbl) = (unsafe { NetBufferList::ptr_cast_from_raw(copy_nbl) }) else {
-                log::error!("receive_net_buffer_list: open {open_object:#x?}, failed to alloc copy of {total_length} bytes");
-                continue;
+            let copy_nbl = match allocate_receive_net_buffer_list(&open_object, total_length) {
+                Ok(nbl) => nbl,
+                Err(err) => {
+                    log::error!("receive_net_buffer_list: open {open_object:x?}, failed to alloc copy of {total_length} bytes ({err:x?})");
+                    continue;
+                }
             };
-            let copy_nbl = unsafe { copy_nbl.as_mut() };
 
             let copy_mdl_chain = {
                 let first_nb = nbl.nb_chain().first().unwrap();
@@ -486,12 +487,10 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
             };
 
             debug_assert_eq!(bytes_copied, total_length as usize);
-            // NetBufferList::ptr_cast_to_raw(Some(copy_nbl.into()))
             copy_nbl
         } else {
             // Miniport still has some resources and transferred ownership to us
             // so we can queue this nbl directly
-            // NetBufferList::ptr_cast_to_raw(Some(nbl.into()))
             nbl
         };
 
@@ -543,8 +542,7 @@ fn queue_receive_net_buffer_list(
                 drop(recv_queue);
 
                 log::info!(
-                    "queue_recv_nbl: open {open_object:x?} queue too long, discarded {:x?}",
-                    nbl.as_ptr()
+                    "queue_recv_nbl: open {open_object:x?} queue too long, discarded {nbl:x?}",
                 );
 
                 unsafe { RecvNblRsvd::drop_init_recv_nbl(nbl) };
@@ -553,7 +551,7 @@ fn queue_receive_net_buffer_list(
             } else {
                 log::trace!(
                     "queue_recv_nbl: open {open_object:x?}, queued nbl {:x?}, queue len {}",
-                    recv_queue.as_ref().front().map(|it| it as *const _),
+                    recv_queue.as_ref().front(),
                     recv_queue.as_ref().len()
                 );
                 drop(recv_queue);
@@ -573,21 +571,24 @@ fn queue_receive_net_buffer_list(
 // doesn't end up using the buffer.
 fn allocate_receive_net_buffer_list(
     open_object: &GeneralObject<OpenContext>,
-    data_length: UINT,
-) -> PNET_BUFFER_LIST {
+    data_length: usize,
+) -> Result<&'static mut NetBufferList, Error> {
+    let Ok(data_length) = u32::try_from(data_length) else {
+        return Err(STATUS::INVALID_BUFFER_SIZE.into());
+    };
+
     let open_context = open_object.get_context();
-    let mut nbl = core::ptr::null_mut();
     let mut mdl = core::ptr::null_mut();
     let data_buffer;
     let layout = core::alloc::Layout::from_size_align(data_length as usize, 1).expect("whoops");
 
-    'out: {
+    let result = 'out: {
         data_buffer = unsafe { alloc::alloc::alloc_zeroed(layout) };
         if data_buffer.is_null() {
             log::error!(
                 "alloc_recv_nbl: open {open_object:x?}, failed to alloc data buffer {data_length} bytes"
             );
-            break 'out;
+            break 'out Err(STATUS::INSUFFICIENT_RESOURCES.into());
         }
 
         // Make an NDIS buffer
@@ -595,18 +596,18 @@ fn allocate_receive_net_buffer_list(
             windows_kernel_sys::NdisAllocateMdl(
                 open_context.binding_handle.load(),
                 data_buffer.cast(),
-                data_length,
+                data_length as u32,
             )
         };
         if mdl.is_null() {
             log::error!(
                 "alloc_recv_nbl: open {open_object:x?}, failed to alloc mdl, {data_length} bytes"
             );
-            break 'out;
+            break 'out Err(STATUS::INSUFFICIENT_RESOURCES.into());
         }
 
         // note: ownership of `data_buffer` now moves to the first net buffer?
-        nbl = unsafe {
+        let nbl = unsafe {
             windows_kernel_sys::NdisAllocateNetBufferAndNetBufferList(
                 open_context.recv_nbl_pool,
                 0,
@@ -616,28 +617,35 @@ fn allocate_receive_net_buffer_list(
                 data_length as u64,
             )
         };
-        if nbl.is_null() {
+        let Some(mut nbl) = (unsafe { NetBufferList::ptr_cast_from_raw(nbl) }) else {
             log::error!(
                 "alloc_recv_nbl: open {open_object:x?}, failed to alloc nbl, {data_length} bytes"
             );
-            break 'out;
-        }
+            break 'out Err(STATUS::INSUFFICIENT_RESOURCES.into());
+        };
+        let nbl = unsafe { nbl.as_mut() };
 
         // We allocated this NBL, so we don't want to accidentally return it to the miniport
-        unsafe { NET_BUFFER_LIST::set_flag(nbl, NPROT_FLAGS_ALLOCATED_NBL) };
-    }
+        *nbl.reserved_flags_mut() |= NPROT_FLAGS_ALLOCATED_NBL;
+        // Zero out the protocol reserved area
+        nbl.protocol_reserved_area_mut().fill(core::ptr::null_mut());
 
-    if nbl.is_null() {
-        if !mdl.is_null() {
-            unsafe { windows_kernel_sys::NdisFreeMdl(mdl) };
+        Ok(nbl)
+    };
+
+    match result {
+        Ok(nbl) => Ok(nbl),
+        Err(err) => {
+            if !mdl.is_null() {
+                unsafe { windows_kernel_sys::NdisFreeMdl(mdl) };
+            }
+
+            if !data_buffer.is_null() {
+                unsafe { alloc::alloc::dealloc(data_buffer, layout) }
+            }
+            Err(err)
         }
-
-        if !data_buffer.is_null() {
-            unsafe { alloc::alloc::dealloc(data_buffer, layout) }
-        }
     }
-
-    nbl
 }
 
 fn free_receive_net_buffer_list(
@@ -645,46 +653,45 @@ fn free_receive_net_buffer_list(
     net_buffer_list: &'static mut NetBufferList,
     dispatch_level: bool,
 ) {
-    let net_buffer_list = NetBufferList::as_ptr(net_buffer_list);
     'out: {
-        if unsafe { NET_BUFFER_LIST::test_flag(net_buffer_list, NPROT_FLAGS_ALLOCATED_NBL) } {
+        if net_buffer_list.reserved_flags() & NPROT_FLAGS_ALLOCATED_NBL != 0 {
             // This is a local copy
-            let first_nb = unsafe { NET_BUFFER_LIST::first_nb(net_buffer_list) };
-            let mdl = unsafe { (*first_nb).__bindgen_anon_1.__bindgen_anon_1.MdlChain };
-            let total_length = unsafe {
-                (*first_nb)
-                    .__bindgen_anon_1
-                    .__bindgen_anon_1
-                    .__bindgen_anon_1
-                    .DataLength
-            };
+            let first_nb = net_buffer_list
+                .nb_chain_mut()
+                .first_mut()
+                .expect("locally allocated nbl should have 1 nb");
+            let mdl = first_nb.mdl_chain();
+            let total_length = first_nb.data_length();
+            let layout = core::alloc::Layout::from_size_align(total_length, 1).expect("whoops");
 
             assert!(!mdl.is_null());
 
             let mut copy_data = core::ptr::null_mut();
-            let mut buffer_length = 0;
-            unsafe {
+            let buffer_length = unsafe {
+                let mut length = 0;
                 windows_kernel_sys::NdisQueryMdl(
                     mdl,
                     &mut copy_data,
-                    &mut buffer_length,
+                    &mut length,
                     MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-                )
+                );
+                length as usize
             };
             let copy_data = copy_data.cast::<PUCHAR>();
 
             assert_eq!(buffer_length, total_length);
             assert!(!copy_data.is_null()); // we would have allocated non-paged pool
 
-            unsafe { windows_kernel_sys::NdisFreeNetBufferList(net_buffer_list) };
+            // dealloc it!
+            unsafe {
+                windows_kernel_sys::NdisFreeNetBufferList(NetBufferList::as_ptr(net_buffer_list))
+            };
             unsafe { windows_kernel_sys::NdisFreeMdl(mdl) };
-            unsafe { windows_kernel_sys::NdisFreeMemory(copy_data.cast(), 0, 0) };
+            unsafe { alloc::alloc::dealloc(copy_data.cast(), layout) };
             break 'out;
         } else {
-            // The NetBufferList should be returned
-            unsafe {
-                (*net_buffer_list).__bindgen_anon_1.__bindgen_anon_1.Next = core::ptr::null_mut()
-            };
+            // The NetBufferList should be returned back to the miniport
+            // Note: a standalone `&'static mut NetBufferList` should not be linked to any other `NetBufferList`
 
             let mut return_flags = 0;
             if dispatch_level {
@@ -694,7 +701,7 @@ fn free_receive_net_buffer_list(
             unsafe {
                 windows_kernel_sys::NdisReturnNetBufferLists(
                     open_context.binding_handle.load(),
-                    net_buffer_list,
+                    NetBufferList::as_ptr(net_buffer_list),
                     return_flags,
                 );
             }
@@ -712,10 +719,7 @@ pub(crate) fn flush_receive_queue(open_object: &GeneralObject<OpenContext>) {
         };
 
         let nbl = entry;
-        log::debug!(
-            "flush_receive_queue: open {open_object:x?}, nbl {:#x?}",
-            nbl.as_ptr()
-        );
+        log::debug!("flush_receive_queue: open {open_object:x?}, nbl {nbl:x?}",);
         drop(recv_queue);
 
         unsafe { RecvNblRsvd::drop_init_recv_nbl(nbl) };

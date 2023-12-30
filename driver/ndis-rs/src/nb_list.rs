@@ -168,7 +168,10 @@ impl NetBufferList {
 
 impl core::fmt::Debug for NetBufferList {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("NetBufferList").finish_non_exhaustive()
+        f.write_fmt(format_args!(
+            "NetBufferList {{ .. }} @ {:#x?}",
+            self as *const _
+        ))
     }
 }
 
