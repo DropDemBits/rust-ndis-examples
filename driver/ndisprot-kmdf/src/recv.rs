@@ -146,9 +146,6 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
     while !recv_queue.as_ref().is_empty() {
         // Get the first pended read request
 
-        // ???: Does this leak requests?
-        // Once we retrieve the request we have ownership of it, but there are
-        // some error situations where we don't complete the request.
         let mut request = core::ptr::null_mut();
         nt_status = Error::to_err(unsafe {
             raw::WdfIoQueueRetrieveNextRequest(open_context.read_queue, &mut request)
@@ -161,96 +158,114 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
             break;
         }
 
-        // FIXME: Could probably use WdfMemoryCopyFromBuffer for this instead of using Mdls
-        let mut mdl = core::ptr::null_mut();
-        nt_status =
-            Error::to_err(unsafe { raw::WdfRequestRetrieveOutputWdmMdl(request, &mut mdl) });
-        if let Err(err) = nt_status {
-            log::error!("read: WdfRequestRetrieveOutputWdfMdl {err:#x?}");
-            break;
-        }
+        // Request successfully dequed, now need to take care of completing the request
+        // in case of an error since we own it now
+        let request_status = 'err: {
+            // FIXME: Could probably use WdfMemoryCopyFromBuffer for this instead of using Mdls
+            let mut mdl = core::ptr::null_mut();
+            nt_status =
+                Error::to_err(unsafe { raw::WdfRequestRetrieveOutputWdmMdl(request, &mut mdl) });
+            if let Err(err) = nt_status {
+                log::error!("read: WdfRequestRetrieveOutputWdfMdl {err:#x?}");
+                break 'err Err::<_, Error>(STATUS::UNSUCCESSFUL.into());
+            }
 
-        let mut dst = unsafe {
-            windows_kernel_sys::MmGetSystemAddressForMdlSafe(
-                mdl,
-                MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-            )
-        };
-        if dst.is_null() {
-            log::error!("read: MmGetSystemAddress failed for Request {request:#x?}, MDL {mdl:#x?}");
-            nt_status = Err(STATUS::INSUFFICIENT_RESOURCES.into());
-            break;
-        }
-
-        // Get the first queued receive packet
-        let Some(recv_nbl_entry) = recv_queue.as_mut().dequeue() else {
-            log::error!("service reads: {open_object:#x?} recv queue is empty");
-            nt_status = Err(STATUS::NO_MORE_ENTRIES.into());
-            break;
-        };
-        let recv_nbl = recv_nbl_entry.take_nbl();
-        let first_nb = unsafe { NET_BUFFER_LIST::first_nb(recv_nbl) };
-
-        assert!(!recv_nbl.is_null());
-        assert!(!first_nb.is_null());
-        let mut bytes_remaining = unsafe { windows_kernel_sys::MmGetMdlByteCount(mdl) };
-        let total_length = bytes_remaining;
-
-        mdl = unsafe { (*first_nb).__bindgen_anon_1.__bindgen_anon_1.MdlChain };
-
-        // Copy the data in the received packet into the buffer provided by the client.
-        // if there's more data in the receive packet than can be written into the buffer,
-        // we copy as much as we can, and then discard the remaining data. The request
-        // completes even if we did a partial copy.
-
-        while bytes_remaining != 0 && !mdl.is_null() {
-            let mut src = core::ptr::null_mut();
-            let mut bytes_available = 0;
-            unsafe {
-                windows_kernel_sys::NdisQueryMdl(
+            let mut dst = unsafe {
+                windows_kernel_sys::MmGetSystemAddressForMdlSafe(
                     mdl,
-                    &mut src,
-                    &mut bytes_available,
                     MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
                 )
             };
-            if src.is_null() {
+            if dst.is_null() {
                 log::error!(
+                    "read: MmGetSystemAddress failed for Request {request:#x?}, MDL {mdl:#x?}"
+                );
+                // nt_status = Err(STATUS::INSUFFICIENT_RESOURCES.into());
+                break 'err Err(STATUS::INSUFFICIENT_RESOURCES.into());
+            }
+
+            // Get the first queued receive packet
+            let Some(recv_nbl_entry) = recv_queue.as_mut().dequeue() else {
+                log::error!("service reads: {open_object:#x?} recv queue is empty");
+                // nt_status = Err(STATUS::NO_MORE_ENTRIES.into());
+                break 'err Err(STATUS::NO_MORE_ENTRIES.into());
+            };
+            let recv_nbl = recv_nbl_entry;
+            let first_nb = recv_nbl
+                .nb_chain_mut()
+                .first_mut()
+                .expect("nbl should have at least one nb");
+
+            // assert!(!recv_nbl.is_null());
+            // assert!(!first_nb.is_null());
+            let mut bytes_remaining = unsafe { windows_kernel_sys::MmGetMdlByteCount(mdl) };
+            let total_length = bytes_remaining;
+
+            mdl = first_nb.mdl_chain();
+
+            // Copy the data in the received packet into the buffer provided by the client.
+            // if there's more data in the receive packet than can be written into the buffer,
+            // we copy as much as we can, and then discard the remaining data. The request
+            // completes even if we did a partial copy.
+
+            while bytes_remaining != 0 && !mdl.is_null() {
+                let mut src = core::ptr::null_mut();
+                let mut bytes_available = 0;
+                unsafe {
+                    windows_kernel_sys::NdisQueryMdl(
+                        mdl,
+                        &mut src,
+                        &mut bytes_available,
+                        MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
+                    )
+                };
+                if src.is_null() {
+                    log::error!(
                     "service_reads: open {open_object:#x?}, NdisQueryMdl failed for MDL {mdl:#x?}"
                 );
-                break;
-            }
-
-            if bytes_available != 0 {
-                let bytes_to_copy = bytes_available.min(bytes_remaining);
-
-                unsafe {
-                    dst.cast::<u8>()
-                        .copy_from_nonoverlapping(src.cast(), bytes_to_copy as usize)
-                };
-                bytes_remaining -= bytes_to_copy;
-                unsafe {
-                    dst = dst.byte_add(bytes_to_copy as usize);
+                    break;
                 }
+
+                if bytes_available != 0 {
+                    let bytes_to_copy = bytes_available.min(bytes_remaining);
+
+                    unsafe {
+                        dst.cast::<u8>()
+                            .copy_from_nonoverlapping(src.cast(), bytes_to_copy as usize)
+                    };
+                    bytes_remaining -= bytes_to_copy;
+                    unsafe {
+                        dst = dst.byte_add(bytes_to_copy as usize);
+                    }
+                }
+
+                unsafe { windows_kernel_sys::NdisGetNextMdl(mdl, &mut mdl) };
             }
 
-            unsafe { windows_kernel_sys::NdisGetNextMdl(mdl, &mut mdl) };
-        }
+            // Complete the request
+            let bytes_copied = total_length - bytes_remaining;
 
-        // Complete the request
-        let bytes_copied = total_length - bytes_remaining;
+            log::info!("service_reads: open {open_object:#x?}, request {request:#x?} completed with {bytes_copied} bytes");
 
-        log::info!("service_reads: open {open_object:#x?}, request {request:#x?} completed with {bytes_copied} bytes");
-
-        unsafe {
-            raw::WdfRequestCompleteWithInformation(
-                request,
-                STATUS::SUCCESS.to_u32(),
-                bytes_copied.into(),
-            )
+            unsafe { RecvNblRsvd::drop_init_recv_nbl(recv_nbl) };
+            free_receive_net_buffer_list(open_context, recv_nbl, false);
+            Ok(bytes_copied)
         };
 
-        free_receive_net_buffer_list(open_context, recv_nbl, false);
+        match request_status {
+            Ok(bytes_copied) => {
+                unsafe {
+                    raw::WdfRequestCompleteWithInformation(
+                        request,
+                        STATUS::SUCCESS.to_u32(),
+                        bytes_copied.into(),
+                    )
+                };
+            }
+            Err(err) => {
+                unsafe { raw::WdfRequestCompleteWithInformation(request, err.0.to_u32(), 0) };
+            }
+        }
 
         open_context
             .pended_read_count
