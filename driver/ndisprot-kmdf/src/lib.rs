@@ -674,15 +674,6 @@ struct OpenContextInner {
     //   - (unprotected read dbg, Paused)
     //   - (unprotected write, Restart)
     state: OpenState,
-    // init & signal protected by `lock`
-    // Used in
-    // - send::SendComplete (signal, write NULL)
-    // - ShutdownBinding (write NULL, write local event storage + init)
-    // - ValidateOpenAndDoRequest (assert != NULL, signal, write NULL)
-    // - QueryOidValue (assert != NULL, signal, write NULL)
-    // - SetOidValue (assert != NULL, signal, write NULL)
-    // - WaitForPendingIO (assert != NULL, wait forever)
-    closing_event: *mut KeEvent,
     /// Set in `OPEN_DEVICE`
     // Used in
     // - EvtFileCleanup (breaking assoc)

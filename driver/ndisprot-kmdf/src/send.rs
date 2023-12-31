@@ -1,5 +1,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use ndis_rs::{NblChain, NetBufferList};
 use wdf_kmdf::{
     handle::{HandleWrapper, HasContext, Ref, WithContext},
     object::GeneralObject,
@@ -295,20 +296,16 @@ pub(crate) unsafe extern "C" fn send_complete(
     let _dispatch_level =
         send_complete_flags & windows_kernel_sys::NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL != 0;
 
-    // note: we assume that we'll always have at least 1 nbl in the nbl_queue
-    // note: NblQueue terminology comes from ndis-driver-library
-    let mut nbl_queue = core::iter::successors(Some(net_buffer_list), |nbl| {
-        match unsafe { NET_BUFFER_LIST::next_nbl(*nbl) } {
-            nbl if nbl.is_null() => None,
-            nbl => Some(nbl),
-        }
-    });
+    // SAFETY: We assume NDIS gives us a valid chain of `NET_BUFFER_LIST`s,
+    // `NET_BUFFER_LIST_CONTEXT`s, `NET_BUFFER`s, and `MDL`s.
+    let mut chain = unsafe { NblChain::from_raw(net_buffer_list) };
 
     loop {
         {
-            let Some(nbl) = nbl_queue.next() else {
+            let Some(nbl) = chain.pop_front() else {
                 break;
             };
+            let nbl = NetBufferList::ptr_cast_to_raw(Some(nbl.into()));
             let request = unsafe { NprotSendNblRsvd::request(nbl) };
             let req_context = request.get_context();
             let completion_status = unsafe { NET_BUFFER_LIST::status(nbl) };
@@ -339,18 +336,9 @@ pub(crate) unsafe extern "C" fn send_complete(
             }
         }
 
-        let mut inner = open_context.inner.lock();
-        let pended_send_count = open_context
+        // let inner = open_context.inner.lock();
+        let _pended_send_count = open_context
             .pended_send_count
             .fetch_sub(1, Ordering::Relaxed);
-
-        if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
-            // only pending send finished, signal the closing event
-            assert!(!inner.closing_event.is_null());
-            let closing_event = unsafe { &*inner.closing_event };
-
-            closing_event.signal();
-            inner.closing_event = core::ptr::null_mut();
-        }
     }
 }

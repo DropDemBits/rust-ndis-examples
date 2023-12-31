@@ -571,7 +571,6 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                         flags,
                         state,
                         file_object: None,
-                        closing_event: core::ptr::null_mut(),
                     }),
 
                     binding_handle: AtomicCell::new(unsafe { (*protocol_binding_context).binding_handle }),
@@ -701,7 +700,6 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
     let open_object = &protocol_binding_context.open_context;
     let open_context = open_object.get_context();
 
-    pinned_init::stack_pin_init!(let closing_event = KeEvent::new(crate::EventType::Notification, false));
     let mut do_close_binding = false;
 
     {
@@ -713,15 +711,8 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         }
 
         if inner.flags.intersects(OpenContextFlags::BIND_ACTIVE) {
-            assert!(inner.closing_event.is_null());
-            inner.closing_event = core::ptr::null_mut();
-
             inner.flags.remove(OpenContextFlags::BIND_FLAGS);
             inner.flags.insert(OpenContextFlags::BIND_CLOSING);
-
-            if open_context.pended_send_count.load(Ordering::Relaxed) != 0 {
-                inner.closing_event = unsafe { closing_event.get_unchecked_mut() } as *mut _;
-            }
 
             do_close_binding = true;
         }
@@ -861,18 +852,18 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
 
                     // Wait for any IO in-progress to complete
                     //
-                    // Note: NDIS 6.30+ protocol drivers must not wait for
-                    // the completion of any IO requests. We already wait
-                    // for any pending IO requests in `NetEventPause` like
-                    // in the non-KMDF ndisprot driver example, so we
-                    // simply just comment out this call.
+                    // Note: NDIS 6.30+ protocol drivers must not wait for the
+                    // completion of any IO requests in `NetEventSetPower`.
+                    // We already wait for any pending IO requests in
+                    // `NetEventPause` like in the non-KMDF ndisprot driver
+                    // example, so we simply just comment out this call.
                     //
                     // See the `NetEventSetPower` section in
                     // https://learn.microsoft.com/en-us/windows-hardware/drivers/network/handling-pnp-events-and-power-management-events-in-a-protocol-driver
                     // for more info.
                     // wait_for_pending_io(&open_context, false);
 
-                    // Return any receives taht we have queued up
+                    // Return any receives that we have queued up
                     recv::flush_receive_queue(open_object);
 
                     log::info!(
@@ -1004,45 +995,6 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
     status.to_u32()
 }
 
-/// Wait for all outstanding IO to complete on an open context.
-/// Since we're given a `&OpenContext`, we can assume that the open context won't go away.
-///
-/// If `cancel_reads` is `true`, we also wait for pending reads to be completed/cancelled.
-#[allow(unused)] // Not sure if we do need this
-fn wait_for_pending_io(open_context: &OpenContext, cancel_reads: bool) {
-    // Wait for any pending sends or requests on the binding to complete
-    if open_context.pended_send_count.load(Ordering::Relaxed) == 0 {
-        debug_assert!(open_context.inner.lock().closing_event.is_null());
-    } else {
-        let closing_event = open_context.inner.lock().closing_event;
-        debug_assert!(!closing_event.is_null());
-
-        log::warn!(
-            "wait_for_pending_io: {} pended sends",
-            open_context.pended_send_count.load(Ordering::Relaxed)
-        );
-
-        let _ = unsafe { (*closing_event).wait(Timeout::forever()) };
-    }
-
-    if cancel_reads {
-        // Wait for any pended reads to complete/cancel
-        while open_context.pended_read_count.load(Ordering::Relaxed) != 0 {
-            log::info!(
-                "wait_for_pending_io: {} pended reads",
-                open_context.pended_read_count.load(Ordering::Relaxed)
-            );
-
-            // Cancel any pending reads
-            unsafe { wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.read_queue) };
-
-            // Sleep for 1 second!
-            pinned_init::stack_pin_init!(let sleep_event = KeEvent::new(EventType::Notification, false));
-            let _ = sleep_event.wait(Timeout::relative_ms(1_000));
-        }
-    }
-}
-
 pub(crate) fn unload_protocol(context: Pin<&NdisProt>) {
     let proto_handle = context.ndis_protocol_handle.swap(core::ptr::null_mut());
 
@@ -1158,7 +1110,7 @@ pub(crate) fn validate_open_and_do_request(
     let status;
 
     'out: {
-        let mut inner = open_context.inner.lock();
+        let inner = open_context.inner.lock();
 
         // Proceed only if this is bound
         if !inner.flags.contains(OpenContextFlags::BIND_ACTIVE) {
@@ -1212,20 +1164,10 @@ pub(crate) fn validate_open_and_do_request(
                 .into();
         }
 
-        inner = open_context.inner.lock();
-
         // let go of the binding
-        let pended_send_count = open_context
+        let _pended_send_count = open_context
             .pended_send_count
             .fetch_sub(1, Ordering::Relaxed);
-        if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
-            // only pending send finished, signal the closing event
-            assert!(!inner.closing_event.is_null());
-            let closing_event = unsafe { &*inner.closing_event };
-
-            closing_event.signal();
-            inner.closing_event = core::ptr::null_mut();
-        }
     }
 
     log::debug!(
@@ -1650,21 +1592,10 @@ pub(crate) fn query_oid_value(
         *bytes_written = bytes_processed as usize;
 
         {
-            let mut inner = open_context.inner.lock();
-
             // Let go of the binding
-            let pended_send_count = open_context
+            let _pended_send_count = open_context
                 .pended_send_count
                 .fetch_sub(1, Ordering::Relaxed);
-
-            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
-                // only pending send finished, signal the closing event
-                assert!(!inner.closing_event.is_null());
-                let closing_event = unsafe { &*inner.closing_event };
-
-                closing_event.signal();
-                inner.closing_event = core::ptr::null_mut();
-            }
         }
 
         if status == STATUS::SUCCESS {
@@ -1751,21 +1682,10 @@ pub(crate) fn set_oid_value(
         }
 
         {
-            let mut inner = open_context.inner.lock();
-
             // Let go of the binding
-            let pended_send_count = open_context
+            let _pended_send_count = open_context
                 .pended_send_count
                 .fetch_sub(1, Ordering::Relaxed);
-
-            if inner.flags.contains(OpenContextFlags::BIND_CLOSING) && pended_send_count == 1 {
-                // only pending send finished, signal the closing event
-                assert!(!inner.closing_event.is_null());
-                let closing_event = unsafe { &*inner.closing_event };
-
-                closing_event.signal();
-                inner.closing_event = core::ptr::null_mut();
-            }
         }
     }
 

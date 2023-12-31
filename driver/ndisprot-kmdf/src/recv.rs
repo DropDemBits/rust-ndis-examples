@@ -128,7 +128,6 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_notify_read_queue(
 /// Copies received data into user buffers and completes read requests
 fn service_reads(open_object: &GeneralObject<OpenContext>) {
     let open_context = open_object.get_context();
-    let mut nt_status = Err(STATUS::UNSUCCESSFUL.into());
 
     log::trace!(
         "ServiceReads: open {:#x?}/{:#x?}",
@@ -142,7 +141,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
         // Get the first pended read request
 
         let mut request = core::ptr::null_mut();
-        nt_status = Error::to_err(unsafe {
+        let nt_status = Error::to_err(unsafe {
             raw::WdfIoQueueRetrieveNextRequest(open_context.read_queue, &mut request)
         });
         if let Err(err) = nt_status {
@@ -158,7 +157,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
         let request_status = 'err: {
             // FIXME: Could probably use WdfMemoryCopyFromBuffer for this instead of using Mdls
             let mut mdl = core::ptr::null_mut();
-            nt_status =
+            let nt_status =
                 Error::to_err(unsafe { raw::WdfRequestRetrieveOutputWdmMdl(request, &mut mdl) });
             if let Err(err) = nt_status {
                 log::error!("read: WdfRequestRetrieveOutputWdfMdl {err:#x?}");
@@ -366,8 +365,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
             }
 
             if eth_header.is_null() {
-                // System is low on resources, setup error case below
-                buffer_length = 0;
+                // System is low on resources, ignore this nbl
                 return false;
             }
 
@@ -592,6 +590,7 @@ fn allocate_receive_net_buffer_list(
         }
 
         // Make an NDIS buffer
+        // note: ownership of `data_buffer` transfers to the mdl
         mdl = unsafe {
             windows_kernel_sys::NdisAllocateMdl(
                 open_context.binding_handle.load(),
@@ -606,7 +605,6 @@ fn allocate_receive_net_buffer_list(
             break 'out Err(STATUS::INSUFFICIENT_RESOURCES.into());
         }
 
-        // note: ownership of `data_buffer` now moves to the first net buffer?
         let nbl = unsafe {
             windows_kernel_sys::NdisAllocateNetBufferAndNetBufferList(
                 open_context.recv_nbl_pool,
