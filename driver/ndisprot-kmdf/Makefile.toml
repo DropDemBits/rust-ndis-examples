@@ -1,15 +1,14 @@
 [env]
 VC_BUILD_DIR="C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat"
 
-DRIVER_NAME="ndisprot_kmdf"
 DRIVER_VERSION="*"
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 
 [env.development]
-TARGET_PATH = "target\\x86_64-pc-windows-msvc\\debug"
+TARGET_PATH = "target\\debug"
 
 [env.production]
-TARGET_PATH = "target\\x86_64-pc-windows-msvc\\release"
+TARGET_PATH = "target\\release"
 BUILD_RELEASE = "--release"
 
 [tasks.build-driver]
@@ -17,18 +16,13 @@ script = '''
 cargo b %BUILD_FLAGS%
 '''
 
-[tasks.delete-old-driver]
-ignore_errors = true
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/${TARGET_PATH}"
-script='''
-del %DRIVER_NAME%.sys
-'''
-
 [tasks.rename]
-dependencies = ["delete-old-driver"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/${TARGET_PATH}"
 script = '''
-rename %DRIVER_NAME%.dll %DRIVER_NAME%.sys
+if exist %CARGO_MAKE_CRATE_FS_NAME%.sys (
+  del %CARGO_MAKE_CRATE_FS_NAME%.sys
+)
+rename %CARGO_MAKE_CRATE_FS_NAME%.dll %CARGO_MAKE_CRATE_FS_NAME%.sys
 '''
 
 [tasks.make-dist]
@@ -42,7 +36,7 @@ script='''
 @rem Load VS DevEnv
 call "%VC_BUILD_DIR%" x64
 
-copy ndisprot-kmdf\ndisprot.inf %TARGET_PATH%
+copy driver\%CARGO_MAKE_CRATE_NAME%\ndisprot.inf %TARGET_PATH%
 stampinf -f %TARGET_PATH%\ndisprot.inf -a amd64 -d * -v %DRIVER_VERSION% -k 1.31 -x
 '''
 
@@ -50,8 +44,8 @@ stampinf -f %TARGET_PATH%\ndisprot.inf -a amd64 -d * -v %DRIVER_VERSION% -k 1.31
 dependencies = ["build-driver", "rename", "stampinf", "make-dist"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
-copy %TARGET_PATH%\%DRIVER_NAME%.sys dist\
-copy %TARGET_PATH%\%DRIVER_NAME%.pdb dist\
+copy %TARGET_PATH%\%CARGO_MAKE_CRATE_FS_NAME%.sys dist\
+copy %TARGET_PATH%\%CARGO_MAKE_CRATE_FS_NAME%.pdb dist\
 copy %TARGET_PATH%\ndisprot.inf dist\
 
 @rem for some reason, inf2cat is not in the x64 paths
@@ -63,7 +57,7 @@ inf2cat /driver:dist\ /os:10_x64
 if not exist DriverCertificate.cer ( makecert -r -pe -ss PrivateCertStore -n CN=DriverCertificate DriverCertificate.cer ) else ( echo Certificate already exists. )
 
 @rem And sign the driver
-signtool sign /debug /a /ph /v /s PrivateCertStore /n DriverCertificate /fd sha1 /t http://timestamp.digicert.com dist/%DRIVER_NAME%.sys dist/*.cat
+signtool sign /debug /a /ph /v /s PrivateCertStore /n DriverCertificate /fd sha1 /t http://timestamp.digicert.com dist/%CARGO_MAKE_CRATE_FS_NAME%.sys dist/*.cat
 
 copy DriverCertificate.cer dist\
 '''

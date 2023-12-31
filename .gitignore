@@ -1,6 +1,5 @@
 target/
-driver/target/
-driver/dist/
-driver/DriverCertificate.cer
+dist/
+DriverCertificate.cer
 kdnet-key.txt
 notes/.obsidian

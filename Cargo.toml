@@ -2,6 +2,12 @@
 resolver="2"
 
 members = [
+  "driver/ndis-rs",
+  "driver/ndisprot-kmdf",
+  "driver/wdf-kmdf-sys",
+  "driver/windows-kernel-sys",
+  "driver/windows-kernel-rs",
+  "driver/wdf-kmdf",
   "libs/vtable",
   "libs/once-arc",
   "prottest"
@@ -12,3 +18,17 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+vtable = { path = "libs/vtable" }
+once-arc = { path = "libs/once-arc", default-features = false }
+pinned-init = { version = "0.0.6", default-features = false, features = ["alloc"] }
+nt-list = { version = "0.3.0", default-features = false }
+windows-kernel-sys = { path = "driver/windows-kernel-sys" }
+windows-kernel-rs = { path = "driver/windows-kernel-rs" }
+ndis-rs = { path = "driver/ndis-rs" }
+static_assertions = "1.1.0"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

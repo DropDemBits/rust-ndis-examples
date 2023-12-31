@@ -1,8 +1,0 @@
-[[language]]
-name = "rust"
-
-[language-server.rust-analyzer.config]
-linkedProjects = [
-  "Cargo.toml",
-  "driver/Cargo.toml"
-]
