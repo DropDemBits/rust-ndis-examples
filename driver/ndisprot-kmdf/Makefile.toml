@@ -40,7 +40,6 @@ cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
 copy %TARGET_PATH%\%CARGO_MAKE_CRATE_FS_NAME%.sys dist\
 copy %TARGET_PATH%\%CARGO_MAKE_CRATE_FS_NAME%.pdb dist\
-copy %TARGET_PATH%\%CARGO_MAKE_CRATE_FS_NAME%.inf dist\
 '''
 
 [tasks.stampinf]
