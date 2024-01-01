@@ -15,7 +15,7 @@ ClassGuid={4d36e975-e325-11ce-bfc1-08002be10318}
 Provider=%ProviderName%
 CatalogFile=ndisprot_kmdf.cat
 DriverVer= ; TODO: set DriverVer in stampinf property pages
-; PnpLockDown=1
+PnpLockDown=1
 
 [Manufacturer]
 %ManufacturerName%=Standard,NT$ARCH$.10.0
@@ -36,7 +36,7 @@ ndisprot_kmdf.sys  = 1,,
 
 [DestinationDirs]
 ; Don't need to specify co-installer or notify dirs
-DefaultDestDir = 12
+DefaultDestDir = 13
 
 [Install.NT]
 AddReg = Inst_Ndi
