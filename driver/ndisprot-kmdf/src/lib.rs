@@ -1,6 +1,6 @@
 #![no_std]
 #![allow(non_snake_case)] // Cut down on the warnings for now
-#![feature(allocator_api, const_option, offset_of)]
+#![feature(allocator_api)]
 
 extern crate alloc;
 

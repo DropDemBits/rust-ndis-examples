@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(allocator_api, offset_of)]
+#![feature(allocator_api)]
 #![allow(
     non_upper_case_globals,
     non_camel_case_types,
