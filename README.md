@@ -1,6 +1,6 @@
-# ndisprot-rs
+# rust-ndis-examples
 
-ndisprot-kmdf example ported to Rust
+ndisprot-kmdf and mux examples ported to Rust
 
 ## License
 
