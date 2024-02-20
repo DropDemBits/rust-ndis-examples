@@ -4,9 +4,10 @@ use ndis_rs::{NblChain, NetBufferList};
 use wdf_kmdf::{
     driver::Driver,
     file_object::FileObject,
-    handle::{HasContext, Ref},
+    handle::{HandleWrapper, HasContext, Ref},
     object::GeneralObject,
     raw,
+    request::FileRequest,
 };
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
@@ -105,9 +106,8 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_read(
 
         // Forward this request to the pending read queue.
         // The framework manages cancellation of requests which are on the queue, so we don't have to worry about that.
-        nt_status = Error::to_err(unsafe {
-            raw::WdfRequestForwardToIoQueue(Request, open_context.read_queue)
-        });
+        let request = unsafe { FileRequest::wrap_raw(Request.cast()) };
+        nt_status = open_context.read_queue.forward_to_queue(request);
     }
 
     if let Err(err) = nt_status {
@@ -139,26 +139,23 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
 
     while !recv_queue.as_ref().is_empty() {
         // Get the first pended read request
-
-        let mut request = core::ptr::null_mut();
-        let nt_status = Error::to_err(unsafe {
-            raw::WdfIoQueueRetrieveNextRequest(open_context.read_queue, &mut request)
-        });
-        if let Err(err) = nt_status {
-            debug_assert!(
-                err.0 == STATUS::NO_MORE_ENTRIES,
-                "WdfIoQueueRetrieveRequest failed"
-            );
-            break;
-        }
+        let request = match open_context.read_queue.retrive_next_request() {
+            Some(Ok(request)) => request,
+            Some(Err(err)) => {
+                debug_assert!(false, "WdfIoQueueRetrieveRequest failed {:x?}", err.0);
+                break;
+            }
+            None => break,
+        };
 
         // Request successfully dequed, now need to take care of completing the request
         // in case of an error since we own it now
         let request_status = 'err: {
             // FIXME: Could probably use WdfMemoryCopyFromBuffer for this instead of using Mdls
             let mut mdl = core::ptr::null_mut();
-            let nt_status =
-                Error::to_err(unsafe { raw::WdfRequestRetrieveOutputWdmMdl(request, &mut mdl) });
+            let nt_status = Error::to_err(unsafe {
+                raw::WdfRequestRetrieveOutputWdmMdl(request.raw_handle(), &mut mdl)
+            });
             if let Err(err) = nt_status {
                 log::error!("read: WdfRequestRetrieveOutputWdfMdl {err:#x?}");
                 break 'err Err::<_, Error>(STATUS::UNSUCCESSFUL.into());
@@ -250,14 +247,16 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
             Ok(bytes_copied) => {
                 unsafe {
                     raw::WdfRequestCompleteWithInformation(
-                        request,
+                        request.raw_handle(),
                         STATUS::SUCCESS.to_u32(),
                         bytes_copied.into(),
                     )
                 };
             }
             Err(err) => {
-                unsafe { raw::WdfRequestCompleteWithInformation(request, err.0.to_u32(), 0) };
+                unsafe {
+                    raw::WdfRequestCompleteWithInformation(request.raw_handle(), err.0.to_u32(), 0)
+                };
             }
         }
 

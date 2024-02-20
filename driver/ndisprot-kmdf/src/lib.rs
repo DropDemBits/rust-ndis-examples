@@ -26,7 +26,9 @@ use wdf_kmdf::{
     driver::Driver,
     file_object::FileObject,
     handle::{HandleWrapper, HasContext, Ref},
+    io_queue::IoQueue,
     object::GeneralObject,
+    request::FileRequest,
     sync::{SpinMutex, SpinPinMutex},
 };
 use wdf_kmdf_sys::{
@@ -506,7 +508,7 @@ struct OpenContext {
     //   - WdfRequestForwardToIoQueue
     // - recv::ServiceReads
     //   - WdfIoQueueRetreiveNextRequest
-    read_queue: WDFQUEUE,
+    read_queue: IoQueue<FileRequest<FileObjectContext>>,
     // protected by `lock`
     // Used in
     // - recv::ServiceReads (write dec)
@@ -585,7 +587,7 @@ struct OpenContext {
     // - FreeBindResources
     // - ServiceIndicateStatusIrp
     //  - WdfIoQueueRetrieveNextRequest
-    status_indication_queue: WDFQUEUE,
+    status_indication_queue: IoQueue<FileRequest<FileObjectContext>>,
 }
 
 wdf_kmdf::impl_context_space!(OpenContext);
@@ -626,34 +628,7 @@ impl PinnedDrop for OpenContext {
             unsafe { NdisFreeMemory(device_desc.Buffer.cast(), 0, 0) };
         }
 
-        let read_queue = core::mem::replace(&mut this.read_queue, core::ptr::null_mut());
-        if !read_queue.is_null() {
-            unsafe { wdf_kmdf::raw::WdfObjectDelete(read_queue.cast()) };
-
-            unsafe {
-                wdf_kmdf::raw::WdfObjectDereferenceActual(
-                    read_queue.cast(),
-                    None,
-                    line!() as i32,
-                    Some(wdf_kmdf::cstr!(file!()).as_ptr()),
-                )
-            };
-        }
-
-        let status_indication_queue =
-            core::mem::replace(&mut this.status_indication_queue, core::ptr::null_mut());
-        if !status_indication_queue.is_null() {
-            unsafe { wdf_kmdf::raw::WdfObjectDelete(status_indication_queue.cast()) };
-
-            unsafe {
-                wdf_kmdf::raw::WdfObjectDereferenceActual(
-                    status_indication_queue.cast(),
-                    None,
-                    line!() as i32,
-                    Some(wdf_kmdf::cstr!(file!()).as_ptr()),
-                )
-            };
-        }
+        // read queue & status indication queue are automatically cleaned up
     }
 }
 
@@ -1108,9 +1083,9 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
                 drop(inner);
 
                 // Cancel any pending reads
-                wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.read_queue);
+                open_context.read_queue.purge_synchronously();
                 // Cancel pending ioctl request for status indication
-                wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.status_indication_queue);
+                open_context.status_indication_queue.purge_synchronously();
             }
         }
 
@@ -1354,12 +1329,11 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             if let Some(open_context) = open_object {
                 let open_context = open_context.get_context();
 
-                let status = Error::to_err(unsafe {
-                    wdf_kmdf::raw::WdfRequestForwardToIoQueue(
-                        Request,
-                        open_context.status_indication_queue,
-                    )
-                });
+                let request = unsafe { FileRequest::<FileObjectContext>::wrap_raw(Request.cast()) };
+
+                let status = open_context
+                    .status_indication_queue
+                    .forward_to_queue(request);
 
                 nt_status = match status {
                     Ok(_) => STATUS::PENDING,
@@ -1465,8 +1439,8 @@ fn open_device(
 
         // Start the queus as they may have been in a purged state if someone
         // else has previously opened the device
-        unsafe { wdf_kmdf::raw::WdfIoQueueStart(open_context.read_queue) };
-        unsafe { wdf_kmdf::raw::WdfIoQueueStart(open_context.status_indication_queue) };
+        open_context.read_queue.start();
+        open_context.status_indication_queue.start();
 
         inner.flags.remove(OpenContextFlags::OPEN_FLAGS);
         inner.flags.set(OpenContextFlags::OPEN_ACTIVE, true);

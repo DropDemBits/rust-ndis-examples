@@ -17,6 +17,7 @@ use scopeguard::ScopeGuard;
 use wdf_kmdf::{
     driver::Driver,
     handle::{HasContext, Ref},
+    io_queue::IoQueue,
     object::GeneralObject,
     sync::SpinPinMutex,
 };
@@ -242,51 +243,28 @@ pub(crate) unsafe extern "C" fn bind_adapter(
             // These read requests are forwarded from the original read queue and
             // serviced in the ProtocolRecv indication handler.
             let read_queue = {
-                let mut io_queue = core::ptr::null_mut();
-                let mut queue_config = WDF_IO_QUEUE_CONFIG::init(
+                let queue_config = WDF_IO_QUEUE_CONFIG::init(
                     wdf_kmdf_sys::WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchManual,
                 );
-                let status = Error::to_err(unsafe {
-                    wdf_kmdf::raw::WdfIoQueueCreate(
-                        globals.control_device.raw_handle(),
-                        &mut queue_config,
-                        None,
-                        Some(&mut io_queue),
-                    )
-                });
-                if let Err(err) = status {
-                    log::error!(
-                        "WdfIoQueueCreate for read queue failed {:#x?}",
-                        err.0.to_u32()
-                    );
-                    return Err(STATUS::UNSUCCESSFUL.into());
-                }
-
-                unsafe {
-                    wdf_kmdf::raw::WdfObjectReferenceActual(
-                        io_queue.cast(),
-                        None,
-                        line!() as i32,
-                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
-                    )
+                let queue = match IoQueue::create(globals.control_device.raw_handle(), queue_config)
+                {
+                    Ok(queue) => queue,
+                    Err(err) => {
+                        log::error!(
+                            "WdfIoQueueCreate for read queue failed {:#x?}",
+                            err.0.to_u32()
+                        );
+                        return Err(STATUS::UNSUCCESSFUL.into());
+                    }
                 };
 
-                scopeguard::guard(io_queue, |io_queue| unsafe {
-                    wdf_kmdf::raw::WdfObjectDelete(io_queue.cast());
-
-                    wdf_kmdf::raw::WdfObjectDereferenceActual(
-                        io_queue.cast(),
-                        None,
-                        line!() as i32,
-                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
-                    );
-                })
+                queue
             };
 
             // Register a notification for when a new request gets enqueued while the queue is idle
             let status = unsafe {
                 Error::to_err(wdf_kmdf::raw::WdfIoQueueReadyNotify(
-                    *read_queue,
+                    read_queue.raw_handle(),
                     Some(crate::recv::ndisprot_evt_notify_read_queue),
                     Some(open_context.raw_handle()),
                 ))
@@ -301,45 +279,22 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             // Make the queue to hold the status indication requests
             let status_indication_queue = {
-                let mut io_queue = core::ptr::null_mut();
-                let mut queue_config = WDF_IO_QUEUE_CONFIG::init(
+                let queue_config = WDF_IO_QUEUE_CONFIG::init(
                     wdf_kmdf_sys::WDF_IO_QUEUE_DISPATCH_TYPE::WdfIoQueueDispatchManual,
                 );
-                let status = Error::to_err(unsafe {
-                    wdf_kmdf::raw::WdfIoQueueCreate(
-                        globals.control_device.raw_handle(),
-                        &mut queue_config,
-                        None,
-                        Some(&mut io_queue),
-                    )
-                });
-                if let Err(err) = status {
-                    log::error!(
-                        "WdfIoQueueCreate for ioctl queue failed {:#x?}",
-                        err.0.to_u32()
-                    );
-                    return Err(STATUS::UNSUCCESSFUL.into());
-                }
-
-                unsafe {
-                    wdf_kmdf::raw::WdfObjectReferenceActual(
-                        io_queue.cast(),
-                        None,
-                        line!() as i32,
-                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
-                    )
+                let queue = match IoQueue::create(globals.control_device.raw_handle(), queue_config)
+                {
+                    Ok(queue) => queue,
+                    Err(err) => {
+                        log::error!(
+                            "WdfIoQueueCreate for ioctl queue failed {:#x?}",
+                            err.0.to_u32()
+                        );
+                        return Err(STATUS::UNSUCCESSFUL.into());
+                    }
                 };
 
-                scopeguard::guard(io_queue, |io_queue| unsafe {
-                    wdf_kmdf::raw::WdfObjectDelete(io_queue.cast());
-
-                    wdf_kmdf::raw::WdfObjectDereferenceActual(
-                        io_queue.cast(),
-                        None,
-                        line!() as i32,
-                        Some(wdf_kmdf::cstr!(file!()).as_ptr()),
-                    );
-                })
+                queue
             };
 
             #[allow(unused_assignments)]
@@ -589,11 +544,11 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     pended_send_count: AtomicU32::new(0),
 
                     recv_nbl_pool: ScopeGuard::into_inner(recv_nbl_pool),
-                    read_queue: ScopeGuard::into_inner(read_queue),
+                    read_queue,
                     pended_read_count: AtomicU32::new(0),
                     recv_queue <- SpinPinMutex::new(RecvQueue::new()),
 
-                    status_indication_queue: ScopeGuard::into_inner(status_indication_queue),
+                    status_indication_queue,
 
                     current_address,
                     multicast_address: [{MACAddr::zero()}; MAX_MULTICAST_ADDRESS],
@@ -759,12 +714,8 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         // cancel pending reads and status indications
         // note: this appears to be done in place of `wait_for_pending_io` since we just
         // drop all of the requests and wait for them to complete.
-        unsafe {
-            wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.read_queue);
-        }
-        unsafe {
-            wdf_kmdf::raw::WdfIoQueuePurgeSynchronously(open_context.status_indication_queue);
-        }
+        open_context.read_queue.purge_synchronously();
+        open_context.status_indication_queue.purge_synchronously();
 
         // discard any queued recieves
         recv::flush_receive_queue(&open_object);
@@ -1216,33 +1167,30 @@ fn service_indicate_status_irp(
     // access anything fields that needs to be protected by the lock.
     // let mut inner = open_context.inner.lock();
 
-    let mut request = core::ptr::null_mut();
     let mut nt_status;
     let mut bytes = 0;
 
-    'out: {
+    let processed_request = 'out: {
         // Get the first pended read request
-        nt_status = unsafe {
-            wdf_kmdf::raw::WdfIoQueueRetrieveNextRequest(
-                open_context.status_indication_queue,
-                &mut request,
-            )
+        let request = match open_context.status_indication_queue.retrive_next_request() {
+            Some(Ok(request)) => request,
+            Some(Err(err)) => {
+                assert!(
+                    false,
+                    "WdfIoQueeuRetrieveNextRequest failed unexpectedly {:x?}",
+                    err.0
+                );
+                break 'out None;
+            }
+            None => break 'out None,
         };
-        if let Err(err) = Error::to_err(nt_status) {
-            assert_eq!(
-                err.0,
-                STATUS::NO_MORE_ENTRIES,
-                "WdfIoQueeuRetrieveNextRequest failed unexpectedly"
-            );
-            break 'out;
-        }
 
         let mut indicate_status = core::ptr::null_mut();
         let mut out_buf_len = 0;
 
         nt_status = unsafe {
             wdf_kmdf::raw::WdfRequestRetrieveOutputBuffer(
-                request,
+                request.raw_handle(),
                 core::mem::size_of::<IndicateStatus>(),
                 &mut indicate_status,
                 Some(&mut out_buf_len),
@@ -1250,7 +1198,7 @@ fn service_indicate_status_irp(
         };
         if let Err(err) = Error::to_err(nt_status) {
             log::error!("WdfRequestRetrieveOutputBuffer failed {:x?}", err);
-            break 'out;
+            break 'out Some((request, nt_status, bytes));
         }
 
         // Check if the buffer is large enough to accomodate the status buffer data.
@@ -1284,10 +1232,14 @@ fn service_indicate_status_irp(
         // number of bytes copied or number of bytes required.
         bytes = core::mem::size_of::<IndicateStatus>().saturating_add(status_buffer_size as usize)
             as u64;
-    }
 
-    if !request.is_null() {
-        unsafe { wdf_kmdf::raw::WdfRequestCompleteWithInformation(request, nt_status, bytes) };
+        break 'out Some((request, nt_status, bytes));
+    };
+
+    if let Some((request, nt_status, bytes)) = processed_request {
+        unsafe {
+            wdf_kmdf::raw::WdfRequestCompleteWithInformation(request.raw_handle(), nt_status, bytes)
+        };
     }
 
     log::debug!("<-- ndisbind::service_indicate_status_irp");

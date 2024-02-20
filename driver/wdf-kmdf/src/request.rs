@@ -9,6 +9,9 @@ use crate::{
     raw,
 };
 
+/// Trait implemented by all request types
+pub trait Request: HandleWrapper<Handle = WDFREQUEST> {}
+
 pub struct FileRequest<F> {
     handle: RawHandle<WDFREQUEST, FrameworkOwned>,
     // FIXME: Bound with file callbacks?
@@ -21,6 +24,7 @@ impl<F> FileRequest<F> {
         self.handle.as_handle()
     }
 }
+
 impl<F> FileRequest<F>
 where
     F: IntoContextSpace,
@@ -71,3 +75,5 @@ impl<F> core::fmt::Debug for FileRequest<F> {
         f.debug_tuple("FileRequest").field(&self.handle).finish()
     }
 }
+
+impl<F> Request for FileRequest<F> {}
