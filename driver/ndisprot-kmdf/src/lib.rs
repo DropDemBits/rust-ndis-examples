@@ -125,7 +125,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
             Ok(pinned_init::try_pin_init! {
                 NdisProt {
                     control_device,
-                    ndis_protocol_handle: AtomicCell::new(core::ptr::null_mut()),
+                    ndis_protocol_handle: ProtocolHandle(AtomicCell::new(core::ptr::null_mut())),
                     eth_type: NPROT_ETH_TYPE,
                     cancel_id_gen,
                     open_list <- SpinPinMutex::new(Vec::new()),
@@ -184,7 +184,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     //
     // note: this stays live as long as the driver context space is live, which is
     // the case so long as we're in `driver_entry`
-    let handle_place = driver.get_context().ndis_protocol_handle.as_ptr();
+    let handle_place = driver.get_context().ndis_protocol_handle.0.as_ptr();
     Error::to_err(unsafe {
         windows_kernel_sys::NdisRegisterProtocolDriver(
             // Pass in the driver context so that `BindAdapter` has access to the driver globals
@@ -344,7 +344,7 @@ struct NdisProt {
     //     - Opening the adapter (`NdisOpenAdapterEx`)
     // - (Dropping) ProtocolUnloadHandler (unused)
     // - (Dropping) EvtUnload
-    ndis_protocol_handle: AtomicCell<NDIS_HANDLE>,
+    ndis_protocol_handle: ProtocolHandle,
     /// frame type of interest
     // Used in
     // - RecieveNbl
@@ -421,6 +421,41 @@ impl CancelIdGen {
     }
 }
 
+struct ProtocolHandle(AtomicCell<NDIS_HANDLE>);
+
+unsafe impl Send for ProtocolHandle {}
+unsafe impl Sync for ProtocolHandle {}
+
+struct BindingHandle(AtomicCell<NDIS_HANDLE>);
+
+unsafe impl Send for BindingHandle {}
+unsafe impl Sync for BindingHandle {}
+
+struct NblPool(NDIS_HANDLE);
+
+unsafe impl Send for NblPool {}
+unsafe impl Sync for NblPool {}
+
+// FIXME: This a wrapper which allows `NtUnicodeString` to be used in `Sync + Send` contexts
+struct SyncWrapper<T>(T);
+
+impl<T> core::ops::Deref for SyncWrapper<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> core::ops::DerefMut for SyncWrapper<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+unsafe impl<T> Send for SyncWrapper<T> {}
+unsafe impl<T> Sync for SyncWrapper<T> {}
+
 struct FileObjectContext {
     open_context: SpinMutex<Option<Ref<GeneralObject<OpenContext>>>>,
 }
@@ -443,7 +478,7 @@ struct OpenContext {
     inner: SpinPinMutex<OpenContextInner>,
 
     // for `validate_open_and_do_request`
-    binding_handle: AtomicCell<NDIS_HANDLE>,
+    binding_handle: BindingHandle,
 
     // set on adapter create
     // Used in
@@ -452,7 +487,7 @@ struct OpenContext {
     // - FreeBindResources
     //   - ShutdownBinding
     //     ...
-    send_nbl_pool: NDIS_HANDLE,
+    send_nbl_pool: NblPool,
     // every nbl contains at least one net buffer
     // set on adapter create
     // Used in
@@ -462,7 +497,7 @@ struct OpenContext {
     //     ...
     // - AllocateReceiveNBL
     //   - ...
-    recv_nbl_pool: NDIS_HANDLE,
+    recv_nbl_pool: NblPool,
 
     // Used in
     // - CreateBinding (write)
@@ -540,14 +575,14 @@ struct OpenContext {
     // Used in
     // - CreateBinding (read dbg, write)
     // - FreeBindResources (free)
-    device_name: NtUnicodeString,
+    device_name: SyncWrapper<NtUnicodeString>,
     /// device display name
     // Used in
     // - CreateBinding (write)
     // - FreeBindResources (free)
     // - QueryBinding (read)
     // This is manually drop since the memory is allocated by NDIS
-    device_desc: ManuallyDrop<NtUnicodeString>,
+    device_desc: SyncWrapper<ManuallyDrop<NtUnicodeString>>,
 
     // For open/close_adapter
     // Used in
@@ -600,22 +635,22 @@ impl PinnedDrop for OpenContext {
 
         // we don't carry the binding handle here anymore
         // FIXME: we temporarily do
-        debug_assert!(this.binding_handle.load().is_null());
+        debug_assert!(this.binding_handle.0.load().is_null());
         debug_assert!(this.inner.get_mut().file_object.is_none());
 
-        let send_nbl_pool = core::mem::replace(&mut this.send_nbl_pool, core::ptr::null_mut());
+        let send_nbl_pool = core::mem::replace(&mut this.send_nbl_pool.0, core::ptr::null_mut());
         if !send_nbl_pool.is_null() {
             unsafe { NdisFreeNetBufferListPool(send_nbl_pool) }
         }
 
-        let recv_nbl_pool = core::mem::replace(&mut this.recv_nbl_pool, core::ptr::null_mut());
+        let recv_nbl_pool = core::mem::replace(&mut this.recv_nbl_pool.0, core::ptr::null_mut());
         if !recv_nbl_pool.is_null() {
             unsafe { NdisFreeNetBufferListPool(recv_nbl_pool) }
         }
 
         // we allocated device_name so we don't need to explicitly drop it
 
-        let device_desc = core::mem::take(&mut this.device_desc);
+        let device_desc = core::mem::take(&mut this.device_desc.0);
         {
             // This memory was allocated by NDIS
             let device_desc = unsafe {
@@ -873,6 +908,8 @@ impl core::fmt::Debug for KeEvent {
         f.debug_struct("KeEvent").finish_non_exhaustive()
     }
 }
+
+unsafe impl Sync for KeEvent {}
 
 impl KeEvent {
     pub fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self> {

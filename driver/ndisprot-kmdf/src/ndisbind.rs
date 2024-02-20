@@ -50,9 +50,9 @@ use windows_kernel_sys::{
 };
 
 use crate::{
-    recv, EventType, IndicateStatus, KeEvent, MACAddr, OpenContext, OpenContextFlags,
-    OpenContextInner, OpenState, QueryBinding, QueryOid, RecvQueue, SetOid, Timeout,
-    MAX_MULTICAST_ADDRESS,
+    recv, BindingHandle, EventType, IndicateStatus, KeEvent, MACAddr, NblPool, OpenContext,
+    OpenContextFlags, OpenContextInner, OpenState, QueryBinding, QueryOid, RecvQueue, SetOid,
+    SyncWrapper, Timeout, MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;
@@ -353,7 +353,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             let send_nbl_pool = {
                 let nbl_pool = NdisAllocateNetBufferListPool(
-                    globals.ndis_protocol_handle.load(),
+                    globals.ndis_protocol_handle.0.load(),
                     &mut pool_parameters,
                 );
                 if nbl_pool.is_null() {
@@ -372,7 +372,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             let recv_nbl_pool = {
                 let nbl_pool = NdisAllocateNetBufferListPool(
-                    globals.ndis_protocol_handle.load(),
+                    globals.ndis_protocol_handle.0.load(),
                     &mut pool_parameters,
                 );
                 if nbl_pool.is_null() {
@@ -423,7 +423,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
 
             let mut status = unsafe {
                 Error::to_err(NdisOpenAdapterEx(
-                    globals.ndis_protocol_handle.load(),
+                    globals.ndis_protocol_handle.0.load(),
                     protocol_binding_context.cast(),
                     &mut open_parameters,
                     BindContext,
@@ -528,10 +528,10 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                         file_object: None,
                     }),
 
-                    binding_handle: AtomicCell::new(unsafe { (*protocol_binding_context).binding_handle }),
+                    binding_handle: BindingHandle(AtomicCell::new(unsafe { (*protocol_binding_context).binding_handle })),
 
-                    device_name,
-                    device_desc: ScopeGuard::into_inner(device_desc),
+                    device_name: SyncWrapper(device_name),
+                    device_desc: SyncWrapper(ScopeGuard::into_inner(device_desc)),
 
                     bind_event <- KeEvent::new(crate::EventType::Notification, false),
                     bind_status: 0,
@@ -540,10 +540,10 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     powered_up_event <- KeEvent::new(crate::EventType::Notification, true),
                     power_state,
 
-                    send_nbl_pool: ScopeGuard::into_inner(send_nbl_pool),
+                    send_nbl_pool: NblPool(ScopeGuard::into_inner(send_nbl_pool)),
                     pended_send_count: AtomicU32::new(0),
 
-                    recv_nbl_pool: ScopeGuard::into_inner(recv_nbl_pool),
+                    recv_nbl_pool: NblPool(ScopeGuard::into_inner(recv_nbl_pool)),
                     read_queue,
                     pended_read_count: AtomicU32::new(0),
                     recv_queue <- SpinPinMutex::new(RecvQueue::new()),
@@ -723,7 +723,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
         // close the binding now
         log::info!(
             "shutdown_binding: closing open_context {}, binding handle {:#x?}",
-            open_context.device_name,
+            open_context.device_name.0,
             protocol_binding_context.binding_handle
         );
 
@@ -742,7 +742,7 @@ fn shutdown_binding(protocol_binding_context: &mut ProtocolBindingContext) {
 
         assert!(status == Ok(()) || status == Err(Error(STATUS::PENDING)));
 
-        open_context.binding_handle.store(core::ptr::null_mut());
+        open_context.binding_handle.0.store(core::ptr::null_mut());
 
         let mut inner = open_context.inner.lock();
         inner.flags.remove(OpenContextFlags::BIND_FLAGS);
@@ -947,7 +947,7 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
 }
 
 pub(crate) fn unload_protocol(context: Pin<&NdisProt>) {
-    let proto_handle = context.ndis_protocol_handle.swap(core::ptr::null_mut());
+    let proto_handle = context.ndis_protocol_handle.0.swap(core::ptr::null_mut());
 
     if !proto_handle.is_null() {
         unsafe { NdisDeregisterProtocolDriver(proto_handle) };
@@ -966,7 +966,7 @@ fn do_request(
 ) -> Result<(), Error> {
     // FIXME: required because OID requests via WDFREQUESTs go via
     // `OpenContext`, not `ProtocolBindingContext`
-    let binding_handle = open_context.binding_handle.load();
+    let binding_handle = open_context.binding_handle.0.load();
 
     const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
         (core::mem::offset_of!(NDIS_OID_REQUEST, Reserved2)
@@ -1069,7 +1069,7 @@ pub(crate) fn validate_open_and_do_request(
             break 'out;
         }
 
-        assert!(!open_context.binding_handle.load().is_null());
+        assert!(!open_context.binding_handle.0.load().is_null());
 
         // Make sure the binding doesn't go away until we're finished with the request
         open_context
@@ -1473,7 +1473,7 @@ pub(crate) fn ndisprot_lookup_device(
         .find_map(|open_obj| {
             let open_obj = &open_obj.as_ref()?;
             let open_context = open_obj.get_context();
-            (open_context.device_name == adapter_name).then(|| open_obj.clone_ref())
+            (open_context.device_name.0 == adapter_name).then(|| open_obj.clone_ref())
         })
 }
 
@@ -1513,7 +1513,7 @@ pub(crate) fn query_oid_value(
             if !inner.flags.contains(OpenContextFlags::BIND_ACTIVE) {
                 log::warn!(
                     "query_oid: open of {:x?}/{:x?} is in an invalid state",
-                    open_context.device_name,
+                    open_context.device_name.0,
                     inner.flags
                 );
                 status = STATUS::UNSUCCESSFUL;
@@ -1604,7 +1604,7 @@ pub(crate) fn set_oid_value(
             if !inner.flags.contains(OpenContextFlags::BIND_ACTIVE) {
                 log::warn!(
                     "set_oid: open of {:x?}/{:x?} is in an invalid state",
-                    open_context.device_name,
+                    open_context.device_name.0,
                     inner.flags
                 );
                 status = STATUS::UNSUCCESSFUL;

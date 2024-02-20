@@ -202,10 +202,10 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
             break 'out;
         }
 
-        assert!(!open_context.send_nbl_pool.is_null());
+        assert!(!open_context.send_nbl_pool.0.is_null());
         let nbl = unsafe {
             windows_kernel_sys::NdisAllocateNetBufferAndNetBufferList(
-                open_context.send_nbl_pool,
+                open_context.send_nbl_pool.0,
                 // Request control offset delta
                 core::mem::size_of::<NprotSendNblRsvd>() as u16,
                 // backfill size
@@ -253,13 +253,13 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
 
         nt_status = Err(STATUS::PENDING.into());
 
-        unsafe { (*nbl).SourceHandle = open_context.binding_handle.load() };
+        unsafe { (*nbl).SourceHandle = open_context.binding_handle.0.load() };
         assert!((*mdl).Next.is_null(), "should only be one mdl fragment");
 
         let send_flags = windows_kernel_sys::NDIS_SEND_FLAGS_CHECK_FOR_LOOPBACK;
         unsafe {
             windows_kernel_sys::NdisSendNetBufferLists(
-                open_context.binding_handle.load(),
+                open_context.binding_handle.0.load(),
                 nbl,
                 windows_kernel_sys::NDIS_DEFAULT_PORT_NUMBER,
                 send_flags,

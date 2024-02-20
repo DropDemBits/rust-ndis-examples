@@ -295,7 +295,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
             // so we need to manually return the nbls.
             unsafe {
                 windows_kernel_sys::NdisReturnNetBufferLists(
-                    open_context.binding_handle.load(),
+                    open_context.binding_handle.0.load(),
                     net_buffer_lists,
                     return_flags.bits(),
                 )
@@ -321,7 +321,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
             // so we need to manually return the nbls.
             unsafe {
                 windows_kernel_sys::NdisReturnNetBufferLists(
-                    open_context.binding_handle.load(),
+                    open_context.binding_handle.0.load(),
                     net_buffer_lists,
                     return_flags.bits(),
                 )
@@ -427,7 +427,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
 
         unsafe {
             windows_kernel_sys::NdisReturnNetBufferLists(
-                open_context.binding_handle.load(),
+                open_context.binding_handle.0.load(),
                 head,
                 return_flags.bits(),
             );
@@ -592,7 +592,7 @@ fn allocate_receive_net_buffer_list(
         // note: ownership of `data_buffer` transfers to the mdl
         mdl = unsafe {
             windows_kernel_sys::NdisAllocateMdl(
-                open_context.binding_handle.load(),
+                open_context.binding_handle.0.load(),
                 data_buffer.cast(),
                 data_length as u32,
             )
@@ -606,7 +606,7 @@ fn allocate_receive_net_buffer_list(
 
         let nbl = unsafe {
             windows_kernel_sys::NdisAllocateNetBufferAndNetBufferList(
-                open_context.recv_nbl_pool,
+                open_context.recv_nbl_pool.0,
                 0,
                 0,
                 mdl,
@@ -697,7 +697,7 @@ fn free_receive_net_buffer_list(
 
             unsafe {
                 windows_kernel_sys::NdisReturnNetBufferLists(
-                    open_context.binding_handle.load(),
+                    open_context.binding_handle.0.load(),
                     NetBufferList::as_ptr(net_buffer_list),
                     return_flags,
                 );
