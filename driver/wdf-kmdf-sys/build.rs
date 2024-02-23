@@ -161,5 +161,14 @@ fn generate() {
 }
 
 fn main() {
+    let wdf_lib = get_kmdf_dir(DirectoryType::Library).unwrap();
+
+    let target = std::env::var("TARGET").unwrap();
+    if !target.contains("x86_64") {
+        panic!("The target {target} is currently not supported.");
+    }
+
+    println!("cargo:rustc-link-search={}", wdf_lib.display());
+
     generate();
 }

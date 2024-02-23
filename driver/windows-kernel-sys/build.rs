@@ -187,6 +187,21 @@ fn header_hacks() {
 }
 
 fn main() {
+    let km_dir = get_km_dir(DirectoryType::Library).unwrap();
+
+    let target = std::env::var("TARGET").unwrap();
+    if !target.contains("x86_64") {
+        panic!("The target {target} is currently not supported.");
+    }
+
+    let km_dir = km_dir.join("x64");
+
+    println!(
+        "cargo:rustc-link-search=native={}",
+        get_km_dir(DirectoryType::Library).unwrap().display()
+    );
+    println!("cargo:rustc-link-search={}", km_dir.display());
+
     header_hacks();
     generate();
 }

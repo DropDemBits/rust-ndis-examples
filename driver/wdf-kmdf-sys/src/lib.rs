@@ -37,6 +37,11 @@ mod bindings {
 pub use bindings::*;
 use windows_kernel_sys::ULONG;
 
+#[link(name = "wdfldr")]
+extern "C" {}
+#[link(name = "wdfdriverentry")]
+extern "C" {}
+
 // We also define `WdfMinimumVersionRequired` as a static since bindgen
 // interprets the original `WdfMinimumVersionRequired` as a constant.
 //

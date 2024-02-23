@@ -21,6 +21,16 @@ pub use winresult as result;
 
 use winresult::NtStatus;
 
+#[link(name = "ntoskrnl")]
+extern "C" {}
+// for __security_cookie
+#[link(name = "bufferoverflowfastfailk")]
+extern "C" {}
+#[link(name = "wdmsec")]
+extern "C" {}
+#[link(name = "ndis")]
+extern "C" {}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Error(pub NtStatus);
