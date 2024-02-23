@@ -22,6 +22,7 @@ crossbeam-utils = { version = "0.8.16", default-features = false }
 nt-list.workspace = true
 moveit = "0.6.0"
 static_assertions = "1.1.0"
+modular-bitfield = "0.11.2"
 
 [build-dependencies]
 thiserror = "1.0.40"
