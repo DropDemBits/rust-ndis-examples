@@ -200,3 +200,25 @@ Does, but shared:
 - `MdlEqualBufferContentsAtOffset` (shared between `MdlChain1` and `MdlChain2`)
 
 Want an api that can do `MdlOffset<'a>` -> `Spans<'a'>` so that we can inspect the ethernet header by picking the first buffer. I guess we want a `MdlSpan::map_view`? Although we'd probably want to guarantee that it's within a particular `MDL`, so maybe a separate `MdlBuffer::map_buffer`?
+
+## To Make A Notify Object
+
+For mux drivers, required to selectively control what the mux protocol edge can bind to, as well as install/uninstall the virtual miniport devices.
+
+Obstacles:
+ - [ ] Declaring the library & coclass
+	 - Do we even need a typelib? Is that read at load time or compile time?
+		 - Seems to be at compile time? So we may not need to do so (just share the GUID where needed)
+		 - To do CoClass, looks like we can just use the co class uuid?
+ - [ ] Embedding with Resource Files
+	 - [ ] RGS
+	 - [ ] DIALOG?
+	 - [ ] Manifest
+		 - [ ] Privilege Request
+ - [x] `mux.def`???
+	 - `#[no_mangle]` already adds us to the exports
+ - [ ] Managing the property pages and property page input
+ - [x] COM Server?
+	 - How does it find the CLSID of the notify object anyway?
+		 - Via `Ndi/ClsId` (see <https://learn.microsoft.com/en-us/windows-hardware/drivers/network/adding-registry-values-for-a-notify-object>)
+	 - Apparently it's relatively simple to make a class factory, since `windows-rs` handles most of the grunt work.

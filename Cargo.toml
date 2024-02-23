@@ -11,7 +11,7 @@ members = [
   "libs/vtable",
   "libs/once-arc",
   "prottest"
-]
+, "driver/mux-notify", "driver/mux"]
 
 [workspace.package]
 edition = "2021"
