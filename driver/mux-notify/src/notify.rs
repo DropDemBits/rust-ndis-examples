@@ -2,7 +2,7 @@
 
 use windows::{
     core::*,
-    Win32::NetworkManagement::NetManagement::INetCfgPnpReconfigCallback,
+    Win32::{Foundation::E_NOTIMPL, NetworkManagement::NetManagement::INetCfgPnpReconfigCallback},
     Win32::{
         Foundation::{BOOL, HWND},
         NetworkManagement::NetManagement::{
@@ -84,7 +84,7 @@ impl INetCfgComponentNotifyBinding_Impl for CMuxNotify {
         dwchangeflag: u32,
         pipath: ::core::option::Option<&INetCfgBindingPath>,
     ) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn NotifyBindingPath(
@@ -92,13 +92,13 @@ impl INetCfgComponentNotifyBinding_Impl for CMuxNotify {
         dwchangeflag: u32,
         pipath: ::core::option::Option<&INetCfgBindingPath>,
     ) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 }
 
 impl INetCfgComponentNotifyGlobal_Impl for CMuxNotify {
     fn GetSupportedNotifications(&self) -> Result<u32> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn SysQueryBindingPath(
@@ -106,7 +106,7 @@ impl INetCfgComponentNotifyGlobal_Impl for CMuxNotify {
         dwchangeflag: u32,
         pipath: ::core::option::Option<&INetCfgBindingPath>,
     ) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn SysNotifyBindingPath(
@@ -114,7 +114,7 @@ impl INetCfgComponentNotifyGlobal_Impl for CMuxNotify {
         dwchangeflag: u32,
         pipath: ::core::option::Option<&INetCfgBindingPath>,
     ) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn SysNotifyComponent(
@@ -122,17 +122,17 @@ impl INetCfgComponentNotifyGlobal_Impl for CMuxNotify {
         dwchangeflag: u32,
         picomp: ::core::option::Option<&INetCfgComponent>,
     ) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 }
 
 impl INetCfgComponentPropertyUi_Impl for CMuxNotify {
     fn QueryPropertyUi(&self, punkreserved: ::core::option::Option<&IUnknown>) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn SetContext(&self, punkreserved: ::core::option::Option<&IUnknown>) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn MergePropPages(
@@ -143,18 +143,18 @@ impl INetCfgComponentPropertyUi_Impl for CMuxNotify {
         hwndparent: HWND,
         pszstartpage: *const PCWSTR,
     ) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn ValidateProperties(&self, hwndsheet: HWND) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn ApplyProperties(&self) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 
     fn CancelProperties(&self) -> Result<()> {
-        todo!()
+        Err(E_NOTIMPL.into())
     }
 }
