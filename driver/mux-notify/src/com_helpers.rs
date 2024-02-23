@@ -1,11 +1,11 @@
 //! Helpers for working with COM Servers.
 //! Parts borrowed from `com-rs` since `windows-rs` doesn't have a way of covering most of the things.
-use std::{ffi::CString, marker::PhantomData};
+use std::{ffi::CString, marker::PhantomData, ptr::NonNull};
 
 use windows::{
     core::{implement, Error, IUnknown, Interface, Result, GUID, HRESULT, PCSTR},
     Win32::{
-        Foundation::{BOOL, CLASS_E_NOAGGREGATION, HINSTANCE},
+        Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOTIMPL, E_POINTER, HINSTANCE},
         System::{
             Com::{IClassFactory, IClassFactory_Impl},
             LibraryLoader::GetModuleFileNameA,
@@ -46,20 +46,32 @@ where
         riid: *const GUID,
         ppv_object: *mut *mut std::ffi::c_void,
     ) -> Result<()> {
-        assert!(!riid.is_null(), "iid passed to CreateInstance was null");
-        if !p_unk_outer.is_none() {
+        let Some(ppv_object) = NonNull::new(ppv_object) else {
+            return Err(E_POINTER.into());
+        };
+
+        let Some(riid) = NonNull::new(riid.cast_mut()) else {
+            return Err(E_POINTER.into());
+        };
+
+        if p_unk_outer.is_some() {
             return Err(CLASS_E_NOAGGREGATION.into());
         }
 
         let object = IUnknown::from(C::default());
 
-        // SAFETY: `IClassFactory::query` ensures that `ppv_object` is a
-        // valid place for an interface.
-        unsafe { object.query(riid, ppv_object).ok() }
+        // SAFETY: We check that `ppv_object` (and `riid` too) isn't null and
+        // `IClassFactory::query` ensures that `ppv_object` is a valid place for
+        // an interface.
+        unsafe {
+            object
+                .query(riid.as_ptr().cast_const(), ppv_object.as_ptr())
+                .ok()
+        }
     }
 
     fn LockServer(&self, _f_lock: BOOL) -> Result<()> {
-        Ok(())
+        Err(E_NOTIMPL.into())
     }
 }
 
@@ -225,9 +237,9 @@ macro_rules! inproc_dll_module {
         ) -> ::windows::Win32::Foundation::BOOL {
             const DLL_PROCESS_ATTACH: u32 = 1;
             if fdw_reason == DLL_PROCESS_ATTACH {
-                _HMODULE
-                    .set(h_instance)
-                    .expect("Trying to attach DLL more than once");
+                _ = _HMODULE.set(h_instance);
+
+                unsafe { _ = ::windows::Win32::System::LibraryLoader::DisableThreadLibraryCalls(h_instance); }
             }
             true.into()
         }
@@ -247,10 +259,6 @@ macro_rules! inproc_dll_module {
                     .expect("class id passed to DllGetClassObject should never be null")
             };
 
-            if interface.is_null() {
-                return ::windows::Win32::Foundation::E_POINTER;
-            }
-
             if class_id == &$class_id_first {
                 // SAFETY: We trust that `interface` is a non-null and valid pointer
                 unsafe { $crate::com_helpers::ComClassFactory::<$class_type_first>::new().query(iid, interface) }
@@ -260,6 +268,12 @@ macro_rules! inproc_dll_module {
             })* else {
                 ::windows::Win32::Foundation::CLASS_E_CLASSNOTAVAILABLE
             }
+        }
+
+        #[no_mangle]
+        extern "system" fn DllCanUnloadNow() -> ::windows::core::HRESULT {
+            // FIXME: Figure out a way to track when instances are created or destroyed
+            ::windows::Win32::Foundation::S_FALSE
         }
 
         #[no_mangle]
