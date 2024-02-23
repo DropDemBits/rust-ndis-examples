@@ -10,6 +10,6 @@ license.workspace = true
 windows-kernel-sys = { path = "../windows-kernel-sys" }
 
 [build-dependencies]
-bindgen = "0.69.1"
-thiserror = "1.0.40"
-winreg = "0.50.0"
+bindgen.workspace = true
+thiserror.workspace = true
+winreg.workspace = true
