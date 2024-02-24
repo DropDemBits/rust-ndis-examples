@@ -8,6 +8,7 @@ use core::{
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64},
 };
 
+use crossbeam_utils::atomic::AtomicCell;
 use ndis_rs::NetBuffer;
 use windows_kernel_rs::{
     log,
@@ -516,6 +517,8 @@ impl MuxMutex {
 struct Globals {
     MediumArray: &'static [NDIS_MEDIUM],
 
+    // Protects
+    // - VElanList
     GlobalLock: NDIS_SPIN_LOCK,
     /// Global Mutex protects the Adapter list.
     GlobalMutex: MuxMutex,
@@ -525,6 +528,7 @@ struct Globals {
     /// List of all virtual adapters.
     VElanList: LIST_ENTRY,
     /// Number of VELAN miniports that exist.
+    // Serves as the refcount for CDO?
     MiniportCount: AtomicI32,
     /// Used to assign VELAN numbers (which are used to generate MAC addresses).
     NextVElanNumber: AtomicU32,
@@ -540,6 +544,9 @@ struct Globals {
 
     /// Device for IOCTLs.
     ControlDeviceObject: PDEVICE_OBJECT,
+    /// Protects
+    /// - NdisDeviceHandle
+    /// - ControlDeviceObject
     ControlDeviceMutex: MuxMutex,
 }
 
@@ -558,6 +565,14 @@ static mut GLOBALS: Globals = Globals {
     ControlDeviceObject: core::ptr::null_mut(),
     ControlDeviceMutex: unsafe { core::mem::zeroed() },
 };
+
+/// The Mux miniport driver object, as well as the globals for the driver
+#[pinned_init::pin_data]
+pub(crate) struct Mux {
+    //
+}
+
+wdf_kmdf::impl_context_space!(Mux);
 
 // === Helper types ===
 
@@ -581,6 +596,22 @@ struct EthHeader {
     src_addr: MACAddr,
     eth_type: u16,
 }
+
+#[repr(transparent)]
+struct NdisHandle(AtomicCell<NDIS_HANDLE>);
+
+impl NdisHandle {
+    pub(crate) fn as_ptr(&self) -> *mut NDIS_HANDLE {
+        self.0.as_ptr()
+    }
+
+    pub(crate) fn get(&self) -> NDIS_HANDLE {
+        self.0.load()
+    }
+}
+
+unsafe impl Send for NdisHandle {}
+unsafe impl Sync for NdisHandle {}
 
 // === Common dispatch functions ===
 

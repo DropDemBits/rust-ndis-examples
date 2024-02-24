@@ -496,6 +496,8 @@ dependencies = [
  "static_assertions",
  "thiserror",
  "vtable",
+ "wdf-kmdf",
+ "wdf-kmdf-sys",
  "windows-kernel-rs",
  "windows-kernel-sys",
  "winreg 0.50.0",
