@@ -3,12 +3,14 @@ use core::pin::Pin;
 
 use pinned_init::PinInit;
 use vtable::vtable;
-use wdf_kmdf_sys::{WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
+use wdf_kmdf_sys::{WDFDEVICE, WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
 use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
-use windows_kernel_sys::Error;
+use windows_kernel_sys::{Error, PDEVICE_OBJECT};
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
+    handle::{
+        DriverOwned, FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped,
+    },
     object::{self, default_object_attributes, IntoContextSpace},
     raw,
 };
@@ -250,6 +252,108 @@ impl<T: IntoContextSpace> HasContext<T> for MiniportDriver<T> {}
 
 impl<T: IntoContextSpace> AsRef<MiniportDriver<T>> for MiniportDriver<T> {
     fn as_ref(&self) -> &MiniportDriver<T> {
+        self
+    }
+}
+
+pub struct MiniportDevice<T>
+where
+    T: IntoContextSpace,
+{
+    handle: RawHandleWithContext<WDFDEVICE, T, DriverOwned>,
+}
+
+impl<T> MiniportDevice<T>
+where
+    T: IntoContextSpace,
+{
+    /// Creates a miniport device object
+    ///
+    /// ## IRQL: `..=PASSIVE_LEVEL`
+    pub fn create<D, I>(
+        driver: &MiniportDriver<D>,
+        device_object: PDEVICE_OBJECT,
+        attached_device_object: Option<PDEVICE_OBJECT>,
+        pdo: Option<PDEVICE_OBJECT>,
+        init_context: impl FnOnce(&Self) -> Result<I, Error>,
+    ) -> Result<Self, Error>
+    where
+        D: IntoContextSpace,
+        I: PinInit<T, Error>,
+    {
+        let mut object_attrs = crate::handle::default_object_attributes::<T>();
+
+        let handle = {
+            let mut handle = core::ptr::null_mut();
+            // SAFETY:
+            // - Caller ensures that we're at the right IRQL
+            unsafe {
+                Error::to_err(raw::WdfDeviceMiniportCreate(
+                    driver.handle.as_handle(),
+                    Some(&mut object_attrs),
+                    device_object,
+                    attached_device_object,
+                    pdo,
+                    &mut handle,
+                ))
+            }?;
+
+            let handle = unsafe { RawHandleWithContext::create(handle) };
+            Self { handle }
+        };
+
+        // SAFETY:
+        // - It's WDF's responsibility to insert the context area, since we create
+        //   the default object attributes with T's context area
+        // - The object was just created, and the context space has not been initialized yet
+        unsafe { crate::object::context_pin_init(handle.as_ref(), init_context)? };
+
+        Ok(handle)
+    }
+
+    /// Wraps the handle in a raw device object
+    ///
+    /// ## Safety
+    ///
+    /// Respect aliasing rules, since this can be used to
+    /// generate aliasing mutable references to the context space
+    pub unsafe fn wrap(handle: WDFDEVICE) -> Wrapped<Self> {
+        // SAFETY: Is the correct handle type, and caller guarantees that
+        unsafe { Wrapped::wrap_raw(handle.cast()) }
+    }
+
+    /// Gets the handle for use with WDF functions that don't have clean wrappers yet
+    pub fn raw_handle(&self) -> WDFDEVICE {
+        self.handle.as_handle()
+    }
+
+    /// Makes a shared reference to the device
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn clone_ref(&self) -> Ref<Self> {
+        Ref::clone_from_handle(self)
+    }
+}
+
+impl<T: IntoContextSpace> HandleWrapper for MiniportDevice<T> {
+    type Handle = WDFDEVICE;
+
+    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+        Self {
+            // SAFETY: Caller ensures that the handle is valid
+            handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
+        }
+    }
+
+    fn as_object_handle(&self) -> wdf_kmdf_sys::WDFOBJECT {
+        self.handle.as_object_handle()
+    }
+}
+
+impl<T: IntoContextSpace> HasContext<T> for MiniportDevice<T> {}
+
+impl<T: IntoContextSpace> AsRef<MiniportDevice<T>> for MiniportDevice<T> {
+    fn as_ref(&self) -> &MiniportDevice<T> {
         self
     }
 }

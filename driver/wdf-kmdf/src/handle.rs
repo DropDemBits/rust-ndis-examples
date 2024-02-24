@@ -793,6 +793,13 @@ impl Drop for UninitDropBomb {
     }
 }
 
+/// Default attributes to properly contstruct the object context space
+pub fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES {
+    let mut attributes = object::default_object_attributes::<T>();
+    attributes.EvtDestroyCallback = Some(default_dispatch_evt_destroy::<T>);
+    attributes
+}
+
 // FIXME: I guess this should go into `object`?
 unsafe extern "C" fn default_dispatch_evt_destroy<T: IntoContextSpace>(object: WDFOBJECT) {
     // SAFETY: EvtDestroy is only called once, and there are no other references to the object by the time we're here
