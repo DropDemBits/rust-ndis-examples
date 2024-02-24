@@ -11,7 +11,8 @@ use wdf_kmdf_sys::{
     WDF_NO_CONTEXT, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
 };
 use windows_kernel_sys::{
-    KPROCESSOR_MODE, LONG, NTSTATUS, PCCH, PCUNICODE_STRING, PDRIVER_OBJECT, PMDL, PVOID, ULONG_PTR,
+    KPROCESSOR_MODE, LONG, NTSTATUS, PCCH, PCUNICODE_STRING, PDEVICE_OBJECT, PDRIVER_OBJECT, PMDL,
+    PVOID, ULONG_PTR,
 };
 
 // we refer to this struct a lot, so bring it into scope
@@ -912,6 +913,69 @@ pub unsafe fn WdfIoQueueStart(Queue: WDFQUEUE) {
 }
 
 // endregion: wdfio
+
+// region: wdfminiport
+
+/// Deletes the specified miniport driver's framework driver object.
+///
+/// A miniport driver calls the [`WdfDriverMiniport`] function when the miniport
+/// is about to be unloaded. The method calls the driver's [`EvtDriverUnload`]
+/// event callback function and deletes the driver's framework driver object.
+/// This is typically called from within a driver-supplied unload routine that
+/// is defined by the port driver's architecture.
+///
+/// [`EvtDriverUnload`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdriver/nc-wdfdriver-evt_wdf_driver_unload
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - IRQL: `..=DISPATCH_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+///
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+///
+/// ## See Also
+///
+/// - [Creating KMDF Miniport Drivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/creating-kmdf-miniport-drivers)
+pub unsafe fn WdfDriverMiniportUnload(Driver: WDFDRIVER) {
+    dispatch!(WdfDriverMiniportUnload(Driver))
+}
+
+// FIXME: Document More
+/// Creates a framework device object that a miniport driver can use.
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `..=PASSIVE_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+///
+/// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+/// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+pub unsafe fn WdfDeviceMiniportCreate(
+    Driver: WDFDRIVER,                            // in
+    Attributes: Option<PWDF_OBJECT_ATTRIBUTES>,   // in, optional
+    DeviceObject: PDEVICE_OBJECT,                 // in
+    AttachedDeviceObject: Option<PDEVICE_OBJECT>, // in, optional
+    Pdo: Option<PDEVICE_OBJECT>,                  // in, optional
+    Device: &mut WDFDEVICE,                       // out
+) -> NTSTATUS {
+    dispatch!(WdfDeviceMiniportCreate(
+        Driver,
+        Attributes.unwrap_or(core::ptr::null_mut()),
+        DeviceObject,
+        AttachedDeviceObject.unwrap_or(core::ptr::null_mut()),
+        Pdo.unwrap_or(core::ptr::null_mut()),
+        Device
+    ))
+}
+
+// endregion: wdfminiport
 
 // region: wdfobject
 

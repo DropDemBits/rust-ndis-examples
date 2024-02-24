@@ -1,10 +1,11 @@
-use core::{ops::Deref, pin::Pin};
+//! Support structures for creating KMDF Miniport drivers
+use core::pin::Pin;
 
 use pinned_init::PinInit;
 use vtable::vtable;
-use wdf_kmdf_sys::{PWDFDEVICE_INIT, WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
+use wdf_kmdf_sys::{WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
 use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
-use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
+use windows_kernel_sys::Error;
 
 use crate::{
     handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
@@ -12,21 +13,39 @@ use crate::{
     raw,
 };
 
-pub struct Driver<T: IntoContextSpace> {
+/// Event callbacks for a miniport driver
+#[vtable]
+pub trait MiniportDriverCallbacks: IntoContextSpace {
+    /// Performs operations that must take place before unloading the driver.
+    ///
+    /// Must deallocate any non-device-specific system resources allocated during
+    /// the driver entry function.
+    ///
+    /// ## IRQL: `..=PASSIVE_LEVEL`
+    ///
+    /// ## Note
+    ///
+    /// Most ownership-related unload tasks should instead be done via the fields
+    /// implementing `Drop`, rather than being manually deallocated here.
+    fn unload(self: Pin<&Self>) {}
+}
+
+/// A KMDF Miniport Driver.
+pub struct MiniportDriver<T: IntoContextSpace> {
     handle: RawHandleWithContext<WDFDRIVER, T, FrameworkOwned>,
 }
 
-impl<T: IntoContextSpace> core::fmt::Debug for Driver<T> {
+impl<T: IntoContextSpace> core::fmt::Debug for MiniportDriver<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Driver")
+        f.debug_struct("MiniportDriver")
             .field("handle", &self.handle)
             .finish()
     }
 }
 
-impl<T> Driver<T>
+impl<T> MiniportDriver<T>
 where
-    T: IntoContextSpace + DriverCallbacks,
+    T: IntoContextSpace + MiniportDriverCallbacks,
 {
     /// Wraps the handle in a raw driver object
     ///
@@ -46,51 +65,16 @@ where
 }
 
 #[derive(Default, Clone, Copy)]
-pub struct DriverConfig {
-    /// If the driver is a PnP driver, and thus requires an `EvtDriverDeviceAdd` callback.
-    pub pnp_mode: PnpMode,
+pub struct MiniportDriverConfig {
     /// Tag to mark allocations made by WDF
     pub pool_tag: Option<u32>,
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum PnpMode {
-    /// This is a pnp driver, and if there isn't already an `device_add` callback,
-    /// the default one is used.
-    #[default]
-    Pnp,
-    /// This is a non-pnp driver, and the `device_add` callback shouldn't be present
-    NonPnp,
-}
-
-/// Event callbacks for a driver
-#[vtable]
-pub trait DriverCallbacks: IntoContextSpace {
-    // FIXME: Just a stub, not really the real thing
-    #[allow(unused)]
-    fn device_add(&self, device_init: PWDFDEVICE_INIT) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Performs operations that must take place before unloading the driver.
-    ///
-    /// Must deallocate any non-device-specific system resources allocated during
-    /// the driver entry function.
-    ///
-    /// ## IRQL: Passive
-    ///
-    /// ## Note
-    ///
-    /// Most ownership-related unload tasks should instead be done via the fields
-    /// implementing `Drop`, rather than being manually deallocated here.
-    fn unload(self: Pin<&Self>) {}
-}
-
-impl<T> Driver<T>
+impl<T> MiniportDriver<T>
 where
-    T: IntoContextSpace + DriverCallbacks,
+    T: IntoContextSpace + MiniportDriverCallbacks,
 {
-    /// Creates a new WDF Driver Object.
+    /// Creates a new WDF Miniport Driver Object.
     ///
     /// ## IRQL: Passive
     ///
@@ -104,17 +88,12 @@ where
     pub fn create<I>(
         driver_object: DriverObject,
         registry_path: NtUnicodeStr<'_>,
-        config: DriverConfig,
+        config: MiniportDriverConfig,
         init_context: impl FnOnce(&Self) -> Result<I, Error>,
     ) -> Result<Self, Error>
     where
         I: PinInit<T, Error>,
     {
-        if matches!(config.pnp_mode, PnpMode::NonPnp) && T::HAS_DEVICE_ADD {
-            // Non-pnp drivers shouldn't specify the `device_add` callback
-            return Err(Error(STATUS::INVALID_PARAMETER));
-        }
-
         // NOTE: Since we can't `WdfObjectDelete` a driver, the framework handles
         // uninitializing the driver via EvtDriverUnload, so we don't need to set
         // EvtCleanupCallback and EvtDestroyCallback.
@@ -126,15 +105,14 @@ where
         object_attrs.EvtCleanupCallback = Some(Self::__dispatch_evt_cleanup);
         object_attrs.EvtDestroyCallback = Some(Self::__dispatch_evt_destroy);
 
-        let mut driver_config = wdf_kmdf_sys::WDF_DRIVER_CONFIG::init(
-            T::HAS_DEVICE_ADD.then_some(Self::__dispatch_driver_device_add),
-        );
+        let mut driver_config = wdf_kmdf_sys::WDF_DRIVER_CONFIG::init(None);
         driver_config.EvtDriverUnload = Some(Self::__dispatch_driver_unload);
 
-        if matches!(config.pnp_mode, PnpMode::NonPnp) {
-            driver_config.DriverInitFlags |=
-                WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver.0 as u32;
-        }
+        // WDF does not control the pnp callbacks
+        driver_config.DriverInitFlags |= WDF_DRIVER_INIT_FLAGS::WdfDriverInitNonPnpDriver.0 as u32;
+        // WDF should not inject itself into the driver unload path
+        driver_config.DriverInitFlags |=
+            WDF_DRIVER_INIT_FLAGS::WdfDriverInitNoDispatchOverride.0 as u32;
 
         // NOTE: This is always available since we're targeting KMDF versions after 1.5
         if let Some(tag) = config.pool_tag {
@@ -180,27 +158,40 @@ where
         Ref::clone_from_handle(self)
     }
 
-    unsafe extern "C" fn __dispatch_driver_device_add(
-        driver: WDFDRIVER,
-        device_init: PWDFDEVICE_INIT,
-    ) -> NTSTATUS {
-        // NOTE: Unsure if this can be called concurrently, so for safety
-        // we only use an immutable handle.
-        // SAFETY: Only used behind an immutable reference, so we prevent
-        // concurrent immutable mutations
-        let handle = unsafe { Driver::<T>::wrap(driver) };
+    /// Gets the global miniport driver object.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn get() -> Wrapped<Self> {
+        // SAFETY: We can only ever call this before or after `WdfDriverCreate`
+        // executes.
+        let handle = unsafe {
+            raw::WdfGetDriver().expect("`MiniportDriver::create` should have returned already")
+        };
 
-        let context_space = handle.get_context();
+        // SAFETY: Context spaces can only be accessed through shared refs
+        // after creation, and the drop flag ensures that the context space is
+        // initialized once we access it.
+        unsafe { Self::wrap(handle) }
+    }
 
-        match T::device_add(context_space.deref(), device_init) {
-            Ok(()) => STATUS::SUCCESS.to_u32(),
-            Err(err) => err.0.to_u32(),
-        }
+    /// Unloads the miniport driver.
+    ///
+    /// This directs the framework to call the
+    /// [`MiniportDriverCallbacks::unload`] function and destroy the framework.
+    ///
+    /// ## Safety
+    ///
+    /// This must only be called once, and from the port-defined unload callback.
+    /// No framework functions should be called after this point.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub unsafe fn unload(self) {
+        unsafe { raw::WdfDriverMiniportUnload(self.handle.as_handle()) }
     }
 
     unsafe extern "C" fn __dispatch_driver_unload(driver: WDFDRIVER) {
         // SAFETY: Driver unload only gets called once
-        let handle = unsafe { Driver::<T>::wrap(driver) };
+        let handle = unsafe { MiniportDriver::<T>::wrap(driver) };
 
         if T::HAS_UNLOAD {
             let context_space = handle.get_context();
@@ -217,7 +208,7 @@ where
         windows_kernel_rs::log::debug!("EvtDestroyCallback");
 
         // SAFETY: EvtDestroy is only called once, and when there are no other references to the object
-        let handle = unsafe { Driver::<T>::wrap(_driver.cast()) };
+        let handle = unsafe { MiniportDriver::<T>::wrap(_driver.cast()) };
 
         // Drop the context area
         //
@@ -240,7 +231,7 @@ where
     }
 }
 
-impl<T: IntoContextSpace> HandleWrapper for Driver<T> {
+impl<T: IntoContextSpace> HandleWrapper for MiniportDriver<T> {
     type Handle = WDFDRIVER;
 
     unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
@@ -255,10 +246,10 @@ impl<T: IntoContextSpace> HandleWrapper for Driver<T> {
     }
 }
 
-impl<T: IntoContextSpace> HasContext<T> for Driver<T> {}
+impl<T: IntoContextSpace> HasContext<T> for MiniportDriver<T> {}
 
-impl<T: IntoContextSpace> AsRef<Driver<T>> for Driver<T> {
-    fn as_ref(&self) -> &Driver<T> {
+impl<T: IntoContextSpace> AsRef<MiniportDriver<T>> for MiniportDriver<T> {
+    fn as_ref(&self) -> &MiniportDriver<T> {
         self
     }
 }

@@ -24,6 +24,7 @@ pub mod driver;
 pub mod file_object;
 pub mod handle;
 pub mod io_queue;
+pub mod miniport;
 pub mod object;
 pub mod request;
 pub mod sync;

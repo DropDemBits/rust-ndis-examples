@@ -15,3 +15,4 @@
 #define KMDF_VERSION_MINOR 31
 #define KMDF_MINIMUM_VERSION_REQUIRED 31
 #include <wdf.h>
+#include <wdfminiport.h>
