@@ -8,7 +8,8 @@ use core::{
 };
 
 use pinned_init::{pin_data, Init, PinInit};
-use wdf_kmdf_sys::WDFSPINLOCK;
+use wdf_kmdf_sys::{WDFSPINLOCK, WDFWAITLOCK};
+use windows_kernel_rs::Timeout;
 use windows_kernel_sys::Error;
 
 use crate::{
@@ -24,6 +25,16 @@ pub trait LockBackend: Sized {
     fn new() -> Result<Self, Error>;
 
     fn try_lock(&self) -> Option<Self::Guard<'_>>;
+
+    fn lock(&self) -> Self::Guard<'_> {
+        loop {
+            let Some(guard) = self.try_lock() else {
+                core::hint::spin_loop();
+                continue;
+            };
+            break guard;
+        }
+    }
 }
 
 /// A spin-lock based mutex protecting some data.
@@ -41,6 +52,18 @@ pub type SpinPinMutexGuard<'a, T> = PinMutexGuard<'a, T, SpinLock>;
 pub type SpinMutex<T> = Mutex<T, SpinLock>;
 
 pub type SpinMutexGuard<'a, T> = MutexGuard<'a, T, SpinLock>;
+
+/// A wait-lock based mutex protecting some data.
+///
+/// The data is guaranteed to be pinned.
+pub type WaitPinMutex<T> = PinMutex<T, WaitLock>;
+
+pub type WaitPinMutexGuard<'a, T> = PinMutexGuard<'a, T, WaitLock>;
+
+/// A spin-lock based mutex protecting some data.
+pub type WaitMutex<T> = Mutex<T, WaitLock>;
+
+pub type WaitMutexGuard<'a, T> = MutexGuard<'a, T, WaitLock>;
 
 /// A mutex protecting some data.
 ///
@@ -90,7 +113,10 @@ impl<T, Lock: LockBackend> PinMutex<T, Lock> {
     ///
     /// ## IRQL: <= Dispatch
     pub fn try_lock(&self) -> Option<Pin<PinMutexGuard<'_, T, Lock>>> {
-        // SAFETY: Uhhhh
+        // SAFETY: `PinMutexGuard` will not outlive the backing `PinMutex` since
+        // it is tied to the lifetime of `PinMutex`. `PinMutexGuard` also only
+        // gives out pinned references, which ensures that the backing data will
+        // not be moved.
         self.lock.try_lock().map(|guard| unsafe {
             Pin::new_unchecked(PinMutexGuard {
                 mutex: self,
@@ -104,12 +130,18 @@ impl<T, Lock: LockBackend> PinMutex<T, Lock> {
     ///
     /// ## IRQL: <= Dispatch
     pub fn lock(&self) -> Pin<PinMutexGuard<'_, T, Lock>> {
-        loop {
-            let Some(guard) = self.try_lock() else {
-                core::hint::spin_loop();
-                continue;
-            };
-            break guard;
+        let guard = self.lock.lock();
+
+        // SAFETY: `PinMutexGuard` will not outlive the backing `PinMutex` since
+        // it is tied to the lifetime of `PinMutex`. `PinMutexGuard` also only
+        // gives out pinned references, which ensures that the backing data will
+        // not be moved.
+        unsafe {
+            Pin::new_unchecked(PinMutexGuard {
+                mutex: self,
+                _guard: guard,
+                _pin: PhantomPinned,
+            })
         }
     }
 
@@ -212,12 +244,11 @@ impl<T, Lock: LockBackend> Mutex<T, Lock> {
     ///
     /// ## IRQL: <= Dispatch
     pub fn lock(&self) -> MutexGuard<'_, T, Lock> {
-        loop {
-            let Some(guard) = self.try_lock() else {
-                core::hint::spin_loop();
-                continue;
-            };
-            break guard;
+        let guard = self.lock.lock();
+        MutexGuard {
+            mutex: self,
+            _guard: guard,
+            _pin: PhantomPinned,
         }
     }
 
@@ -330,5 +361,102 @@ impl<'a> Drop for SpinLockGuard<'a> {
         // Having a guard guarantees we've called `WdfSpinLockAcquire`,
         // and also implies we're at IRQL `DISPATCH_LEVEL`
         unsafe { raw::WdfSpinLockRelease(self.lock.0.as_handle()) }
+    }
+}
+
+/// Wrapper around a framework-based wait lock.
+///
+/// This does not adjust the IRQL level.
+pub struct WaitLock(RawHandle<WDFWAITLOCK, DriverOwned>);
+
+impl WaitLock {
+    /// Creates a new wait lock
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    ///
+    /// ## Errors
+    ///
+    /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+    ///
+    /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+    /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+    pub fn new() -> Result<Self, Error> {
+        let mut lock = core::ptr::null_mut();
+
+        // SAFETY:
+        // - Caller ensures we're calling this at the right IRQL
+        // - We're manually managing the lifetime of the waitlock (easier that way)
+        Error::to_err(unsafe { raw::WdfWaitLockCreate(None, &mut lock) })?;
+
+        // SAFETY: We're manually managing the lifetime of the waitlock, and thus
+        // the waitlock is driver-owned.
+        Ok(Self(unsafe { RawHandle::create(lock) }))
+    }
+
+    /// Acquires the wait lock, returning a guard that releases the lock once dropped.
+    ///
+    /// ## IRQL: `..=PASSIVE_LEVEL`
+    pub fn acquire(&self) -> WaitLockGuard<'_> {
+        let mut timeout = Timeout::forever();
+
+        // Wait forever to acquire the lock.
+        //
+        // SAFETY:
+        // - We created the wait lock ourselves, so it's not part of an interrupt config struct
+        // - Caller ensures we're calling this at the right IRQL
+        unsafe {
+            _ = raw::WdfWaitLockAcquire(self.0.as_handle(), timeout.value());
+        }
+
+        WaitLockGuard { lock: self }
+    }
+
+    /// Acquires the wait lock, returning a guard that releases the lock once dropped.
+    ///
+    /// ## IRQL: `..=APC_LEVEL`
+    pub fn try_acquire(&self) -> Option<WaitLockGuard<'_>> {
+        let mut timeout = Timeout::dont_wait();
+
+        // Try to acquire the lock
+        //
+        // SAFETY:
+        // - We created the wait lock ourselves, so it's not part of an interrupt config struct
+        // - Caller ensures we're calling this at the right IRQL
+        let status =
+            Error::to_err(unsafe { raw::WdfWaitLockAcquire(self.0.as_handle(), timeout.value()) });
+
+        match status {
+            Ok(()) => Some(WaitLockGuard { lock: self }),
+            Err(_) => None,
+        }
+    }
+}
+
+impl LockBackend for WaitLock {
+    type Guard<'a> = WaitLockGuard<'a>;
+
+    fn new() -> Result<Self, Error> {
+        WaitLock::new()
+    }
+
+    fn try_lock(&self) -> Option<Self::Guard<'_>> {
+        self.try_acquire()
+    }
+
+    fn lock(&self) -> Self::Guard<'_> {
+        self.acquire()
+    }
+}
+
+/// A guard for a [`WaitLock`]
+pub struct WaitLockGuard<'a> {
+    lock: &'a WaitLock,
+}
+
+impl<'a> Drop for WaitLockGuard<'a> {
+    fn drop(&mut self) {
+        // SAFETY:
+        // Having a guard guarantees we've called `WdfWaitLockAcquire`,
+        unsafe { raw::WdfWaitLockRelease(self.lock.0.as_handle()) }
     }
 }

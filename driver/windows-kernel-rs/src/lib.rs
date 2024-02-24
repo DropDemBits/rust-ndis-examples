@@ -125,6 +125,7 @@ pub mod log {
 }
 
 pub use nt_string as string;
+use windows_kernel_sys::PLONGLONG;
 
 pub mod ioctl {
     use windows_kernel_sys::{
@@ -454,6 +455,58 @@ impl DriverObject {
     #[must_use]
     pub fn into_raw(self) -> windows_kernel_sys::PDRIVER_OBJECT {
         self.0
+    }
+}
+
+/// Represents a timeout used by `KeWaitForSingleObject` and `KeWaitForMultipleObjects`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Timeout(Option<i64>);
+
+impl Timeout {
+    /// Wait until reaching an absolute timestamp, relative to
+    /// January 1st, 1601, in 100-nanosecond increments.
+    ///
+    /// Also accounts for changes in the system time.
+    pub const fn absolute(timestamp: i64) -> Self {
+        assert!(timestamp > 0);
+        Self(Some(timestamp))
+    }
+
+    /// Waits for an interval (in units of 100-nanoseconds) to pass.
+    pub const fn relative(duration: i64) -> Self {
+        assert!(duration > 0);
+        Self(Some(duration.wrapping_neg()))
+    }
+
+    /// Like [`Self::relative`], but in units of milliseconds.
+    pub const fn relative_ms(duration: i64) -> Self {
+        // 100 ns is basically 0.1 us
+        // 1 ms = 1_000 us = 1_000_0 100-ns
+        let Some(duration) = duration.checked_mul(1_000_0) else {
+            panic!("overflow in ms to 100-ns conversion")
+        };
+
+        Self::relative(duration)
+    }
+
+    /// Don't wait and return immediately
+    pub const fn dont_wait() -> Self {
+        Self(Some(0))
+    }
+
+    /// Wait indefinitely until the object is set to the signaled state.
+    ///
+    /// ## IRQL: `..=APC_LEVEL`
+    pub const fn forever() -> Self {
+        Self(None)
+    }
+
+    /// Gets the raw timeout representation to pass to kernel functions.
+    pub fn value(&mut self) -> PLONGLONG {
+        match &mut self.0 {
+            Some(timeout) => timeout as *mut _,
+            None => core::ptr::null_mut(),
+        }
     }
 }
 

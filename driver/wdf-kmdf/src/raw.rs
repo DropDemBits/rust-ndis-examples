@@ -7,12 +7,12 @@
 use wdf_kmdf_sys::{
     PCWDF_OBJECT_CONTEXT_TYPE_INFO, PFN_WDF_IO_QUEUE_STATE, PWDFDEVICE_INIT, PWDF_DRIVER_CONFIG,
     PWDF_FILEOBJECT_CONFIG, PWDF_IO_QUEUE_CONFIG, PWDF_OBJECT_ATTRIBUTES, WDFCONTEXT, WDFDEVICE,
-    WDFDRIVER, WDFFILEOBJECT, WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFSPINLOCK, WDF_DEVICE_IO_TYPE,
-    WDF_NO_CONTEXT, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
+    WDFDRIVER, WDFFILEOBJECT, WDFOBJECT, WDFQUEUE, WDFREQUEST, WDFSPINLOCK, WDFWAITLOCK,
+    WDF_DEVICE_IO_TYPE, WDF_NO_CONTEXT, WDF_NO_HANDLE, WDF_NO_OBJECT_ATTRIBUTES,
 };
 use windows_kernel_sys::{
-    KPROCESSOR_MODE, LONG, NTSTATUS, PCCH, PCUNICODE_STRING, PDEVICE_OBJECT, PDRIVER_OBJECT, PMDL,
-    PVOID, ULONG_PTR,
+    KPROCESSOR_MODE, LONG, NTSTATUS, PCCH, PCUNICODE_STRING, PDEVICE_OBJECT, PDRIVER_OBJECT,
+    PLONGLONG, PMDL, PVOID, ULONG_PTR,
 };
 
 // we refer to this struct a lot, so bring it into scope
@@ -2099,6 +2099,117 @@ pub unsafe fn WdfSpinLockAcquire(SpinLock: WDFSPINLOCK) {
 /// [ReqSendWhileSpinlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ReqSendWhileSpinlock
 pub unsafe fn WdfSpinLockRelease(SpinLock: WDFSPINLOCK) {
     dispatch!(WdfSpinLockRelease(SpinLock))
+}
+
+/// Creates a framework wait-lock object
+///
+/// By default, the parent object of the wait-lock is the driver object.
+/// The parent of the wait-lock can be changed using `WaitLockAttributes`, but if it is not changed
+/// the wait-lock object should be deleted once done with it, as otherwise instances of wait-locks will
+/// persist until the driver is unloaded.
+///
+/// ## Return Value
+///
+/// The newly allocated queue object is stored in the place given by `WaitLock`.
+///
+/// `STATUS_SUCCESS` is returned if the operation was successful, otherwise:
+/// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+///
+/// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+/// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `..=DISPATCH_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+/// - ([ParentObjectCheckLock]) A parent object should be set for the lock object
+/// - ([WdfWaitLock]) Calls to [`WdfWaitLockAcquire`] should be balanced with the number of calls to [`WdfWaitLockRelease`]
+///
+/// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+/// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+/// [ParentObjectCheckLock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-ParentObjectCheckLock
+/// [WdfWaitlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfWaitlock
+//
+// Note: `WdfWaitlock` isn't in the original listing, but it matches `WdfSpinLockCreate`
+#[must_use]
+pub unsafe fn WdfWaitLockCreate(
+    WaitLockAttributes: Option<PWDF_OBJECT_ATTRIBUTES>, // in, optional
+    WaitLock: &mut WDFWAITLOCK,                         // out
+) -> NTSTATUS {
+    dispatch!(WdfWaitLockCreate(
+        WaitLockAttributes.unwrap_or(WDF_NO_OBJECT_ATTRIBUTES!()),
+        WaitLock
+    ))
+}
+
+/// Acquires the specified wait lock.
+///
+/// [`WdfWaitLockAcquire`] calls `KeEnterCriticalRegion` before acquiring the
+/// wait lock, so when the function returns, [normal kernel APCs] are disabled.
+/// [`WdfWaitLockAcquire`] does not raise the IRQL level.
+///
+/// If `Timeout` is null or the timeout value is not zero,
+/// [`WdfWaitLockAcquire`] must be called at `PASSIVE_LEVEL`. Otherwise,
+/// [`WdfWaitLockAcquire`] must be called at `..=APC_LEVEL`.
+///
+/// ## Return value
+///
+/// `STATUS_SUCCESS` is returned if the operation was successful, otherwise
+/// `STATUS_TIMEOUT` if the specified `Timeout` expired before the lock was acquired.
+///
+/// The return value does not need to be checked if `Timeout` is `None`, as
+/// [`WdfWaitLockAcquire`] will only return after it acquires the lock.
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - ([KmdfIrqlDependent], [KmdfIrql2])
+///   If `Timeout` is null or non-zero, IRQL: `..=PASSIVE_LEVEL`.
+///   Otherwise, IRQL: `..=APC_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+/// - ([WdfWaitlock]) Calls to [`WdfWaitLockAcquire`] should be balanced with the number of calls to [`WdfWaitLockRelease`]
+/// - ([WdfWaitlockRelease]) Calls to [`WdfWaitLockRelease`] should be balanced with the number of calls to [`WdfWaitLockAcquire`]
+///
+/// [`WDF_INTERRUPT_CONFIG`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfinterrupt/ns-wdfinterrupt-_wdf_interrupt_config
+/// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+/// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+/// [WdfWaitlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfWaitlock
+/// [WdfWaitlockRelease]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfWaitlockRelease
+///
+/// ## See Also
+///
+/// - [Synchronization Techniques for Framework-Based Drivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/synchronization-techniques-for-wdf-drivers)
+#[must_use]
+pub unsafe fn WdfWaitLockAcquire(WaitLock: WDFWAITLOCK, Timeout: PLONGLONG) -> NTSTATUS {
+    dispatch!(WdfWaitLockAcquire(WaitLock, Timeout))
+}
+
+/// Releases the specified wait lock.
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - ([KmdfIrqlDependent], [KmdfIrql2]) IRQL: `..=APC_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+/// - ([WdfWaitlock]) Calls to [`WdfWaitLockAcquire`] should be balanced with the number of calls to [`WdfWaitLockRelease`]
+/// - ([WdfWaitlockRelease]) Calls to [`WdfWaitLockRelease`] should be balanced with the number of calls to [`WdfWaitLockAcquire`]
+///
+/// [KmdfIrqlDependent]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql
+/// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+/// [WdfWaitlock]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfWaitlock
+/// [WdfWaitlockRelease]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-WdfWaitlockRelease
+pub unsafe fn WdfWaitLockRelease(WaitLock: WDFWAITLOCK) {
+    dispatch!(WdfWaitLockRelease(WaitLock))
 }
 
 // endregion: wdfsync
