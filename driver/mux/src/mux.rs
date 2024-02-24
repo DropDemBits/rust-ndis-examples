@@ -1,19 +1,25 @@
 //! DriverEntry and NT dispatch functions for the NDIS MUX IM miniport driver sample.
 
-use core::pin::Pin;
+use core::{
+    pin::Pin,
+    sync::atomic::{AtomicI32, AtomicU32},
+};
 
 use vtable::vtable;
-use wdf_kmdf::miniport::{MiniportDriver, MiniportDriverCallbacks, MiniportDriverConfig};
+use wdf_kmdf::{
+    miniport::{MiniportDriver, MiniportDriverCallbacks, MiniportDriverConfig},
+    sync::{WaitMutex, WaitPinMutex},
+};
 use windows_kernel_rs::{
     string::{nt_unicode_str, unicode_string::NtUnicodeStr},
     DriverObject,
 };
 use windows_kernel_sys::{
-    Error, NDIS_HANDLE, NDIS_MINIPORT_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
-    NDIS_STATUS,
+    Error, NDIS_HANDLE, NDIS_MEDIUM, NDIS_MINIPORT_DRIVER_CHARACTERISTICS,
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_STATUS,
 };
 
-use crate::MUX_TAG;
+use crate::{Mux, NdisHandle, TrustMeList, MUX_TAG};
 
 /// First entry point to be called when this driver is loaded.
 /// Register with NDIS as an intermediate driver.
@@ -42,7 +48,7 @@ pub(super) fn driver_entry(
     let mut ProtocolDriverContext: NDIS_HANDLE = core::ptr::null_mut();
     const NAME: NtUnicodeStr<'static> = nt_unicode_str!("MUXP");
 
-    let driver = MiniportDriver::create(
+    let _driver = MiniportDriver::create(
         driver_object,
         registry_path,
         MiniportDriverConfig {
@@ -50,7 +56,16 @@ pub(super) fn driver_entry(
         },
         |_| {
             Ok(pinned_init::try_pin_init! {
-                Mux {}? Error
+                Mux {
+                    AdapterList <- WaitPinMutex::new(TrustMeList::new()),
+                    NextVElanNumber: AtomicU32::new(0),
+
+                    ProtHandle: NdisHandle::empty(),
+                    DriverHandle: NdisHandle::empty(),
+
+                    MiniportCount: AtomicI32::new(0),
+                    ControlDevice <- WaitMutex::new(None),
+                }? Error
             })
         },
     )?;

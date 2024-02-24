@@ -4,12 +4,21 @@
 use core::{
     ffi::CStr,
     mem::{ManuallyDrop, MaybeUninit},
+    pin::Pin,
     ptr::NonNull,
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64},
 };
 
 use crossbeam_utils::atomic::AtomicCell;
 use ndis_rs::NetBuffer;
+use nt_list::{
+    list::{NtList, NtListEntry, NtListHead},
+    NtListElement,
+};
+use wdf_kmdf::{
+    miniport::MiniportDevice,
+    sync::{WaitMutex, WaitPinMutex},
+};
 use windows_kernel_rs::{
     log,
     string::unicode_string::{NtUnicodeStr, NtUnicodeString},
@@ -109,14 +118,17 @@ enum AdapterBindingState {
 const MUX_BINDING_ACTIVE: u32 = 0b01;
 const MUX_BINDING_CLOSING: u32 = 0b10;
 
+#[derive(NtList)]
+enum AdaptList {}
+
 /// The Adapt struct represents a binding to a lower adapter by the protocol
 /// edge of this adapter. Based on the configured Upper bindings, zero or more
 /// virtual miniport devices (VELANs) are created above this binding.
+#[derive(NtListElement)]
 #[repr(C)]
 struct Adapt {
     /// Chain adapters. Access to this is protected by the global lock.
-    // List<Adapt>
-    Link: LIST_ENTRY,
+    Link: NtListEntry<Self, AdaptList>,
 
     /// References to this adapter
     RefCount: AtomicU32,
@@ -125,7 +137,7 @@ struct Adapt {
     BindingHandle: NDIS_HANDLE,
 
     /// List of all the virtual ELANs created on this lower binding
-    VElanList: LIST_ENTRY,
+    VElanList: NtListHead<VELan, AdapterVELanList>,
     VElanCount: u32,
 
     /// String used to access configuration for this binding
@@ -170,13 +182,20 @@ struct Adapt {
     Flags: u32,
 }
 
+#[derive(nt_list::list::NtList)]
+enum AdapterVELanList {}
+
+#[derive(nt_list::NtListElement)]
 #[repr(C)]
 struct VELan {
     // Link into parent adapter's VELAN list.
-    Link: LIST_ENTRY,
+    Link: NtListEntry<Self, AdapterVELanList>,
 
-    // link inot global VELAN list
-    GlobalLink: LIST_ENTRY,
+    // Link into global VELAN list
+    //
+    // NOTE: Not really used? Global VELAN list should be derived through
+    // `adapters.iter().flat_map(|adapt| adapt.velans.iter())`
+    // GlobalLink: NtListEntry<Self, VELanList>,
 
     // References to this VELAN.
     RefCount: ULONG,
@@ -513,66 +532,42 @@ impl MuxMutex {
     }
 }
 
-/// Global variables struct.
-struct Globals {
-    MediumArray: &'static [NDIS_MEDIUM],
+static MediumArray: &'static [NDIS_MEDIUM] = &[NDIS_MEDIUM::NdisMedium802_3];
 
-    // Protects
-    // - VElanList
-    GlobalLock: NDIS_SPIN_LOCK,
-    /// Global Mutex protects the Adapter list.
-    GlobalMutex: MuxMutex,
+/// The Mux miniport driver object, as well as the globals for the driver
+#[pinned_init::pin_data]
+pub(crate) struct Mux {
+    // List of all virtual adapters.
+    // NOTE: Not really used, and we should use the adapter list instead to get all velans.
+    // VElanList: wdf_kmdf::sync::SpinPinMutex<TrustMeList<VELan, VELanList>>,
     /// List of all bound adapters.
-    AdapterList: LIST_ENTRY,
-
-    /// List of all virtual adapters.
-    VElanList: LIST_ENTRY,
-    /// Number of VELAN miniports that exist.
-    // Serves as the refcount for CDO?
-    MiniportCount: AtomicI32,
+    #[pin]
+    AdapterList: WaitPinMutex<TrustMeList<Adapt, AdaptList>>,
     /// Used to assign VELAN numbers (which are used to generate MAC addresses).
     NextVElanNumber: AtomicU32,
 
     // Global NDIS handles
 
     // From NdisRegisterProtocolDriver
-    ProtHandle: NDIS_HANDLE,
+    ProtHandle: NdisHandle,
     // From NdisMRegisterMiniportDriver
-    DriverHandle: NDIS_HANDLE,
-    // From NdisMRegisterDeviceEx
-    NdisDeviceHandle: NDIS_HANDLE,
+    DriverHandle: NdisHandle,
 
+    /// Number of VELAN miniports that exist.
+    // Serves as the refcount for CDO?
+    MiniportCount: AtomicI32,
     /// Device for IOCTLs.
-    ControlDeviceObject: PDEVICE_OBJECT,
-    /// Protects
-    /// - NdisDeviceHandle
-    /// - ControlDeviceObject
-    ControlDeviceMutex: MuxMutex,
-}
-
-/// Global variables.
-static mut GLOBALS: Globals = Globals {
-    MediumArray: &[NDIS_MEDIUM::NdisMedium802_3],
-    GlobalLock: unsafe { core::mem::zeroed() },
-    GlobalMutex: unsafe { core::mem::zeroed() },
-    AdapterList: unsafe { core::mem::zeroed() },
-    VElanList: unsafe { core::mem::zeroed() },
-    MiniportCount: AtomicI32::new(0),
-    NextVElanNumber: AtomicU32::new(0),
-    ProtHandle: core::ptr::null_mut(),
-    DriverHandle: core::ptr::null_mut(),
-    NdisDeviceHandle: core::ptr::null_mut(),
-    ControlDeviceObject: core::ptr::null_mut(),
-    ControlDeviceMutex: unsafe { core::mem::zeroed() },
-};
-
-/// The Mux miniport driver object, as well as the globals for the driver
-#[pinned_init::pin_data]
-pub(crate) struct Mux {
-    //
+    ControlDevice: WaitMutex<Option<ControlDeviceObject>>,
 }
 
 wdf_kmdf::impl_context_space!(Mux);
+
+/// The control device object
+struct ControlDeviceObject {
+    cdo: MiniportDevice<()>,
+    // From NdisMRegisterDeviceEx
+    device_handle: NdisHandle,
+}
 
 // === Helper types ===
 
@@ -601,6 +596,14 @@ struct EthHeader {
 struct NdisHandle(AtomicCell<NDIS_HANDLE>);
 
 impl NdisHandle {
+    pub(crate) fn empty() -> Self {
+        Self(AtomicCell::new(core::ptr::null_mut()))
+    }
+
+    pub(crate) fn new(handle: NDIS_HANDLE) -> Self {
+        Self(AtomicCell::new(handle))
+    }
+
     pub(crate) fn as_ptr(&self) -> *mut NDIS_HANDLE {
         self.0.as_ptr()
     }
@@ -612,6 +615,65 @@ impl NdisHandle {
 
 unsafe impl Send for NdisHandle {}
 unsafe impl Sync for NdisHandle {}
+
+/// Since `NtListHead` is !Send
+#[pinned_init::pin_data]
+struct TrustMeList<Elem: NtListElement<L>, L: nt_list::NtTypedList<T = nt_list::list::NtList>> {
+    #[pin]
+    inner: NtListHead<Elem, L>,
+}
+
+impl<E: NtListElement<L>, L: nt_list::NtTypedList<T = nt_list::list::NtList>> TrustMeList<E, L> {
+    pub fn new() -> impl pinned_init::PinInit<Self> {
+        use moveit::New;
+
+        let list = unsafe {
+            pinned_init::pin_init_from_closure(|place: *mut NtListHead<E, L>| {
+                let place = place.cast::<MaybeUninit<NtListHead<E, L>>>();
+                let place = Pin::new_unchecked(&mut *place);
+
+                NtListHead::new().new(place);
+
+                Ok::<_, core::convert::Infallible>(())
+            })
+        };
+
+        pinned_init::pin_init! {
+            TrustMeList {
+                inner <- list,
+            }
+        }
+    }
+}
+
+impl<E, L> core::ops::Deref for TrustMeList<E, L>
+where
+    E: NtListElement<L>,
+    L: nt_list::NtTypedList<T = nt_list::list::NtList>,
+{
+    type Target = NtListHead<E, L>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<E, L> core::ops::DerefMut for TrustMeList<E, L>
+where
+    E: NtListElement<L>,
+    L: nt_list::NtTypedList<T = nt_list::list::NtList>,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+unsafe impl<E, L> Send for TrustMeList<E, L>
+where
+    E: NtListElement<L>,
+    L: nt_list::NtTypedList<T = nt_list::list::NtList>,
+{
+}
 
 // === Common dispatch functions ===
 
