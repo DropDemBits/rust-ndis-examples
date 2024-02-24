@@ -918,7 +918,7 @@ pub unsafe fn WdfIoQueueStart(Queue: WDFQUEUE) {
 
 /// Deletes the specified miniport driver's framework driver object.
 ///
-/// A miniport driver calls the [`WdfDriverMiniport`] function when the miniport
+/// A miniport driver calls the [`WdfDriverMiniportUnload`] function when the miniport
 /// is about to be unloaded. The method calls the driver's [`EvtDriverUnload`]
 /// event callback function and deletes the driver's framework driver object.
 /// This is typically called from within a driver-supplied unload routine that

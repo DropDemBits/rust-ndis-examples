@@ -55,10 +55,11 @@ impl<R> IoQueue<R> {
 
     /// Enables the IO queue to start delivering IO requests
     ///
-    /// If IO requests are present when [`start`] is called, the queue's
-    /// request handlers can be called before the end of the call to [`start`].
-    /// Therefore, any locks that the request handlers may acquire must not be
-    /// held before calling [`start`], otherwise a deadlock will happen.
+    /// If IO requests are present when [`IoQueue::start`] is called, the
+    /// queue's request handlers can be called before the end of the call to
+    /// [`IoQueue::start`]. Therefore, any locks that the request handlers may
+    /// acquire must not be held before calling [`IoQueue::start`], otherwise a
+    /// deadlock will happen.
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
     pub fn start(&self) {
