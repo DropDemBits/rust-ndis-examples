@@ -3,9 +3,9 @@ use core::marker::PhantomData;
 use wdf_kmdf_sys::WDFREQUEST;
 
 use crate::{
+    context_space::IntoContextSpace,
     file_object::FileObject,
     handle::{FrameworkOwned, HandleWrapper, RawHandle, Ref, Wrapped},
-    object::IntoContextSpace,
     raw,
 };
 

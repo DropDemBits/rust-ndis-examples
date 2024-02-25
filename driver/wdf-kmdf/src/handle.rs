@@ -21,11 +21,11 @@
 use core::{marker::PhantomData, mem::ManuallyDrop, ops::Deref, pin::Pin};
 
 use pinned_init::PinInit;
-use wdf_kmdf_sys::{WDFOBJECT, WDF_OBJECT_ATTRIBUTES};
+use wdf_kmdf_sys::WDFOBJECT;
 use windows_kernel_sys::Error;
 
 use crate::{
-    object::{self, IntoContextSpace},
+    context_space::{self, IntoContextSpace},
     raw,
 };
 
@@ -47,7 +47,7 @@ impl<H: WdfHandle, Mode: OwningMode> RawHandle<H, Mode> {
     /// Must have the correct ownership over the raw handle
     pub unsafe fn create(handle: H) -> Self {
         // We only adjust refcount for framework objects
-        if Mode::TAG != object::FRAMEWORK_TAG {
+        if Mode::TAG != context_space::FRAMEWORK_TAG {
             // SAFETY: Caller ensures that the handle is valid and that we're
             // called at the right IRQL
             unsafe {
@@ -81,7 +81,7 @@ impl<H: WdfHandle, Mode: OwningMode> RawHandle<H, Mode> {
         unsafe {
             raw::WdfObjectReferenceActual(
                 handle.as_object_handle(),
-                Some(object::REF_TAG as *mut _),
+                Some(context_space::REF_TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             );
@@ -106,8 +106,8 @@ impl<H: WdfHandle, Mode: OwningMode> Drop for RawHandle<H, Mode> {
 
         // We only adjust refcount for framework objects since we aren't responsible
         // for deleting them
-        if Mode::TAG != object::FRAMEWORK_TAG {
-            if Mode::TAG == object::OWN_TAG {
+        if Mode::TAG != context_space::FRAMEWORK_TAG {
+            if Mode::TAG == context_space::OWN_TAG {
                 // Is a driver-owned object, so we must clean it up ourselves
                 //
                 // SAFETY: Caller ensures that the handle is valid and that we're
@@ -229,13 +229,6 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandleWithContext<H
     pub fn as_handle(&self) -> H {
         self.handle.as_handle()
     }
-
-    /// Default attributes to properly contstruct the object context space
-    pub fn default_object_attributes() -> WDF_OBJECT_ATTRIBUTES {
-        let mut attributes = object::default_object_attributes::<T>();
-        attributes.EvtDestroyCallback = Some(default_dispatch_evt_destroy::<T>);
-        attributes
-    }
 }
 
 impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HandleWrapper
@@ -336,7 +329,8 @@ impl<H: HandleWrapper, T: IntoContextSpace> WithContext<H, T> {
 
     /// Gets the context space associated with this handle
     pub fn get_context(&self) -> Pin<&T> {
-        object::get_context(&self.handle).expect("object context space should be initialized")
+        context_space::get_context(&self.handle)
+            .expect("object context space should be initialized")
     }
 }
 
@@ -402,8 +396,7 @@ pub struct UninitContextSpace<H: HandleWrapper, T: IntoContextSpace> {
 
 impl<H: HandleWrapper, T: IntoContextSpace> UninitContextSpace<H, T> {
     fn create(handle: H) -> Result<Self, (Error, H)> {
-        let mut attributes = object::default_object_attributes::<T>();
-        attributes.EvtDestroyCallback = Some(default_dispatch_evt_destroy::<T>);
+        let mut attributes = context_space::default_object_attributes::<T>();
 
         // Note: we never use this context space handle as we get it through
         // `HasContext::get_context`.
@@ -453,7 +446,7 @@ impl<H: HandleWrapper, T: IntoContextSpace> UninitContextSpace<H, T> {
         // Object has the context space since `self` existing means that
         // the object does have T's context space, and that the context
         // space hasn't been initialized yet.
-        let status = unsafe { object::context_pin_init::<T, _, _, _>(&handle, init) };
+        let status = unsafe { context_space::context_pin_init::<T, _, _, _>(&handle, init) };
         if let Err(err) = status {
             return Err((err, handle));
         }
@@ -518,7 +511,7 @@ impl<H: HandleWrapper> Ref<H> {
         unsafe {
             raw::WdfObjectReferenceActual(
                 handle.as_object_handle(),
-                Some(object::REF_TAG as *mut _),
+                Some(context_space::REF_TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             );
@@ -544,7 +537,7 @@ impl<H: HandleWrapper> Drop for Ref<H> {
         unsafe {
             raw::WdfObjectDereferenceActual(
                 self.0.as_object_handle(),
-                Some(object::REF_TAG as *mut _),
+                Some(context_space::REF_TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             );
@@ -652,7 +645,7 @@ pub trait HasContext<T: IntoContextSpace>: HandleWrapper {
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
     fn get_context(&self) -> Pin<&T> {
-        object::get_context(self).expect("object context space should be initialized")
+        context_space::get_context(self).expect("object context space should be initialized")
     }
 }
 
@@ -755,10 +748,10 @@ pub struct DriverOwned;
 pub struct FrameworkOwned;
 
 impl OwningMode for DriverOwned {
-    const TAG: usize = object::OWN_TAG;
+    const TAG: usize = context_space::OWN_TAG;
 }
 impl OwningMode for FrameworkOwned {
-    const TAG: usize = object::FRAMEWORK_TAG;
+    const TAG: usize = context_space::FRAMEWORK_TAG;
 }
 
 mod private {
@@ -790,27 +783,5 @@ impl Drop for UninitDropBomb {
             self.is_defused(),
             "`UninitContextSpace::init` was not called"
         );
-    }
-}
-
-/// Default attributes to properly contstruct the object context space
-pub fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES {
-    let mut attributes = object::default_object_attributes::<T>();
-    attributes.EvtDestroyCallback = Some(default_dispatch_evt_destroy::<T>);
-    attributes
-}
-
-// FIXME: I guess this should go into `object`?
-unsafe extern "C" fn default_dispatch_evt_destroy<T: IntoContextSpace>(object: WDFOBJECT) {
-    // SAFETY: EvtDestroy is only called once, and there are no other references to the object by the time we're here
-    let handle = unsafe { RawHandleWithContext::<WDFOBJECT, T, FrameworkOwned>::wrap_raw(object) };
-
-    // Drop the context area
-    // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space
-    let status = unsafe { crate::object::drop_context_space::<T, _>(&handle, |_| ()) };
-
-    if let Err(err) = status {
-        // No (valid) context space to drop, nothing to do
-        windows_kernel_rs::log::warn!("No object context space to drop ({:x?})", err);
     }
 }

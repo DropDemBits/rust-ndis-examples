@@ -1,8 +1,8 @@
 use wdf_kmdf_sys::WDFDEVICE;
 
 use crate::{
+    context_space::IntoContextSpace,
     handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext},
-    object::IntoContextSpace,
 };
 
 pub struct ControlDevice<T: IntoContextSpace> {

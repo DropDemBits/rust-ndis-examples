@@ -7,8 +7,8 @@ use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
 use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
 use crate::{
+    context_space::{self, default_object_attributes, IntoContextSpace},
     handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
-    object::{self, default_object_attributes, IntoContextSpace},
     raw,
 };
 
@@ -167,7 +167,7 @@ where
         // - It's WDF's responsibility to insert the context area, since we create
         //   the default object attributes with T's context area
         // - The driver object was just created
-        unsafe { object::context_pin_init(&handle, init_context)? };
+        unsafe { context_space::context_pin_init(&handle, init_context)? };
 
         // Return the wrapped handle since WDF owns the driver object
         Ok(handle)
@@ -231,7 +231,7 @@ where
         // Thankfully, by adding an initial refcount bump when creating unparented
         // objects, they stay alive until it's time to delete them.
         // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space
-        let status = unsafe { object::drop_context_space::<T, _>(&handle, |_| ()) };
+        let status = unsafe { context_space::drop_context_space::<T, _>(&handle, |_| ()) };
 
         if let Err(err) = status {
             // No (valid) context space to drop, nothing to do

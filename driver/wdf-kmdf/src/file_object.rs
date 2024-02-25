@@ -5,8 +5,8 @@ use wdf_kmdf_sys::WDFFILEOBJECT;
 use windows_kernel_sys::Error;
 
 use crate::{
+    context_space::{self, IntoContextSpace},
     handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
-    object::{self, IntoContextSpace},
 };
 
 pub struct FileObject<T: IntoContextSpace> {
@@ -42,22 +42,6 @@ where
     pub fn raw_handle(&mut self) -> WDFFILEOBJECT {
         self.handle.as_handle()
     }
-
-    /// FIXME: Temporarily pub, figure out a proper way of hiding this
-    #[doc(hidden)]
-    pub unsafe extern "C" fn __dispatch_evt_destroy(object: wdf_kmdf_sys::WDFOBJECT) {
-        // SAFETY: EvtDestroy is only called once, and when there are no other references to the object
-        let handle = unsafe { Self::wrap(object.cast()) };
-
-        // Drop the context area
-        // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space
-        let status = unsafe { crate::object::drop_context_space::<T, _>(&handle, |_| ()) };
-
-        if let Err(err) = status {
-            // No (valid) context space to drop, nothing to do
-            windows_kernel_rs::log::warn!("No object context space to drop ({:x?})", err);
-        }
-    }
 }
 
 impl<T> FileObject<T>
@@ -65,7 +49,7 @@ where
     T: IntoContextSpace,
 {
     pub fn get_context(&self) -> Pin<&T> {
-        crate::object::get_context(self).expect("context space must be initialized")
+        self.handle.get_context()
     }
 
     /// ## Safety
@@ -77,7 +61,7 @@ where
     ) -> Result<(), Error> {
         // SAFETY: By construction of `Self`, this guarantees that we have the context space
         // Caller guarantees that this is only called once
-        unsafe { object::context_pin_init(self, |_| Ok(init_context)) }
+        unsafe { context_space::context_pin_init(self, |_| Ok(init_context)) }
     }
 
     /// Makes a shared reference to the file object
