@@ -28,16 +28,17 @@ use windows_kernel_sys::{
     result::STATUS, KeAcquireSpinLockAtDpcLevel, KeAcquireSpinLockRaiseToDpc, KeInitializeMutex,
     KeReleaseMutex, KeReleaseSpinLock, KeReleaseSpinLockFromDpcLevel, KeWaitForSingleObject,
     NdisAcquireReadWriteLock, NdisInitializeReadWriteLock, NdisReleaseReadWriteLock, BOOLEAN,
-    KMUTEX, LIST_ENTRY, NDIS_BIND_PARAMETERS, NDIS_DEVICE_POWER_STATE, NDIS_EVENT, NDIS_HANDLE,
+    KMUTEX, NDIS_BIND_PARAMETERS, NDIS_DEVICE_POWER_STATE, NDIS_EVENT, NDIS_HANDLE,
     NDIS_LINK_STATE, NDIS_MEDIUM, NDIS_OID_REQUEST, NDIS_PACKET_TYPE_ALL_MULTICAST,
     NDIS_PACKET_TYPE_BROADCAST, NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST,
     NDIS_PACKET_TYPE_PROMISCUOUS, NDIS_PNP_CAPABILITIES, NDIS_RECEIVE_SCALE_CAPABILITIES,
     NDIS_RW_LOCK, NDIS_SPIN_LOCK, NDIS_STATUS, NET_IFINDEX, NPAGED_LOOKASIDE_LIST, NTSTATUS,
-    PDEVICE_OBJECT, PDRIVER_OBJECT, PLOCK_STATE, PNDIS_OID_REQUEST, PUNICODE_STRING, ULONG,
-    ULONG64,
+    PDRIVER_OBJECT, PLOCK_STATE, PNDIS_OID_REQUEST, PUNICODE_STRING, ULONG, ULONG64,
 };
 
+mod miniport;
 mod mux;
+mod protocol;
 
 const MUX_MAJOR_NDIS_VERSION: u8 = 6;
 const MUX_MINOR_NDIS_VERSION: u8 = 0;
@@ -611,6 +612,10 @@ impl NdisHandle {
     pub(crate) fn get(&self) -> NDIS_HANDLE {
         self.0.load()
     }
+
+    pub(crate) fn take(&self) -> Option<NDIS_HANDLE> {
+        Some(self.0.swap(core::ptr::null_mut())).filter(|handle| !handle.is_null())
+    }
 }
 
 unsafe impl Send for NdisHandle {}
@@ -643,6 +648,14 @@ impl<E: NtListElement<L>, L: nt_list::NtTypedList<T = nt_list::list::NtList>> Tr
                 inner <- list,
             }
         }
+    }
+
+    pub fn as_list(self: Pin<&Self>) -> Pin<&NtListHead<E, L>> {
+        unsafe { self.map_unchecked(|this| &this.inner) }
+    }
+
+    pub fn as_list_mut(self: Pin<&mut Self>) -> Pin<&mut NtListHead<E, L>> {
+        unsafe { self.map_unchecked_mut(|this| &mut this.inner) }
     }
 }
 

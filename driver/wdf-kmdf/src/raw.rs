@@ -257,7 +257,6 @@ pub unsafe fn WdfControlFinishInitializing(Device: WDFDEVICE /* in */) {
 // TODO: As proper intra-doc links
 /// [`WdfDeviceInitAssignSDDLString`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitassignsddlstring
 /// [`WdfDeviceInitSetDeviceClass`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdevice/nf-wdfdevice-wdfdeviceinitsetdeviceclass
-/// [`WdfDeviceMiniportCreate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfminiport/nf-wdfminiport-wdfdeviceminiportcreate
 /// [`WdfFdoAddStaticChild`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdffdo/nf-wdffdo-wdffdoaddstaticchild
 /// [`WdfFdoInitSetDefaultChildListConfig`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdffdo/nf-wdffdo-wdffdoinitsetdefaultchildlistconfig
 /// [`WdfPdoInitAllocate`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfpdo/nf-wdfpdo-wdfpdoinitallocate
@@ -613,6 +612,24 @@ pub unsafe fn WdfDriverCreate(
         DriverConfig,
         Driver.map(|p| p as _).unwrap_or(WDF_NO_HANDLE!()),
     ))
+}
+
+/// Gets the pointer to the WDM driver object associated with the given driver.
+///
+/// The pointer given is valid until the associated driver is destroyed.
+///
+/// ## Safety
+///
+/// In addition to all passed-in pointers pointing to valid memory locations:
+///
+/// - IRQL: `..=DISPATCH_LEVEL`
+/// - ([DriverCreate]) [`WdfDriverCreate`] must only be called from the [`DriverEntry`] point
+///
+/// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
+/// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+#[must_use]
+pub unsafe fn WdfDriverWdmGetDriverObject(Driver: WDFDRIVER) -> PDRIVER_OBJECT {
+    dispatch!(WdfDriverWdmGetDriverObject(Driver))
 }
 
 /// Gets the framework driver object, or `None` if the driver hasn't been created yet.

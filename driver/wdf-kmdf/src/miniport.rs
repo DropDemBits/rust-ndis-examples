@@ -5,7 +5,7 @@ use pinned_init::PinInit;
 use vtable::vtable;
 use wdf_kmdf_sys::{WDFDEVICE, WDFDRIVER, WDF_DRIVER_INIT_FLAGS};
 use windows_kernel_rs::{string::unicode_string::NtUnicodeStr, DriverObject};
-use windows_kernel_sys::{Error, PDEVICE_OBJECT};
+use windows_kernel_sys::{Error, PDEVICE_OBJECT, PDRIVER_OBJECT};
 
 use crate::{
     handle::{
@@ -176,6 +176,14 @@ where
         unsafe { Self::wrap(handle) }
     }
 
+    /// Gets the WDM driver object that this miniport driver backs
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn wdm_driver_object(&self) -> PDRIVER_OBJECT {
+        // SAFETY: Handle guarantees that we pass in a valid driver object.
+        unsafe { raw::WdfDriverWdmGetDriverObject(self.handle.as_handle()) }
+    }
+
     /// Unloads the miniport driver.
     ///
     /// This directs the framework to call the
@@ -187,8 +195,8 @@ where
     /// No framework functions should be called after this point.
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub unsafe fn unload(self) {
-        unsafe { raw::WdfDriverMiniportUnload(self.handle.as_handle()) }
+    pub unsafe fn unload() {
+        unsafe { raw::WdfDriverMiniportUnload(Self::get().handle.as_handle()) }
     }
 
     unsafe extern "C" fn __dispatch_driver_unload(driver: WDFDRIVER) {

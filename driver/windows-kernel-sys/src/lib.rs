@@ -39,6 +39,7 @@ impl Error {
     /// Converts an [`NTSTATUS`] into an `Error`.
     ///
     /// Note that this treats anything that isn't `STATUS_SUCCESS` as an error
+    #[must_use]
     pub fn to_err(status: NTSTATUS) -> Result<(), Error> {
         if status == winresult::STATUS::SUCCESS.to_u32() {
             Ok(())
