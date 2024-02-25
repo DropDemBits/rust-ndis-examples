@@ -397,10 +397,9 @@ impl WaitLock {
     ///
     /// ## IRQL: `..=PASSIVE_LEVEL`
     pub fn acquire(&self) -> WaitLockGuard<'_> {
+        // Wait forever to acquire the lock.
         let mut timeout = Timeout::forever();
 
-        // Wait forever to acquire the lock.
-        //
         // SAFETY:
         // - We created the wait lock ourselves, so it's not part of an interrupt config struct
         // - Caller ensures we're calling this at the right IRQL
@@ -415,17 +414,15 @@ impl WaitLock {
     ///
     /// ## IRQL: `..=APC_LEVEL`
     pub fn try_acquire(&self) -> Option<WaitLockGuard<'_>> {
+        // Try to acquire the lock
         let mut timeout = Timeout::dont_wait();
 
-        // Try to acquire the lock
-        //
         // SAFETY:
         // - We created the wait lock ourselves, so it's not part of an interrupt config struct
         // - Caller ensures we're calling this at the right IRQL
-        let status =
-            Error::to_err(unsafe { raw::WdfWaitLockAcquire(self.0.as_handle(), timeout.value()) });
+        let status = unsafe { raw::WdfWaitLockAcquire(self.0.as_handle(), timeout.value()) };
 
-        match status {
+        match Error::to_err(status) {
             Ok(()) => Some(WaitLockGuard { lock: self }),
             Err(_) => None,
         }

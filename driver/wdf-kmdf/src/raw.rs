@@ -974,6 +974,7 @@ pub unsafe fn WdfDriverMiniportUnload(Driver: WDFDRIVER) {
 /// [KmdfIrql2]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-KmdfIrql2
 /// [DriverCreate]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-DriverCreate
 /// [`DriverEntry`]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
+#[must_use]
 pub unsafe fn WdfDeviceMiniportCreate(
     Driver: WDFDRIVER,                            // in
     Attributes: Option<PWDF_OBJECT_ATTRIBUTES>,   // in, optional

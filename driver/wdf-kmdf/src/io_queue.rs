@@ -20,6 +20,7 @@ impl<R> IoQueue<R> {
     /// A device can have multiple IO queues.
     ///
     /// ## IRQL: <= `DISPATCH_LEVEL`
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn create(device: WDFDEVICE, mut config: WDF_IO_QUEUE_CONFIG) -> Result<Self, Error> {
         let handle = {
             let mut handle = core::ptr::null_mut();

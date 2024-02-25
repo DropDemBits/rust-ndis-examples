@@ -196,6 +196,8 @@ where
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
     pub unsafe fn unload() {
+        // SAFETY: Caller ensures that this is only called once and won't call
+        // any framework functions again.
         unsafe { raw::WdfDriverMiniportUnload(Self::get().handle.as_handle()) }
     }
 
@@ -278,6 +280,7 @@ where
     /// Creates a miniport device object
     ///
     /// ## IRQL: `..=PASSIVE_LEVEL`
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn create<D, I>(
         driver: &MiniportDriver<D>,
         device_object: PDEVICE_OBJECT,
@@ -306,6 +309,7 @@ where
                 ))
             }?;
 
+            // SAFETY: We just created this handle and are immediately wrapping it
             let handle = unsafe { RawHandleWithContext::create(handle) };
             Self { handle }
         };
