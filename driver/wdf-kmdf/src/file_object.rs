@@ -6,11 +6,14 @@ use windows_kernel_sys::Error;
 
 use crate::{
     context_space::{self, IntoContextSpace},
-    handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
+    handle::{
+        FrameworkOwned, HandleWrapper, HasContext, RawFileObject, RawHandleWithContext, Ref,
+        Wrapped,
+    },
 };
 
 pub struct FileObject<T: IntoContextSpace> {
-    handle: RawHandleWithContext<WDFFILEOBJECT, T, FrameworkOwned>,
+    handle: RawHandleWithContext<RawFileObject, T, FrameworkOwned>,
 }
 
 impl<T: IntoContextSpace> core::fmt::Debug for FileObject<T> {
@@ -31,11 +34,11 @@ where
     ///
     /// Respect aliasing rules, since this can be used to
     /// generate aliasing mutable references to the context space.
-    /// Also, the context space must be initialized.
     // FIXME: Make a proper wrapper eventually
     pub unsafe fn wrap(handle: WDFFILEOBJECT) -> Wrapped<Self> {
-        // SAFETY: uhhhh
-        unsafe { Wrapped::wrap_raw(handle.cast()) }
+        // SAFETY: It's the caller's responsibility to ensure that this doesn't
+        // generate aliasing references on drop.
+        unsafe { Wrapped::wrap_raw(handle) }
     }
 
     /// Gets the file object handle for use with WDF functions that don't have clean wrappers yet
@@ -73,11 +76,11 @@ where
 }
 
 impl<T: IntoContextSpace> HandleWrapper for FileObject<T> {
-    type Handle = WDFFILEOBJECT;
+    type Handle = RawFileObject;
 
-    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that the handle is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }

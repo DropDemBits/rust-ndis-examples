@@ -5,15 +5,15 @@ use wdf_kmdf_sys::WDFREQUEST;
 use crate::{
     context_space::IntoContextSpace,
     file_object::FileObject,
-    handle::{FrameworkOwned, HandleWrapper, RawHandle, Ref, Wrapped},
+    handle::{FrameworkOwned, HandleWrapper, RawHandle, RawRequest, Ref, Wrapped},
     raw,
 };
 
 /// Trait implemented by all request types
-pub trait Request: HandleWrapper<Handle = WDFREQUEST> {}
+pub trait Request: HandleWrapper<Handle = RawRequest> {}
 
 pub struct FileRequest<F> {
-    handle: RawHandle<WDFREQUEST, FrameworkOwned>,
+    handle: RawHandle<RawRequest, FrameworkOwned>,
     // FIXME: Bound with file callbacks?
     _file: PhantomData<F>,
 }
@@ -55,11 +55,11 @@ where
 }
 
 impl<F> HandleWrapper for FileRequest<F> {
-    type Handle = WDFREQUEST;
+    type Handle = RawRequest;
 
-    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that the handle is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandle::wrap_raw(raw) },
             _file: PhantomData,
         }

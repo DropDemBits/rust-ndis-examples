@@ -2,11 +2,11 @@ use wdf_kmdf_sys::WDFDEVICE;
 
 use crate::{
     context_space::IntoContextSpace,
-    handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext},
+    handle::{FrameworkOwned, HandleWrapper, HasContext, RawDevice, RawHandleWithContext},
 };
 
 pub struct ControlDevice<T: IntoContextSpace> {
-    handle: RawHandleWithContext<WDFDEVICE, T, FrameworkOwned>,
+    handle: RawHandleWithContext<RawDevice, T, FrameworkOwned>,
 }
 
 impl<T: IntoContextSpace> ControlDevice<T> {
@@ -17,11 +17,11 @@ impl<T: IntoContextSpace> ControlDevice<T> {
 }
 
 impl<T: IntoContextSpace> HandleWrapper for ControlDevice<T> {
-    type Handle = WDFDEVICE;
+    type Handle = RawDevice;
 
-    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that the handle is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }

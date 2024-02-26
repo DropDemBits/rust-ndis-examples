@@ -33,7 +33,7 @@ use crate::{
 ///
 /// ## Drop IRQL: `..=DISPATCH_LEVEL`
 pub struct RawHandle<H: WdfHandle, Mode: OwningMode> {
-    handle: H,
+    handle: *mut H,
     _mode: PhantomData<Mode>,
 }
 
@@ -45,14 +45,14 @@ impl<H: WdfHandle, Mode: OwningMode> RawHandle<H, Mode> {
     /// ## Safety
     ///
     /// Must have the correct ownership over the raw handle
-    pub unsafe fn create(handle: H) -> Self {
+    pub unsafe fn create(handle: *mut H) -> Self {
         // We only adjust refcount for framework objects
         if Mode::TAG != context_space::FRAMEWORK_TAG {
             // SAFETY: Caller ensures that the handle is valid and that we're
             // called at the right IRQL
             unsafe {
                 raw::WdfObjectReferenceActual(
-                    handle.as_object_handle(),
+                    handle.cast(),
                     Some(Mode::TAG as *mut _),
                     line!() as i32,
                     Some(cstr!(file!()).as_ptr()),
@@ -75,12 +75,12 @@ impl<H: WdfHandle, Mode: OwningMode> RawHandle<H, Mode> {
     ///
     /// Must have the correct ownership over the raw handle,
     /// and the handle must be parented.
-    pub unsafe fn create_parented(handle: H) -> Self {
+    pub unsafe fn create_parented(handle: *mut H) -> Self {
         // SAFETY: Caller ensures that the handle is valid and that we're
         // called at the right IRQL
         unsafe {
             raw::WdfObjectReferenceActual(
-                handle.as_object_handle(),
+                handle.cast(),
                 Some(context_space::REF_TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
@@ -95,7 +95,7 @@ impl<H: WdfHandle, Mode: OwningMode> RawHandle<H, Mode> {
 
     /// Gets the backing raw handle
     #[inline]
-    pub fn as_handle(&self) -> H {
+    pub fn as_handle(&self) -> *mut H {
         self.handle
     }
 }
@@ -135,23 +135,23 @@ impl<H: WdfHandle, Mode: OwningMode> HandleWrapper for RawHandle<H, Mode> {
     type Handle = H;
 
     #[inline]
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that it is a handle of the correct type
-            handle: unsafe { H::wrap_raw(raw) },
+            // SAFETY: Caller ensures that we don't alias on drop
+            handle: raw,
             _mode: PhantomData,
         }
     }
 
     #[inline]
     fn as_object_handle(&self) -> WDFOBJECT {
-        self.handle.as_object_handle()
+        self.handle.cast()
     }
 }
 
 impl<H, Mode> core::fmt::Debug for RawHandle<H, Mode>
 where
-    H: WdfHandle + core::fmt::Debug,
+    H: WdfHandle,
     Mode: OwningMode,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -161,7 +161,7 @@ where
 
 impl<H, Mode> PartialEq for RawHandle<H, Mode>
 where
-    H: WdfHandle + PartialEq,
+    H: WdfHandle,
     Mode: OwningMode,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -171,7 +171,7 @@ where
 
 impl<H, Mode> Eq for RawHandle<H, Mode>
 where
-    H: WdfHandle + Eq,
+    H: WdfHandle,
     Mode: OwningMode,
 {
 }
@@ -197,7 +197,7 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandleWithContext<H
     /// ## Safety
     ///
     /// Must have the correct ownership over the raw handle
-    pub unsafe fn create(handle: H) -> Self {
+    pub unsafe fn create(handle: *mut H) -> Self {
         // SAFETY: Caller handles the responsibility of this function
         let handle = unsafe { RawHandle::create(handle) };
         Self {
@@ -215,7 +215,7 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandleWithContext<H
     ///
     /// Must have the correct ownership over the raw handle,
     /// and the handle must be parented.
-    pub unsafe fn create_parented(handle: H) -> Self {
+    pub unsafe fn create_parented(handle: *mut H) -> Self {
         // SAFETY: Caller handles the responsibility of this function
         let handle = unsafe { RawHandle::create_parented(handle) };
         Self {
@@ -226,7 +226,7 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> RawHandleWithContext<H
 
     /// Gets the backing raw handle
     #[inline]
-    pub fn as_handle(&self) -> H {
+    pub fn as_handle(&self) -> *mut H {
         self.handle.as_handle()
     }
 }
@@ -237,9 +237,9 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HandleWrapper
     type Handle = H;
 
     #[inline]
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that it is a handle of the correct type
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandle::wrap_raw(raw) },
             _context_space: PhantomData,
         }
@@ -253,7 +253,7 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HandleWrapper
 
 impl<H, T, Mode> core::fmt::Debug for RawHandleWithContext<H, T, Mode>
 where
-    H: WdfHandle + core::fmt::Debug,
+    H: WdfHandle,
     T: IntoContextSpace,
     Mode: OwningMode,
 {
@@ -266,7 +266,7 @@ where
 
 impl<H, T, Mode> PartialEq for RawHandleWithContext<H, T, Mode>
 where
-    H: WdfHandle + PartialEq,
+    H: WdfHandle,
     T: IntoContextSpace,
     Mode: OwningMode,
 {
@@ -277,7 +277,7 @@ where
 
 impl<H, T, Mode> Eq for RawHandleWithContext<H, T, Mode>
 where
-    H: WdfHandle + Eq,
+    H: WdfHandle,
     T: IntoContextSpace,
     Mode: OwningMode,
 {
@@ -338,9 +338,9 @@ impl<H: HandleWrapper, T: IntoContextSpace> HandleWrapper for WithContext<H, T> 
     type Handle = <H as HandleWrapper>::Handle;
 
     #[inline]
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller has the responsibility of this being a valid handle
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { H::wrap_raw(raw) },
             _context_space: PhantomData,
         }
@@ -505,7 +505,7 @@ impl<H: HandleWrapper> Ref<H> {
     pub fn clone_from_handle(handle: &H) -> Self {
         // SAFETY: Manually drop ensures that we only adjust the refcount
         // and not delete the object
-        let handle = ManuallyDrop::new(unsafe { H::wrap_raw(handle.as_object_handle()) });
+        let handle = ManuallyDrop::new(unsafe { H::wrap_raw(handle.as_object_handle().cast()) });
 
         // SAFETY: Caller ensures that we're called at the right IRQL
         unsafe {
@@ -549,8 +549,8 @@ impl<H: HandleWrapper> HandleWrapper for Ref<H> {
     type Handle = <H as HandleWrapper>::Handle;
 
     #[inline]
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
-        // SAFETY: Caller has the responsibility of this being a valid handle
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
+        // SAFETY: Caller ensures that we don't alias on drop
         Self(ManuallyDrop::new(unsafe { H::wrap_raw(raw) }))
     }
 
@@ -609,8 +609,8 @@ impl<H: HandleWrapper> HandleWrapper for Wrapped<H> {
     type Handle = H::Handle;
 
     #[inline]
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Wrapped<H> {
-        // SAFETY: It is the caller's responsibility that `raw` is a valid handle
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Wrapped<H> {
+        // SAFETY: Caller ensures that we don't alias on drop
         Wrapped(ManuallyDrop::new(unsafe { H::wrap_raw(raw) }))
     }
 
@@ -659,82 +659,63 @@ impl<H: HandleWrapper, T: IntoContextSpace> HasContext<T> for WithContext<H, T> 
 /// Represents a wrapper around a framework handle
 pub trait HandleWrapper: Sized {
     type Handle;
-    // type RefHandle;
 
     /// ## Safety
     ///
-    /// Must be a valid handle of the correct type, and must not
-    /// alias exclusive accesses on drop.
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self;
+    /// Must not alias exclusive accesses on drop.
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self;
 
     /// Yield the raw handle backing this wrapper
     fn as_object_handle(&self) -> WDFOBJECT;
 }
 
-/// A raw framework handle
-pub trait WdfHandle: Copy {
-    /// Gets a typed raw handle from an object handle
-    ///
-    /// ## Safety
-    ///
-    /// `raw` must be the correct type of handle, and it must be valid.
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self;
-
-    /// Gets the WDF handle as an object handle
-    fn as_object_handle(&self) -> WDFOBJECT;
-}
+/// A raw framework handle type
+pub trait WdfHandle {}
 
 macro_rules! impl_wdf_handle {
-    ($($handle:ident),+ $(,)?) => {
+    ($($handle:ident = $handle_ty:ident),+ $(,)?) => {
         $(
-            impl WdfHandle for wdf_kmdf_sys::$handle {
-                #[inline]
-                unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
-                    raw.cast()
-                }
-
-                #[inline]
-                fn as_object_handle(&self) -> WDFOBJECT {
-                    self.cast()
-                }
-            }
+            pub(crate) type $handle = wdf_kmdf_sys::$handle_ty;
+            impl WdfHandle for $handle {}
         )+
     };
 }
 
 impl_wdf_handle! {
-    WDFCHILDLIST,
-    WDFCMRESLIST,
-    WDFCOLLECTION,
-    WDFCOMMONBUFFER,
-    WDFCOMPANIONTARGET,
-    WDFDEVICE,
-    WDFDMAENABLER,
-    WDFDMATRANSACTION,
-    WDFDPC,
-    WDFDRIVER,
-    WDFFILEOBJECT,
-    WDFINTERRUPT,
-    WDFIORESLIST,
-    WDFIORESREQLIST,
-    WDFIOTARGET,
-    WDFKEY,
-    WDFLOOKASIDE,
-    WDFMEMORY,
-    WDFOBJECT,
-    WDFQUEUE,
-    WDFREQUEST,
-    WDFSPINLOCK,
-    WDFSTRING,
-    WDFTIMER,
-    WDFUSBDEVICE,
-    WDFUSBINTERFACE,
-    WDFUSBPIPE,
-    WDFWAITLOCK,
-    WDFWMIINSTANCE,
-    WDFWMIPROVIDER,
-    WDFWORKITEM,
+    RawChildList = WDFCHILDLIST__,
+    RawCMResList = WDFCMRESLIST__,
+    RawCollection = WDFCOLLECTION__,
+    RawCommonBuffer = WDFCOMMONBUFFER__,
+    RawCompanionTarget = WDFCOMPANIONTARGET__,
+    RawDevice = WDFDEVICE__,
+    RawDmaEnabler = WDFDMAENABLER__,
+    RawDmaTransaction = WDFDMATRANSACTION__,
+    RawDpc = WDFDPC__,
+    RawDriver = WDFDRIVER__,
+    RawFileObject = WDFFILEOBJECT__,
+    RawInterrupt = WDFINTERRUPT__,
+    RawIoResList = WDFIORESLIST__,
+    RawIoResReqList = WDFIORESREQLIST__,
+    RawIoTarget = WDFIOTARGET__,
+    RawKey = WDFKEY__,
+    RawLookaside = WDFLOOKASIDE__,
+    RawMemory = WDFMEMORY__,
+    RawQueue = WDFQUEUE__,
+    RawRequest = WDFREQUEST__,
+    RawSpinlock = WDFSPINLOCK__,
+    RawString = WDFSTRING__,
+    RawTimer = WDFTIMER__,
+    RawUsbDevice = WDFUSBDEVICE__,
+    RawUsbInterface = WDFUSBINTERFACE__,
+    RawUsbPipe = WDFUSBPIPE__,
+    RawWaitlock = WDFWAITLOCK__,
+    RawWmiInstance = WDFWMIINSTANCE__,
+    RawWmiProvider = WDFWMIPROVIDER__,
+    RawWorkItem = WDFWORKITEM__,
 }
+
+pub(crate) type RawObject = core::ffi::c_void;
+impl WdfHandle for RawObject {}
 
 /// How the handle is to be owned
 pub trait OwningMode: private::Sealed {

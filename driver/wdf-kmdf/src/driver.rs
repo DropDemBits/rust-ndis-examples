@@ -8,12 +8,14 @@ use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
 use crate::{
     context_space::{self, default_object_attributes, IntoContextSpace},
-    handle::{FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
+    handle::{
+        FrameworkOwned, HandleWrapper, HasContext, RawDriver, RawHandleWithContext, Ref, Wrapped,
+    },
     raw,
 };
 
 pub struct Driver<T: IntoContextSpace> {
-    handle: RawHandleWithContext<WDFDRIVER, T, FrameworkOwned>,
+    handle: RawHandleWithContext<RawDriver, T, FrameworkOwned>,
 }
 
 impl<T: IntoContextSpace> core::fmt::Debug for Driver<T> {
@@ -35,8 +37,9 @@ where
     /// Respect aliasing rules, since this can be used to
     /// generate aliasing mutable references to the context space
     pub unsafe fn wrap(handle: WDFDRIVER) -> Wrapped<Self> {
-        // SAFETY: Is the correct handle type, and caller guarantees that
-        unsafe { Wrapped::wrap_raw(handle.cast()) }
+        // SAFETY: It's the caller's responsibility to ensure that this doesn't
+        // generate aliasing references on drop.
+        unsafe { Wrapped::wrap_raw(handle) }
     }
 
     /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
@@ -241,11 +244,11 @@ where
 }
 
 impl<T: IntoContextSpace> HandleWrapper for Driver<T> {
-    type Handle = WDFDRIVER;
+    type Handle = RawDriver;
 
-    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that the handle is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }

@@ -6,7 +6,9 @@ use windows_kernel_sys::Error;
 
 use crate::{
     context_space::{self, IntoContextSpace},
-    handle::{DriverOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped},
+    handle::{
+        DriverOwned, HandleWrapper, HasContext, RawHandleWithContext, RawObject, Ref, Wrapped,
+    },
     raw,
 };
 
@@ -100,7 +102,7 @@ pub enum SynchronizationScope {
 }
 
 pub struct GeneralObject<T: IntoContextSpace> {
-    handle: RawHandleWithContext<WDFOBJECT, T, DriverOwned>,
+    handle: RawHandleWithContext<RawObject, T, DriverOwned>,
 }
 
 impl<T> GeneralObject<T>
@@ -194,9 +196,9 @@ where
     ///
     /// Respect aliasing rules, since this can be used to
     /// generate aliasing mutable references to the context space.
-    /// Also, the context space must be initialized.
     pub unsafe fn wrap(handle: WDFOBJECT) -> Wrapped<Self> {
-        // SAFETY: Caller ensures that this is a valid handle
+        // SAFETY: It's the caller's responsibility to ensure that this doesn't
+        // generate aliasing references on drop.
         unsafe { Wrapped::wrap_raw(handle) }
     }
 
@@ -214,12 +216,12 @@ where
 }
 
 impl<T: IntoContextSpace> HandleWrapper for GeneralObject<T> {
-    type Handle = WDFOBJECT;
+    type Handle = RawObject;
 
     #[inline]
-    unsafe fn wrap_raw(raw: WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller has the responsibility to ensure that this is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }

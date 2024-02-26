@@ -4,13 +4,13 @@ use wdf_kmdf_sys::{WDFDEVICE, WDFQUEUE, WDF_IO_QUEUE_CONFIG};
 use windows_kernel_sys::{result::STATUS, Error};
 
 use crate::{
-    handle::{DriverOwned, HandleWrapper, RawHandle},
+    handle::{DriverOwned, HandleWrapper, RawHandle, RawQueue},
     raw,
     request::Request,
 };
 
 pub struct IoQueue<R> {
-    handle: RawHandle<WDFQUEUE, DriverOwned>,
+    handle: RawHandle<RawQueue, DriverOwned>,
     _request: PhantomData<R>,
 }
 
@@ -108,11 +108,11 @@ where
 }
 
 impl<R> HandleWrapper for IoQueue<R> {
-    type Handle = WDFQUEUE;
+    type Handle = RawQueue;
 
-    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that the handle is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandle::wrap_raw(raw) },
             _request: PhantomData,
         }

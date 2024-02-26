@@ -211,14 +211,24 @@ Obstacles:
 		 - Seems to be at compile time? So we may not need to do so (just share the GUID where needed)
 		 - To do CoClass, looks like we can just use the co class uuid?
  - [ ] Embedding with Resource Files
-	 - [ ] RGS
+	 - [x] RGS
+		 - ATL only, so not applicable for us.
 	 - [ ] DIALOG?
 	 - [ ] Manifest
 		 - [ ] Privilege Request
  - [x] `mux.def`???
 	 - `#[no_mangle]` already adds us to the exports
  - [ ] Managing the property pages and property page input
+	 - MUX sample essentially has 2 buttons (add & remove) and a "reducer" to apply the action.
+	 - What would a more complex property page involve?
  - [x] COM Server?
 	 - How does it find the CLSID of the notify object anyway?
 		 - Via `Ndi/ClsId` (see <https://learn.microsoft.com/en-us/windows-hardware/drivers/network/adding-registry-values-for-a-notify-object>)
 	 - Apparently it's relatively simple to make a class factory, since `windows-rs` handles most of the grunt work.
+
+## Uncluttering `wdf-kmdf`'s handle representation
+
+Currently? It's a bit of a mess.
+Would probably want to have a closed set of raw handle types, since custom objects build off of the base types anyways.
+- Forgot about e.g. using this as the base for other Cx wrappers.
+Should also investigate in yoinking the context space code into its own module, since it's separate from actual `WdfObject`s.

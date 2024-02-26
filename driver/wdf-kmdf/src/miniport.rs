@@ -10,7 +10,8 @@ use windows_kernel_sys::{Error, PDEVICE_OBJECT, PDRIVER_OBJECT};
 use crate::{
     context_space::{self, default_object_attributes, IntoContextSpace},
     handle::{
-        DriverOwned, FrameworkOwned, HandleWrapper, HasContext, RawHandleWithContext, Ref, Wrapped,
+        DriverOwned, FrameworkOwned, HandleWrapper, HasContext, RawDevice, RawDriver,
+        RawHandleWithContext, Ref, Wrapped,
     },
     raw,
 };
@@ -34,7 +35,7 @@ pub trait MiniportDriverCallbacks: IntoContextSpace {
 
 /// A KMDF Miniport Driver.
 pub struct MiniportDriver<T: IntoContextSpace> {
-    handle: RawHandleWithContext<WDFDRIVER, T, FrameworkOwned>,
+    handle: RawHandleWithContext<RawDriver, T, FrameworkOwned>,
 }
 
 impl<T: IntoContextSpace> core::fmt::Debug for MiniportDriver<T> {
@@ -56,8 +57,9 @@ where
     /// Respect aliasing rules, since this can be used to
     /// generate aliasing mutable references to the context space
     pub unsafe fn wrap(handle: WDFDRIVER) -> Wrapped<Self> {
-        // SAFETY: Is the correct handle type, and caller guarantees that
-        unsafe { Wrapped::wrap_raw(handle.cast()) }
+        // SAFETY: It's the caller's responsibility to ensure that this doesn't
+        // generate aliasing references on drop.
+        unsafe { Wrapped::wrap_raw(handle) }
     }
 
     /// Gets the driver handle for use with WDF functions that don't have clean wrappers yet
@@ -244,11 +246,11 @@ where
 }
 
 impl<T: IntoContextSpace> HandleWrapper for MiniportDriver<T> {
-    type Handle = WDFDRIVER;
+    type Handle = RawDriver;
 
-    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that the handle is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }
@@ -270,7 +272,7 @@ pub struct MiniportDevice<T>
 where
     T: IntoContextSpace,
 {
-    handle: RawHandleWithContext<WDFDEVICE, T, DriverOwned>,
+    handle: RawHandleWithContext<RawDevice, T, DriverOwned>,
 }
 
 impl<T> MiniportDevice<T>
@@ -330,8 +332,9 @@ where
     /// Respect aliasing rules, since this can be used to
     /// generate aliasing mutable references to the context space
     pub unsafe fn wrap(handle: WDFDEVICE) -> Wrapped<Self> {
-        // SAFETY: Is the correct handle type, and caller guarantees that
-        unsafe { Wrapped::wrap_raw(handle.cast()) }
+        // SAFETY: It's the caller's responsibility to ensure that this doesn't
+        // generate aliasing references on drop.
+        unsafe { Wrapped::wrap_raw(handle) }
     }
 
     /// Gets the handle for use with WDF functions that don't have clean wrappers yet
@@ -348,11 +351,11 @@ where
 }
 
 impl<T: IntoContextSpace> HandleWrapper for MiniportDevice<T> {
-    type Handle = WDFDEVICE;
+    type Handle = RawDevice;
 
-    unsafe fn wrap_raw(raw: wdf_kmdf_sys::WDFOBJECT) -> Self {
+    unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         Self {
-            // SAFETY: Caller ensures that the handle is valid
+            // SAFETY: Caller ensures that we don't alias on drop
             handle: unsafe { RawHandleWithContext::wrap_raw(raw) },
         }
     }

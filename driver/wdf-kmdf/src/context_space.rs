@@ -9,7 +9,7 @@ use wdf_kmdf_sys::{WDFOBJECT, WDF_OBJECT_ATTRIBUTES, WDF_OBJECT_CONTEXT_TYPE_INF
 use windows_kernel_sys::{result::STATUS, Error};
 
 use crate::{
-    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext},
+    handle::{FrameworkOwned, HandleWrapper, RawHandleWithContext, RawObject},
     raw,
 };
 
@@ -91,7 +91,7 @@ pub fn default_object_attributes<T: IntoContextSpace>() -> WDF_OBJECT_ATTRIBUTES
 
 unsafe extern "C" fn default_dispatch_evt_destroy<T: IntoContextSpace>(object: WDFOBJECT) {
     // SAFETY: EvtDestroy is only called once, and there are no other references to the object by the time we're here
-    let handle = unsafe { RawHandleWithContext::<WDFOBJECT, T, FrameworkOwned>::wrap_raw(object) };
+    let handle = unsafe { RawHandleWithContext::<RawObject, T, FrameworkOwned>::wrap_raw(object) };
 
     // Drop the context area
     // SAFETY: `EvtDestroy` guarantees that we have exclusive access to the context space

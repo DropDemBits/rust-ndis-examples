@@ -8,12 +8,11 @@ use core::{
 };
 
 use pinned_init::{pin_data, Init, PinInit};
-use wdf_kmdf_sys::{WDFSPINLOCK, WDFWAITLOCK};
 use windows_kernel_rs::Timeout;
 use windows_kernel_sys::Error;
 
 use crate::{
-    handle::{DriverOwned, RawHandle},
+    handle::{DriverOwned, RawHandle, RawSpinlock, RawWaitlock},
     raw,
 };
 
@@ -297,7 +296,7 @@ impl<'a, T, Lock: LockBackend> DerefMut for MutexGuard<'a, T, Lock> {
 /// Wrapper around a framework-based spin lock.
 ///
 /// IRQL-aware, and adjusts the IRQL to `DISPATCH_LEVEL` while the lock is acquired
-pub struct SpinLock(RawHandle<WDFSPINLOCK, DriverOwned>);
+pub struct SpinLock(RawHandle<RawSpinlock, DriverOwned>);
 
 impl SpinLock {
     /// Creates a new spin lock
@@ -367,7 +366,7 @@ impl<'a> Drop for SpinLockGuard<'a> {
 /// Wrapper around a framework-based wait lock.
 ///
 /// This does not adjust the IRQL level.
-pub struct WaitLock(RawHandle<WDFWAITLOCK, DriverOwned>);
+pub struct WaitLock(RawHandle<RawWaitlock, DriverOwned>);
 
 impl WaitLock {
     /// Creates a new wait lock
