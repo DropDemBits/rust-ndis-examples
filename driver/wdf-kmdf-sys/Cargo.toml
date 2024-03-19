@@ -12,4 +12,4 @@ windows-kernel-sys = { path = "../windows-kernel-sys" }
 [build-dependencies]
 bindgen.workspace = true
 thiserror.workspace = true
-winreg.workspace = true
+windows-registry.workspace = true

@@ -12,5 +12,5 @@ winresult = "0.1.3"
 [build-dependencies]
 bindgen.workspace = true
 thiserror.workspace = true
-winreg.workspace = true
+windows-registry.workspace = true
 cc.workspace = true

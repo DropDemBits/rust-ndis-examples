@@ -28,8 +28,8 @@ ndis-rs = { path = "driver/ndis-rs" }
 static_assertions = "1.1.0"
 bindgen = "0.69.4"
 thiserror = "1.0.57"
-winreg = "0.52.0"
 cc = "1.0"
+windows-registry = "0.1.0"
 
 [profile.dev]
 panic = "abort"

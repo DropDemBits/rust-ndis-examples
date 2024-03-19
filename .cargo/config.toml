@@ -1,1 +1,4 @@
-
+[build]
+rustflags = [
+  "--cfg", "windows_raw_dylib"
+]

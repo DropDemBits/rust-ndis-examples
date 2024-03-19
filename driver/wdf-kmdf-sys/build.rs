@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 use thiserror::Error;
-use winreg::enums::HKEY_LOCAL_MACHINE;
-use winreg::RegKey;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -14,9 +12,13 @@ pub enum Error {
 /// Retrieves the path to the Windows Kits directory. The default should be
 /// `C:\Program Files (x86)\Windows Kits\10`.
 pub fn get_windows_kits_dir() -> Result<PathBuf, Error> {
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let hklm = windows_registry::LOCAL_MACHINE;
     let key = r"SOFTWARE\Microsoft\Windows Kits\Installed Roots";
-    let dir: String = hklm.open_subkey(key)?.get_value("KitsRoot10")?;
+    let dir: String = hklm
+        .open(key)
+        .map_err(|_| Error::DirectoryNotFound)?
+        .get_string("KitsRoot10")
+        .map_err(|_| Error::DirectoryNotFound)?;
 
     Ok(dir.into())
 }
@@ -89,21 +91,6 @@ pub fn get_kmdf_dir(dir_type: DirectoryType) -> Result<PathBuf, Error> {
     }))
 }
 
-// Other half of
-// https://github.com/rust-lang/rust-bindgen/issues/753#issuecomment-459851952
-#[derive(Debug)]
-struct RenameTyped;
-
-impl bindgen::callbacks::ParseCallbacks for RenameTyped {
-    fn item_name(&self, original_item_name: &str) -> Option<String> {
-        Some(
-            original_item_name
-                .trim_start_matches("__rename_typed_")
-                .to_owned(),
-        )
-    }
-}
-
 fn generate() {
     // Tell Cargo to re-run this if src/wrapper.h gets changed.
     println!("cargo:rerun-if-changed=src/wrapper.h");
@@ -143,7 +130,6 @@ fn generate() {
         .bitfield_enum("_WDF_WMI_PROVIDER_FLAGS")
         .clang_arg(format!("-I{}", include_dir.to_str().unwrap()))
         .clang_arg(format!("-I{}", wdf_dir.to_str().unwrap()))
-        .parse_callbacks(Box::new(RenameTyped))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Declared in lib.rs
         // .blocklist_item("WdfMinimumVersionRequired")
