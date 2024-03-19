@@ -26,13 +26,20 @@ For a non-miniport driver, `FxStubDriverUnload` calls [`FxDriver::Unload`](https
 
 In `FxDriver::Unload` there's a call to `DeleteObject`, which calls `EvtCleanup` and `EvtDestroy` in the usual way. This potentially means that we can use `EvtDestroy` as the place to destroy the driver context, since by the definition of `EvtDestroy` callback we have exclusive access to the space. Note that also the entire driver framework object hierarchy gets destroyed inside of the WDM `Unload` callback, which is relevant in the case of [`NdisDeregisterProtocolDriver`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ndis/nf-ndis-ndisderegisterprotocoldriver) since it's typically called from the `Unload` callback (but doesn't necessarily mean that it needs to be called inside of WDF's `DriverUnload` callback). There's also [`NdisUnbindAdapter`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ndis/nf-ndis-ndisunbindadapter) which can be used to guarantee that all of the bound adapters are unbound before we get to deregistering the protocol driver (e.g. if we represent bound adapters using WDF objects which are parented to the protocol driver).
 
-## Can't Use `lld-link`
+## Can't Use `lld-link` out of the box
 
 `lld-link` lets through the `.cfg00` and `.retplne` sections. `.retplne` is particularly problematic because it has characteristics 0, resulting in an inaccessible page and causing a bug-check (MEMORY_MANAGEMENT (1a) \[ 0x3000, \<VA\>, \<PTE\>, \<NTSTATUS\> \]).
+- Apparently `.cfg00` is indeed dropped sometime between LLVM 16 and LLVM 18, but `.retplne` still isn't currently.
 
 Even once that's worked around (e.g. by merging `.retplne` into `.rdata`), all of the non-pageable sections (i.e. any section not `PAGE`) are missing the not-pageable flag, so they could be paged out at any time causing spurious crashes.
 
 Technically we could use this <https://learn.microsoft.com/en-us/cpp/build/reference/section-specify-section-attributes?view=msvc-170>, but it's easier to just stick with msvc link.exe for now.
+
+This also means we miss out on LTO, so our wrapper functions don't get inlined automatically.
+
+---
+
+After a bit of investigating, it is possible to use `lld-link`, though it does require manually specifying the attributes of sections. `lld-link` and getting rid of the `.retplne` section (though it could also just have been specified as readable). `lld-link` also doesn't accept the correct way to specify a non-paged section (`/SECTION:.text,!P`), which is something to keep in mind.
 
 ## NDIS Callback Ordering & Interleaving
 
@@ -232,3 +239,5 @@ Currently? It's a bit of a mess.
 Would probably want to have a closed set of raw handle types, since custom objects build off of the base types anyways.
 - Forgot about e.g. using this as the base for other Cx wrappers.
 Should also investigate in yoinking the context space code into its own module, since it's separate from actual `WdfObject`s.
+
+Status: Done
