@@ -21,9 +21,6 @@ use crate::{
     OpenContextFlags, OpenState, TaggedEthHeader, NPROT_FLAGS_ALLOCATED_NBL,
 };
 
-#[derive(nt_list::list::NtList)]
-pub(crate) enum RecvNblList {}
-
 /// `ProtocolReserved` in received packets: we link these packets up in a queue waiting for read io requests.
 /// We stuff this inside of NET_BUFFER_LIST.ProtocolReserved
 #[repr(C)]
