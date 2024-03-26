@@ -136,6 +136,7 @@ fn generate() {
     // Generate the wrappers
     cc::Build::new()
         .flag("/kernel")
+        .flag("/guard:cf")
         .include(include_dir)
         .include(out_path)
         .file("src/wrapper.c")
