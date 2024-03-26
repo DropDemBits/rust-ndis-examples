@@ -152,7 +152,7 @@ impl NET_BUFFER_LIST {
     }
 }
 
-#[link(name = "wrapper_bindings")]
+#[link(name = "wrapper_bindings", kind = "static")]
 extern "C" {
     pub fn wrapper_MmGetSystemAddressForMdlSafe(Mdl: PMDL, Priority: ULONG) -> PVOID;
 

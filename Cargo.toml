@@ -38,4 +38,5 @@ windows-registry = "0.1.0"
 panic = "abort"
 
 [profile.release]
+lto = "thin"
 panic = "abort"
