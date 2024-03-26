@@ -11,20 +11,22 @@ members = [
   "libs/vtable",
   "libs/once-arc",
   "prottest"
-, "driver/mux-notify", "driver/mux"]
+, "driver/mux-notify", "driver/mux", "driver/wdf-kmdf-build"]
 
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-vtable = { path = "libs/vtable" }
+ndis-rs = { path = "driver/ndis-rs" }
+nt-list = { version = "0.3.0", default-features = false }
 once-arc = { path = "libs/once-arc", default-features = false }
 pinned-init = { version = "0.0.6", default-features = false, features = ["alloc"] }
-nt-list = { version = "0.3.0", default-features = false }
+wdf-kmdf-build = { path = "driver/wdf-kmdf-build" }
 windows-kernel-sys = { path = "driver/windows-kernel-sys" }
 windows-kernel-rs = { path = "driver/windows-kernel-rs" }
-ndis-rs = { path = "driver/ndis-rs" }
+vtable = { path = "libs/vtable" }
+
 static_assertions = "1.1.0"
 bindgen = "0.69.4"
 thiserror = "1.0.57"

@@ -502,6 +502,7 @@ dependencies = [
  "static_assertions",
  "vtable",
  "wdf-kmdf",
+ "wdf-kmdf-build",
  "wdf-kmdf-sys",
  "windows-kernel-rs",
  "windows-kernel-sys",
@@ -542,6 +543,7 @@ dependencies = [
  "static_assertions",
  "vtable",
  "wdf-kmdf",
+ "wdf-kmdf-build",
  "wdf-kmdf-sys",
  "windows-kernel-rs",
  "windows-kernel-sys",
@@ -944,6 +946,10 @@ dependencies = [
  "windows-kernel-rs",
  "windows-kernel-sys",
 ]
+
+[[package]]
+name = "wdf-kmdf-build"
+version = "0.1.0"
 
 [[package]]
 name = "wdf-kmdf-sys"
