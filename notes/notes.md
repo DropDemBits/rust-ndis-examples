@@ -241,3 +241,24 @@ Would probably want to have a closed set of raw handle types, since custom objec
 Should also investigate in yoinking the context space code into its own module, since it's separate from actual `WdfObject`s.
 
 Status: Done
+
+## DVRT & `.retplne`
+
+Overview of Spectre v2 Mitigation: <https://techcommunity.microsoft.com/t5/windows-kernel-internals-blog/mitigating-spectre-variant-2-with-retpoline-on-windows/ba-p/295618>
+Info on the Retpoline components of the DVRT: <https://denuvosoftwaresolutions.github.io/DVRT/dvrt.html>
+
+### `.retplne` contents
+
+```rust
+#[repr(C)]
+struct RetpolineData {
+	magic: [u8; 12], // b"RetpolineV1\0",
+	blobs: RetpolineBlob,
+}
+
+#[repr(C)]
+struct RetpolineBlob {
+	size: u32,
+	blob: [u8; size - 4],
+}
+```
