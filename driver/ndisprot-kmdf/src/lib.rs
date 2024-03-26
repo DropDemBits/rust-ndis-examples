@@ -149,12 +149,11 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     // protocol driver handle place happens before any of the callbacks since
     // `ProtocolBindAdapterEx` requires it for `NdisOpenAdapterEx`.
 
-    const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = (core::mem::offset_of!(
+    const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = memoffset::span_of!(
         NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
         SendNetBufferListsCompleteHandler
-    ) + core::mem::size_of::<
-        windows_kernel_sys::SEND_NET_BUFFER_LISTS_COMPLETE_HANDLER,
-    >()) as u16;
+    )
+    .1 as u16;
 
     // initialize the protocol characteristic structure
     let mut proto_char = unsafe { core::mem::zeroed::<NDIS_PROTOCOL_DRIVER_CHARACTERISTICS>() };

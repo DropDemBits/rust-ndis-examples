@@ -35,19 +35,17 @@ pub(super) fn driver_entry(
     driver_object: DriverObject,
     registry_path: NtUnicodeStr<'_>,
 ) -> Result<(), Error> {
-    const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = (core::mem::offset_of!(
+    const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = memoffset::span_of!(
         NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
         SendNetBufferListsCompleteHandler
-    ) + core::mem::size_of::<
-        windows_kernel_sys::SEND_NET_BUFFER_LISTS_COMPLETE_HANDLER,
-    >()) as u16;
+    )
+    .1 as u16;
 
-    const NDIS_SIZEOF_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1: u16 = (core::mem::offset_of!(
+    const NDIS_SIZEOF_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1: u16 = memoffset::span_of!(
         NDIS_MINIPORT_DRIVER_CHARACTERISTICS,
         CancelOidRequestHandler
-    ) + core::mem::size_of::<
-        windows_kernel_sys::MINIPORT_CANCEL_OID_REQUEST_HANDLER,
-    >()) as u16;
+    )
+    .1 as u16;
 
     let driver = MiniportDriver::create(
         driver_object,

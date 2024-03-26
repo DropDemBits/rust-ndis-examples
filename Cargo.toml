@@ -27,10 +27,11 @@ windows-kernel-sys = { path = "driver/windows-kernel-sys" }
 windows-kernel-rs = { path = "driver/windows-kernel-rs" }
 vtable = { path = "libs/vtable" }
 
-static_assertions = "1.1.0"
 bindgen = "0.69.4"
-thiserror = "1.0.57"
 cc = "1.0"
+memoffset = "0.8"
+static_assertions = "1.1.0"
+thiserror = "1.0.57"
 windows-registry = "0.1.0"
 
 [profile.dev]

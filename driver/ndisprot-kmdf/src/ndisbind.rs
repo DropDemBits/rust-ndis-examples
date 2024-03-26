@@ -336,8 +336,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
             };
 
             const NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1: u16 =
-                (core::mem::offset_of!(NET_BUFFER_LIST_POOL_PARAMETERS, DataSize)
-                    + core::mem::size_of::<windows_kernel_sys::ULONG>()) as u16;
+                memoffset::span_of!(NET_BUFFER_LIST_POOL_PARAMETERS, DataSize).1 as u16;
 
             let mut pool_parameters: NET_BUFFER_LIST_POOL_PARAMETERS =
                 unsafe { core::mem::zeroed() };
@@ -399,8 +398,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     as *mut ProtocolBindingContext;
 
             const NDIS_SIZEOF_NDIS_OPEN_PARAMETERS_REVISION_1: u16 =
-                (core::mem::offset_of!(NDIS_OPEN_PARAMETERS, FrameTypeArraySize)
-                    + core::mem::size_of::<windows_kernel_sys::UINT>()) as u16;
+                memoffset::span_of!(NDIS_OPEN_PARAMETERS, FrameTypeArraySize).1 as u16;
 
             // Open the adapter
             let mut open_parameters: NDIS_OPEN_PARAMETERS = unsafe { core::mem::zeroed() };
@@ -969,8 +967,7 @@ fn do_request(
     let binding_handle = open_context.binding_handle.0.load();
 
     const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
-        (core::mem::offset_of!(NDIS_OID_REQUEST, Reserved2)
-            + core::mem::size_of::<windows_kernel_sys::USHORT>()) as u16;
+        memoffset::span_of!(NDIS_OID_REQUEST, Reserved2).1 as u16;
 
     let mut request = unsafe { core::mem::zeroed::<NDIS_OID_REQUEST>() };
     request.Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST as u8;
@@ -1260,8 +1257,7 @@ pub(crate) unsafe extern "C" fn status_handler(
     let open_context = open.get_context();
 
     const NDIS_SIZEOF_STATUS_INDICATION_REVISION_1: u16 =
-        (core::mem::offset_of!(NDIS_STATUS_INDICATION, NdisReserved)
-            + core::mem::size_of::<[PVOID; 4]>()) as u16;
+        memoffset::span_of!(NDIS_STATUS_INDICATION, NdisReserved).1 as u16;
 
     if status_indication.Header.Type != NDIS_OBJECT_TYPE_STATUS_INDICATION as u8
         || status_indication.Header.Size != NDIS_SIZEOF_STATUS_INDICATION_REVISION_1
@@ -1311,8 +1307,7 @@ pub(crate) unsafe extern "C" fn status_handler(
             }
             NDIS_STATUS_LINK_STATE => {
                 const NDIS_SIZEOF_LINK_STATE_REVISION_1: u16 =
-                    (core::mem::offset_of!(NDIS_LINK_STATE, AutoNegotiationFlags)
-                        + core::mem::size_of::<ULONG>()) as u16;
+                    memoffset::span_of!(NDIS_LINK_STATE, AutoNegotiationFlags).1 as u16;
 
                 assert!(
                     status_indication.StatusBufferSize >= NDIS_SIZEOF_LINK_STATE_REVISION_1.into()
