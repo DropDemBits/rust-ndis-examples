@@ -1,4 +1,7 @@
 [build]
+# Needed because helix + rust-analyzer isn't reading the target configuration
+target = "x86_64-pc-windows-msvc"
+
 rustflags = [
   "--cfg", "windows_raw_dylib",
   "-C", "control-flow-guard=yes",
