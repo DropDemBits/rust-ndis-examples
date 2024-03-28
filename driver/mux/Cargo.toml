@@ -23,7 +23,6 @@ nt-list.workspace = true
 moveit = "0.6.0"
 static_assertions = "1.1.0"
 modular-bitfield = "0.11.2"
-memoffset.workspace = true
 
 [build-dependencies]
 wdf-kmdf-build.workspace = true

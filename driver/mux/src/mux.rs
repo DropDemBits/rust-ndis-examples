@@ -21,7 +21,9 @@ use windows_kernel_sys::{
     NDIS_HANDLE, NDIS_INTERMEDIATE_DRIVER, NDIS_MINIPORT_DRIVER_CHARACTERISTICS,
     NDIS_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_OBJECT_TYPE_DEFAULT,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
-    NDIS_STATUS, NTSTATUS, PDEVICE_OBJECT, PIRP,
+    NDIS_SIZEOF_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1,
+    NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_STATUS, NTSTATUS, PDEVICE_OBJECT,
+    PIRP,
 };
 
 use crate::{
@@ -35,18 +37,6 @@ pub(super) fn driver_entry(
     driver_object: DriverObject,
     registry_path: NtUnicodeStr<'_>,
 ) -> Result<(), Error> {
-    const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = memoffset::span_of!(
-        NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
-        SendNetBufferListsCompleteHandler
-    )
-    .1 as u16;
-
-    const NDIS_SIZEOF_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1: u16 = memoffset::span_of!(
-        NDIS_MINIPORT_DRIVER_CHARACTERISTICS,
-        CancelOidRequestHandler
-    )
-    .1 as u16;
-
     let driver = MiniportDriver::create(
         driver_object,
         registry_path,

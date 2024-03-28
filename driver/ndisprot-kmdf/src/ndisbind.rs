@@ -36,10 +36,13 @@ use windows_kernel_sys::{
     NDIS_OID_REQUEST, NDIS_OID_REQUEST_REVISION_1, NDIS_OPEN_PARAMETERS,
     NDIS_OPEN_PARAMETERS_REVISION_1, NDIS_PORT_NUMBER, NDIS_PROTOCOL_ID_IPX,
     NDIS_PROTOCOL_RESTART_PARAMETERS, NDIS_REQUEST_TYPE, NDIS_RESTART_ATTRIBUTES,
-    NDIS_RESTART_GENERAL_ATTRIBUTES, NDIS_STATUS, NDIS_STATUS_INDICATION,
-    NET_BUFFER_LIST_POOL_PARAMETERS, NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1,
-    NET_DEVICE_POWER_STATE, NET_IFINDEX, NET_IF_MEDIA_CONNECT_STATE, NET_LUID, NET_PNP_EVENT_CODE,
-    OID_802_11_ADD_WEP, OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
+    NDIS_RESTART_GENERAL_ATTRIBUTES, NDIS_SIZEOF_LINK_STATE_REVISION_1,
+    NDIS_SIZEOF_NDIS_OPEN_PARAMETERS_REVISION_1,
+    NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NDIS_SIZEOF_OID_REQUEST_REVISION_1,
+    NDIS_SIZEOF_STATUS_INDICATION_REVISION_1, NDIS_STATUS, NET_BUFFER_LIST_POOL_PARAMETERS,
+    NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1, NET_DEVICE_POWER_STATE, NET_IFINDEX,
+    NET_IF_MEDIA_CONNECT_STATE, NET_LUID, NET_PNP_EVENT_CODE, OID_802_11_ADD_WEP,
+    OID_802_11_AUTHENTICATION_MODE, OID_802_11_BSSID, OID_802_11_BSSID_LIST,
     OID_802_11_BSSID_LIST_SCAN, OID_802_11_CONFIGURATION, OID_802_11_DISASSOCIATE,
     OID_802_11_INFRASTRUCTURE_MODE, OID_802_11_NETWORK_TYPE_IN_USE, OID_802_11_POWER_MODE,
     OID_802_11_RELOAD_DEFAULTS, OID_802_11_REMOVE_WEP, OID_802_11_RSSI, OID_802_11_SSID,
@@ -335,9 +338,6 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                 }
             };
 
-            const NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1: u16 =
-                memoffset::span_of!(NET_BUFFER_LIST_POOL_PARAMETERS, DataSize).1 as u16;
-
             let mut pool_parameters: NET_BUFFER_LIST_POOL_PARAMETERS =
                 unsafe { core::mem::zeroed() };
             pool_parameters.Header.Type = NDIS_OBJECT_TYPE_DEFAULT as u8;
@@ -396,9 +396,6 @@ pub(crate) unsafe extern "C" fn bind_adapter(
             let protocol_binding_context =
                 Box::leak(unsafe { Pin::into_inner_unchecked(protocol_binding_context) })
                     as *mut ProtocolBindingContext;
-
-            const NDIS_SIZEOF_NDIS_OPEN_PARAMETERS_REVISION_1: u16 =
-                memoffset::span_of!(NDIS_OPEN_PARAMETERS, FrameTypeArraySize).1 as u16;
 
             // Open the adapter
             let mut open_parameters: NDIS_OPEN_PARAMETERS = unsafe { core::mem::zeroed() };
@@ -966,9 +963,6 @@ fn do_request(
     // `OpenContext`, not `ProtocolBindingContext`
     let binding_handle = open_context.binding_handle.0.load();
 
-    const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
-        memoffset::span_of!(NDIS_OID_REQUEST, Reserved2).1 as u16;
-
     let mut request = unsafe { core::mem::zeroed::<NDIS_OID_REQUEST>() };
     request.Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST as u8;
     request.Header.Revision = NDIS_OID_REQUEST_REVISION_1 as u8;
@@ -1256,9 +1250,6 @@ pub(crate) unsafe extern "C" fn status_handler(
     let open = &protocol_binding_context.open_context;
     let open_context = open.get_context();
 
-    const NDIS_SIZEOF_STATUS_INDICATION_REVISION_1: u16 =
-        memoffset::span_of!(NDIS_STATUS_INDICATION, NdisReserved).1 as u16;
-
     if status_indication.Header.Type != NDIS_OBJECT_TYPE_STATUS_INDICATION as u8
         || status_indication.Header.Size != NDIS_SIZEOF_STATUS_INDICATION_REVISION_1
     {
@@ -1306,9 +1297,6 @@ pub(crate) unsafe extern "C" fn status_handler(
                 inner.flags.set(OpenContextFlags::NOT_RESETTING, true);
             }
             NDIS_STATUS_LINK_STATE => {
-                const NDIS_SIZEOF_LINK_STATE_REVISION_1: u16 =
-                    memoffset::span_of!(NDIS_LINK_STATE, AutoNegotiationFlags).1 as u16;
-
                 assert!(
                     status_indication.StatusBufferSize >= NDIS_SIZEOF_LINK_STATE_REVISION_1.into()
                 );

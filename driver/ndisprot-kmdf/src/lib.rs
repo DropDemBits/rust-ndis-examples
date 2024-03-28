@@ -50,8 +50,9 @@ use windows_kernel_sys::{
     NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_OID, NDIS_PACKET_TYPE_BROADCAST,
     NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST, NDIS_PORT_NUMBER,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
-    NDIS_REQUEST_TYPE, NDIS_STATUS, NET_DEVICE_POWER_STATE, NTSTATUS,
-    OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT, PUNICODE_STRING, ULONG, ULONG_PTR,
+    NDIS_REQUEST_TYPE, NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_STATUS,
+    NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT,
+    PUNICODE_STRING, ULONG, ULONG_PTR,
 };
 
 #[allow(non_snake_case)]
@@ -148,12 +149,6 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     // it ends up being a race condition. We have to assume that the write to the
     // protocol driver handle place happens before any of the callbacks since
     // `ProtocolBindAdapterEx` requires it for `NdisOpenAdapterEx`.
-
-    const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = memoffset::span_of!(
-        NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
-        SendNetBufferListsCompleteHandler
-    )
-    .1 as u16;
 
     // initialize the protocol characteristic structure
     let mut proto_char = unsafe { core::mem::zeroed::<NDIS_PROTOCOL_DRIVER_CHARACTERISTICS>() };

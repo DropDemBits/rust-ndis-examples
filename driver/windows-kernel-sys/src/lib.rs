@@ -21,6 +21,32 @@ pub use winresult as result;
 
 use winresult::NtStatus;
 
+const fn size_of_pointee<T>(_: *const T) -> usize {
+    core::mem::size_of::<T>()
+}
+
+/// Gets the size of a struct up to (and including) a given field
+macro_rules! sizeof_through_field {
+    ($ty:path, $field:ident) => {{
+        let size_up_to = core::mem::offset_of!($ty, $field);
+
+        // Project to the pointer type
+        // No UB here, and the pointer does not dangle, either.
+        // But we have to make sure that `uninit` lives long enough,
+        // so it has to be in the same scope as `$name`. That's why
+        // `let_base_ptr` declares a variable (several, actually)
+        // instead of returning one.
+        let uninit = core::mem::MaybeUninit::<$ty>::uninit();
+        let base = uninit.as_ptr();
+        // SAFETY: "$field" is in-bounds as we've already determined it to be
+        // part of the struct.
+        let ptr = unsafe { core::ptr::addr_of!((*(base)).$field) };
+        let field_size = $crate::size_of_pointee(ptr);
+
+        size_up_to + field_size
+    }};
+}
+
 #[link(name = "ntoskrnl")]
 extern "C" {}
 // for __security_cookie
@@ -154,27 +180,40 @@ impl NET_BUFFER_LIST {
 
 #[link(name = "wrapper_bindings", kind = "static")]
 extern "C" {
-    pub fn wrapper_MmGetSystemAddressForMdlSafe(Mdl: PMDL, Priority: ULONG) -> PVOID;
+    #[link_name = "wrapper_MmGetSystemAddressForMdlSafe"]
+    pub fn MmGetSystemAddressForMdlSafe(Mdl: PMDL, Priority: ULONG) -> PVOID;
 
-    pub fn wrapper_MmGetMdlByteCount(Mdl: PMDL) -> ULONG;
+    #[link_name = "wrapper_MmGetMdlByteCount"]
+    pub fn MmGetMdlByteCount(Mdl: PMDL) -> ULONG;
 
-    pub fn wrapper_NET_BUFFER_LIST_FirstNb(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER;
+    #[link_name = "wrapper_NET_BUFFER_LIST_FirstNb"]
+    pub fn NET_BUFFER_LIST_FirstNb(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER;
 
-    pub fn wrapper_NET_BUFFER_LIST_NextNbl(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER_LIST;
+    #[link_name = "wrapper_NET_BUFFER_LIST_NextNbl"]
+    pub fn NET_BUFFER_LIST_NextNbl(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER_LIST;
 
-    pub fn wrapper_NdisGetNextMdl(CurrentMdl: PMDL, NextMdl: *mut PMDL) -> PMDL;
+    #[link_name = "wrapper_NdisGetNextMdl"]
+    pub fn NdisGetNextMdl(CurrentMdl: PMDL, NextMdl: *mut PMDL) -> PMDL;
 
-    pub fn wrapper_NdisQueryMdl(
-        Mdl: PMDL,
-        VirtualAddress: *mut PVOID,
-        Length: *mut ULONG,
-        Priority: ULONG,
-    );
+    #[link_name = "wrapper_NdisQueryMdl"]
+    pub fn NdisQueryMdl(Mdl: PMDL, VirtualAddress: *mut PVOID, Length: *mut ULONG, Priority: ULONG);
 }
 
-pub use self::wrapper_MmGetMdlByteCount as MmGetMdlByteCount;
-pub use self::wrapper_MmGetSystemAddressForMdlSafe as MmGetSystemAddressForMdlSafe;
-pub use self::wrapper_NET_BUFFER_LIST_FirstNb as NET_BUFFER_LIST_FirstNb;
-pub use self::wrapper_NET_BUFFER_LIST_NextNbl as NET_BUFFER_LIST_NextNbl;
-pub use self::wrapper_NdisGetNextMdl as NdisGetNextMdl;
-pub use self::wrapper_NdisQueryMdl as NdisQueryMdl;
+pub const NDIS_SIZEOF_LINK_STATE_REVISION_1: u16 =
+    sizeof_through_field!(NDIS_LINK_STATE, AutoNegotiationFlags) as u16;
+pub const NDIS_SIZEOF_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1: u16 = sizeof_through_field!(
+    NDIS_MINIPORT_DRIVER_CHARACTERISTICS,
+    CancelOidRequestHandler
+) as u16;
+pub const NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1: u16 =
+    sizeof_through_field!(NET_BUFFER_LIST_POOL_PARAMETERS, DataSize) as u16;
+pub const NDIS_SIZEOF_NDIS_OPEN_PARAMETERS_REVISION_1: u16 =
+    sizeof_through_field!(NDIS_OPEN_PARAMETERS, FrameTypeArraySize) as u16;
+pub const NDIS_SIZEOF_OID_REQUEST_REVISION_1: u16 =
+    sizeof_through_field!(NDIS_OID_REQUEST, Reserved2) as u16;
+pub const NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1: u16 = sizeof_through_field!(
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
+    SendNetBufferListsCompleteHandler
+) as u16;
+pub const NDIS_SIZEOF_STATUS_INDICATION_REVISION_1: u16 =
+    sizeof_through_field!(NDIS_STATUS_INDICATION, NdisReserved) as u16;
