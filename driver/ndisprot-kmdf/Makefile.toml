@@ -8,16 +8,25 @@ TARGET_BASE_DIR = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}\\${CARGO_MAKE_RUST_TARGE
 # From https://github.com/microsoft/windows-drivers-rs/blob/15a3c50a08d83965ebbf11a8dc62e03a0c131e03/rust-driver-makefile.toml#L11-L12
 TARGET_DIR = { source = "${CARGO_MAKE_CARGO_PROFILE}", default_value = "${TARGET_BASE_DIR}\\${CARGO_MAKE_CARGO_PROFILE}", mapping = { "dev" = "${TARGET_BASE_DIR}\\debug" } }
 
+# Make `cc` use `clang-cl` if we're compiling with LTO
+CC = { value = "clang-cl", condition.env_not_set = [ "NO_LTO" ] }
+
 # Platform for executing tools
 Platform = "x86"
 # Load VS DevEnv (x86 since that's where inf2cat is)
 Wdk_WindowsSdkVerBinPath = { script = ['call "%VC_BUILD_DIR%" %Platform%', 'echo %WindowsSdkVerBinPath%\%Platform%'], depends_on = ["VC_BUILD_DIR", "Platform"] }
 Wdk_WindowsSdkVerToolPath = { script = ['call "%VC_BUILD_DIR%" %Platform%', 'echo %WindowsSdkDir%\Tools\%WindowsSDKVersion%\%Platform%'], depends_on = ["VC_BUILD_DIR", "Platform"] }
 
+[env.development]
+BUILD_RELEASE = ""
+
+[env.production]
+BUILD_RELEASE = "--release"
+
 [tasks.build]
-env = { "RUSTFLAGS" = "-Clinker-plugin-lto -Clinker=lld-link -Clink-arg=-fuse-ld=lld-link" }
+env = { "RUSTFLAGS" = { value = "-Clinker-plugin-lto -Clinker=lld-link -Clink-arg=-fuse-ld=lld-link", condition = { env_not_set = ["NO_LTO"] } } }
 # Specify the target triple so that -Cprefer-dynamic doesn't conflict with -Clinker-plugin-lto while building proc macros
-args = ["build", "--target", "${CARGO_MAKE_RUST_TARGET_TRIPLE}"]
+args = ["build", "--target", "${CARGO_MAKE_RUST_TARGET_TRIPLE}", "@@remove-empty(BUILD_RELEASE)"]
 
 [tasks.rename]
 dependencies = ["build"]

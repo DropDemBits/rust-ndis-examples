@@ -97,13 +97,6 @@ fn build_dir() -> PathBuf {
     )
 }
 
-fn src_dir() -> PathBuf {
-    PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR")
-            .expect("the environment variable CARGO_MANIFEST_DIR is undefined"),
-    )
-}
-
 fn generate() {
     // Tell Cargo to re-run this if src/wrapper.h or src/wrapper.c gets changed.
     println!("cargo:rerun-if-changed=src/wrapper.h");
@@ -114,7 +107,6 @@ fn generate() {
 
     // Get the build directory.
     let out_path = build_dir();
-    let in_dir = src_dir();
 
     // Collect binding information
     let bindgen = bindgen::Builder::default()
@@ -139,48 +131,15 @@ fn generate() {
         .blocklist_type("P?NDIS_STATUS");
 
     // Generate the wrappers
-    let obj_path = out_path.join("wrapper_bindings.obj");
-    let lib_path = out_path.join("wrapper_bindings.lib");
-
-    let clang_output = std::process::Command::new("clang-cl")
-        .arg("-flto=thin")
-        .arg("/O1")
-        .arg("/c")
-        .arg("/kernel")
-        .arg("/guard:cf")
-        .arg(format!("/Fo{}", obj_path.display()))
-        .arg(&in_dir.join("src").join("wrapper.c"))
-        .arg("/I")
-        .arg(&include_dir)
-        .arg("/I")
-        .arg(&out_path)
-        .arg("/FI")
-        .arg(&in_dir.join("src").join("wrapper.h"))
-        .output()
-        .unwrap();
-
-    if !clang_output.status.success() {
-        panic!(
-            "Could not compile object file:\n{}",
-            String::from_utf8_lossy(&clang_output.stderr)
-        );
-    }
-
-    // turn the obj into a static binary
-    let lib_output = std::process::Command::new("llvm-lib")
-        .arg(&obj_path)
-        .arg(format!("/OUT:{}", lib_path.display()))
-        .output()
-        .unwrap();
-
-    if !lib_output.status.success() {
-        panic!(
-            "Could not emit library file:\n{}",
-            String::from_utf8_lossy(&lib_output.stderr)
-        );
-    }
-
-    println!("cargo:rustc-link-search=native={}", out_path.display());
+    cc::Build::new()
+        .flag_if_supported("-flto=thin")
+        .opt_level(1)
+        .flag("/kernel")
+        .flag("/guard:cf")
+        .include(&include_dir)
+        .include(&out_path)
+        .file("src/wrapper.c")
+        .compile("wrapper_bindings");
 
     // Generate the bindings
     bindgen
