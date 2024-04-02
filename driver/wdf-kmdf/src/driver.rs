@@ -183,6 +183,21 @@ where
         Ref::clone_from_handle(self)
     }
 
+    /// Gets the global driver object.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn get() -> Wrapped<Self> {
+        // SAFETY: We can only ever call this before or after `WdfDriverCreate`
+        // executes.
+        let handle =
+            unsafe { raw::WdfGetDriver().expect("`Driver::create` should have returned already") };
+
+        // SAFETY: Context spaces can only be accessed through shared refs
+        // after creation, and the drop flag ensures that the context space is
+        // initialized once we access it.
+        unsafe { Self::wrap(handle) }
+    }
+
     unsafe extern "C" fn __dispatch_driver_device_add(
         driver: WDFDRIVER,
         device_init: PWDFDEVICE_INIT,

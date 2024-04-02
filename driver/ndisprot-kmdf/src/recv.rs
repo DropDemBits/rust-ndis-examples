@@ -276,25 +276,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
     let open_object = protocol_binding_context.open_context.clone_ref();
     let open_context = open_object.get_context();
 
-    let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
-        log::error!(
-            "receive_net_buffer_lists: ctx {protocol_binding_context:x?}: driver not loaded"
-        );
-        // no leak!!
-        if receive_flags.can_pend() {
-            // NDIS doesn't automatically reclaim ownership when we return,
-            // so we need to manually return the nbls.
-            unsafe {
-                windows_kernel_sys::NdisReturnNetBufferLists(
-                    open_context.binding_handle.0.load(),
-                    net_buffer_lists,
-                    return_flags.bits(),
-                )
-            };
-        }
-        return;
-    };
-    let driver = unsafe { Driver::<NdisProt>::wrap(driver) };
+    let driver = Driver::<NdisProt>::get();
     let globals = driver.get_context();
 
     if receive_flags.contains(ReceiveFlags::DISPATCH_LEVEL) {

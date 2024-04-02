@@ -137,9 +137,29 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     )
     .inspect_err(|err| error!("WdfDriverCreate failed with status {:#x?}", err.0))?;
 
-    // Register as a protocol driver
+    // Until we notify WDF that we're done initializing,
+    // all I/O requests are rejected.
     //
     // We do this seperately from the main driver context area initialization as
+    // potentially any of the EvtIo* could be called before we mark the driver
+    // context area as initialized, which we panic on.
+    //
+    // This isn't something that we've ever encountered before, but it's
+    // theoretically possible. To be on the safe side, we mark that we're done
+    // initialization here. A proper control device API needs to consider how to
+    // handle this situation nicely, and has the advantage of being able to
+    // integrate nicely into the driver initialization process as it's another WDF
+    // API.
+    // FIXME: Is this even possible?
+    unsafe {
+        wdf_kmdf::raw::WdfControlFinishInitializing(
+            driver.get_context().control_device.raw_handle(),
+        )
+    };
+
+    // Register as a protocol driver
+    //
+    // We also do this seperately from the main driver context area initialization as
     // unfortunately before `NdisRegisterProtocolDriver` returns, any of the protocol
     // callbacks can be called including `ProtocolPnPEventHandler`, which accesses
     // the driver context area. This ends up accessing the context area while it's
@@ -292,10 +312,6 @@ fn create_control_device(
             Some(&mut queue),
         )
     })?;
-
-    // Until we notify WDF that we're done initializing,
-    // all I/O requests are rejected.
-    unsafe { wdf_kmdf::raw::WdfControlFinishInitializing(control_device) };
 
     // Create a device object where an application to use NDIS devices
     //
@@ -1191,22 +1207,16 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
             //
             // Wait a max of 5 seconds to see if this is the case
 
-            let driver = unsafe { wdf_kmdf::raw::WdfGetDriver() }
-                .map(|driver| unsafe { wdf_kmdf::driver::Driver::<NdisProt>::wrap(driver) });
+            let driver = Driver::<NdisProt>::get();
 
-            if let Some(driver) = driver {
-                nt_status = match driver
-                    .get_context()
-                    .binds_complete
-                    .wait(Timeout::relative_ms(5_000))
-                {
-                    Ok(()) => STATUS::SUCCESS,
-                    Err(_) => STATUS::TIMEOUT,
-                };
-            } else {
-                // no open context to go off of, and would've timed out anyway
-                nt_status = STATUS::TIMEOUT;
-            }
+            nt_status = match driver
+                .get_context()
+                .binds_complete
+                .wait(Timeout::relative_ms(5_000))
+            {
+                Ok(()) => STATUS::SUCCESS,
+                Err(_) => STATUS::TIMEOUT,
+            };
 
             debug!("IoControl: BindWait returning {:#x?}", nt_status);
         }
@@ -1392,11 +1402,7 @@ fn open_device(
     device_name: &[u8],
     file_object: Ref<FileObject<FileObjectContext>>,
 ) -> Result<Ref<GeneralObject<OpenContext>>, Error> {
-    let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
-        // Driver not initialized yet
-        return Err(STATUS::UNSUCCESSFUL.into());
-    };
-    let driver = unsafe { wdf_kmdf::driver::Driver::<NdisProt>::wrap(driver) };
+    let driver = Driver::<NdisProt>::get();
     let globals = driver.get_context();
 
     let file_context = file_object.get_context();

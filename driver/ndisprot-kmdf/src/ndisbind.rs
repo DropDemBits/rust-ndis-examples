@@ -831,19 +831,14 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
         }
         NET_PNP_EVENT_CODE::NetEventBindsComplete => {
             // manifest a driver handle, since for binds complete we don't get a specific context
-            if let Some(driver) = unsafe { wdf_kmdf::raw::WdfGetDriver() } {
-                let driver = unsafe { Driver::<crate::NdisProt>::wrap(driver) };
+            let driver = Driver::<crate::NdisProt>::get();
 
-                let globals = driver.get_context();
-                globals.binds_complete.signal();
+            let globals = driver.get_context();
+            globals.binds_complete.signal();
 
-                // Note: we do not register an ExCallback right now, since we're only focused on getting NdisProt up
+            // Note: we do not register an ExCallback right now, since we're only focused on getting NdisProt up
 
-                status = STATUS::SUCCESS;
-            } else {
-                // Driver not initialized yet
-                status = STATUS::UNSUCCESSFUL;
-            };
+            status = STATUS::SUCCESS;
         }
         NET_PNP_EVENT_CODE::NetEventPause => {
             if let Some(binding_ctx) = protocol_binding_context {
@@ -1326,11 +1321,7 @@ pub(crate) fn query_binding(
     output_length: usize,
     bytes_returned: &mut usize,
 ) -> NDIS_STATUS {
-    let Some(driver) = (unsafe { wdf_kmdf::raw::WdfGetDriver() }) else {
-        // Driver not initialized yet
-        return STATUS::UNSUCCESSFUL.to_u32();
-    };
-    let driver = unsafe { Driver::<NdisProt>::wrap(driver) };
+    let driver = Driver::<NdisProt>::get();
     let globals = driver.get_context();
 
     let status = 'out: {
