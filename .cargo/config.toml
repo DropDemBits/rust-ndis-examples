@@ -1,13 +1,6 @@
-[build]
-# Needed because helix + rust-analyzer isn't reading the target configuration
-target = "x86_64-pc-windows-msvc"
-
 rustflags = [
   "--cfg", "windows_raw_dylib",
   "-C", "control-flow-guard=yes",
-  "-C", "linker-plugin-lto",
-  "-C", "linker=lld-link",
-  "-C", "link-arg=-fuse-ld=lld-link",
 ]
 
 [target.x86_64-pc-windows-msvc]

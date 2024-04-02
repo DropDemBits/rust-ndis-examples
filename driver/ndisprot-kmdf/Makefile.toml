@@ -4,8 +4,9 @@ VC_BUILD_DIR="C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\
 DRIVER_VERSION="*"
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 TARGET_ARCH = { source = "${CARGO_MAKE_RUST_TARGET_TRIPLE}", default_value = "unsupported", mapping = { "i686-pc-windows-msvc" = "x86", "x86_64-pc-windows-msvc" = "amd64", "aarch64-pc-windows-msvc" = "arm64" } }
+TARGET_BASE_DIR = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}\\${CARGO_MAKE_RUST_TARGET_TRIPLE}"
 # From https://github.com/microsoft/windows-drivers-rs/blob/15a3c50a08d83965ebbf11a8dc62e03a0c131e03/rust-driver-makefile.toml#L11-L12
-TARGET_DIR = { source = "${CARGO_MAKE_CARGO_PROFILE}", default_value = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}\\${CARGO_MAKE_CARGO_PROFILE}", mapping = { "dev" = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}\\debug" } }
+TARGET_DIR = { source = "${CARGO_MAKE_CARGO_PROFILE}", default_value = "${TARGET_BASE_DIR}\\${CARGO_MAKE_CARGO_PROFILE}", mapping = { "dev" = "${TARGET_BASE_DIR}\\debug" } }
 
 # Platform for executing tools
 Platform = "x86"
@@ -13,16 +14,14 @@ Platform = "x86"
 Wdk_WindowsSdkVerBinPath = { script = ['call "%VC_BUILD_DIR%" %Platform%', 'echo %WindowsSdkVerBinPath%\%Platform%'], depends_on = ["VC_BUILD_DIR", "Platform"] }
 Wdk_WindowsSdkVerToolPath = { script = ['call "%VC_BUILD_DIR%" %Platform%', 'echo %WindowsSdkDir%\Tools\%WindowsSDKVersion%\%Platform%'], depends_on = ["VC_BUILD_DIR", "Platform"] }
 
-[env.development]
-TARGET_PATH = "target\\debug"
-
-[env.production]
-TARGET_PATH = "target\\release"
-BUILD_RELEASE = "--release"
+[tasks.build]
+env = { "RUSTFLAGS" = "-Clinker-plugin-lto -Clinker=lld-link -Clink-arg=-fuse-ld=lld-link" }
+# Specify the target triple so that -Cprefer-dynamic doesn't conflict with -Clinker-plugin-lto while building proc macros
+args = ["build", "--target", "${CARGO_MAKE_RUST_TARGET_TRIPLE}"]
 
 [tasks.rename]
 dependencies = ["build"]
-cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/${TARGET_PATH}"
+cwd = "${TARGET_DIR}"
 script = '''
 if exist %CARGO_MAKE_CRATE_FS_NAME%.sys (
   del %CARGO_MAKE_CRATE_FS_NAME%.sys
@@ -38,8 +37,8 @@ script='if not exist dist\%CARGO_MAKE_CRATE_NAME% ( mkdir dist\%CARGO_MAKE_CRATE
 dependencies = ["make-dist", "rename"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
-copy %TARGET_PATH%\%CARGO_MAKE_CRATE_FS_NAME%.sys dist\%CARGO_MAKE_CRATE_NAME%\
-copy %TARGET_PATH%\%CARGO_MAKE_CRATE_FS_NAME%.pdb dist\%CARGO_MAKE_CRATE_NAME%\
+copy %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%.sys dist\%CARGO_MAKE_CRATE_NAME%\
+copy %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%.pdb dist\%CARGO_MAKE_CRATE_NAME%\
 '''
 
 [tasks.stampinf]
