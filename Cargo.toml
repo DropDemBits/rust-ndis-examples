@@ -28,6 +28,7 @@ windows-kernel-rs = { path = "driver/windows-kernel-rs" }
 vtable = { path = "libs/vtable" }
 
 bindgen = "0.69.4"
+bitflags = "2.3.3"
 cc = "1.0"
 static_assertions = "1.1.0"
 thiserror = "1.0.57"

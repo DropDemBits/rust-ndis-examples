@@ -1,4 +1,4 @@
-//! Helper utilities for making it easier to work with `NET_BUFFER_LIST`s and `NET_BUFFER`s
+//! Helper utilities for making it easier to work with `NET_BUFFER_LIST`s, `NET_BUFFER`s, and `MDL`s
 //!
 //! Based off of [ndis-driver-library](https://github.com/microsoft/ndis-driver-library).
 #![no_std]
@@ -12,9 +12,11 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod mdl;
 pub mod nb;
 pub mod nb_list;
 
+pub use mdl::{Mdl, MdlChain, MdlMappingFlags};
 pub use nb::{chain::NbChain, NetBuffer};
 pub use nb_list::{
     chain::NblChain, counted_queue::NblCountedQueue, queue::NblQueue, NetBufferList,

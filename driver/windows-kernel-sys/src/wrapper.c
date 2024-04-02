@@ -1,9 +1,16 @@
 #include "wrapper.h"
 
+
 ULONG wrapper_MmGetMdlByteCount(
-  PMDL Mdl
+  const MDL* Mdl
 ){
   return MmGetMdlByteCount(Mdl);
+}
+
+ULONG wrapper_MmGetMdlByteOffset(
+  const MDL* Mdl
+){
+  return MmGetMdlByteOffset(Mdl);
 }
 
 PVOID wrapper_MmGetSystemAddressForMdlSafe(
@@ -11,14 +18,6 @@ PVOID wrapper_MmGetSystemAddressForMdlSafe(
   ULONG Priority
 ) {
   return MmGetSystemAddressForMdlSafe(Mdl, Priority);
-}
-
-PNET_BUFFER wrapper_NET_BUFFER_LIST_FirstNb(PNET_BUFFER_LIST Nbl) {
-  return NET_BUFFER_LIST_FIRST_NB(Nbl);
-}
-
-PNET_BUFFER_LIST wrapper_NET_BUFFER_LIST_NextNbl(PNET_BUFFER_LIST Nbl) {
-  return NET_BUFFER_LIST_NEXT_NBL(Nbl);
 }
 
 VOID wrapper_NdisGetNextMdl(PMDL CurrentMdl, PMDL *NextMdl) {

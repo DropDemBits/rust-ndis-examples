@@ -3,7 +3,7 @@ use core::{marker::PhantomData, ptr::NonNull};
 
 use windows_kernel_sys::{NET_BUFFER, PMDL, PNET_BUFFER};
 
-use crate::NbChain;
+use crate::{MdlChain, NbChain};
 
 pub mod chain;
 
@@ -68,6 +68,39 @@ impl NetBuffer {
         // SAFETY: Having a `&self` transitively guarantees that all fields are
         // properly initialized.
         unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.MdlChain }
+    }
+
+    /// Mutable reference to the chain that maps a data buffer holding the network data.
+    pub fn mdl_chain_mut(&mut self) -> &mut MdlChain {
+        // SAFETY: Having a `&mut self` transitively guarantees that all fields are
+        // properly initialized.
+        let mdl_chain_field =
+            unsafe { core::ptr::addr_of_mut!(self.nb.__bindgen_anon_1.__bindgen_anon_1.MdlChain) };
+
+        // SAFETY: `mdl_chain_field` is a pointer to `self.[union
+        // projections].MdlChain` which is a `PMDL`, and the `Mdl` validity
+        // invariant asserted by having a `&mut self` ensures that all of the
+        // accessible `MDL`s are valid.
+        //
+        // We also have exclusive access over the `MdlChain` as we have a `&mut
+        // self`.
+        unsafe { MdlChain::from_raw_field_mut(mdl_chain_field) }
+    }
+
+    pub fn take_mdl_chain(&mut self) -> MdlChain {
+        // SAFETY: Having a `&mut self` transitively guarantees that all fields are
+        // properly initialized.
+        let mdl_chain_field = unsafe { &mut self.nb.__bindgen_anon_1.__bindgen_anon_1.MdlChain };
+        let head = core::mem::replace(mdl_chain_field, core::ptr::null_mut());
+
+        // SAFETY: `head` comes from `mdl_chain_field`, which is a pointer to
+        // `self.[union projections].MdlChain` which is a `PMDL`, and the `Mdl`
+        // validity invariant asserted by having a `&mut self` ensures that all
+        // of the accessible `MDL`s are valid.
+        //
+        // We also have exclusive access over the `MdlChain` as we have a `&mut
+        // self`.
+        unsafe { MdlChain::from_raw(head) }
     }
 
     /// The offset (in bytes) from the beginning of the `MDL` chain to

@@ -525,6 +525,7 @@ checksum = "24e0cc5e2c585acbd15c5ce911dff71e1f4d5313f43345873311c4f5efd741cc"
 name = "ndis-rs"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "static_assertions",
  "windows-kernel-sys",
 ]

@@ -125,20 +125,6 @@ pub const POOL_FLAG_OPTIONAL_END: POOL_FLAGS = 0x8000000000000000_u64;
 pub const NDIS_DEFAULT_PORT_NUMBER: NDIS_PORT_NUMBER = 0;
 
 impl NET_BUFFER_LIST {
-    pub unsafe fn first_nb(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER {
-        unsafe { NET_BUFFER_LIST_FirstNb(Nbl) }
-    }
-
-    pub unsafe fn next_nbl(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER_LIST {
-        unsafe { NET_BUFFER_LIST_NextNbl(Nbl) }
-    }
-
-    pub unsafe fn next_nbl_mut<'a>(Nbl: PNET_BUFFER_LIST) -> &'a mut PNET_BUFFER_LIST {
-        // Have to directly access the field this time, unless we generate
-        // another wrapper function returning the address to the field
-        unsafe { &mut (*Nbl).__bindgen_anon_1.__bindgen_anon_1.Next }
-    }
-
     pub unsafe fn info(Nbl: PNET_BUFFER_LIST, Id: NDIS_NET_BUFFER_LIST_INFO) -> *mut PVOID {
         unsafe { core::ptr::addr_of_mut!((*Nbl).NetBufferListInfo[Id.0 as usize]) }
     }
@@ -180,17 +166,17 @@ impl NET_BUFFER_LIST {
 
 #[link(name = "wrapper_bindings", kind = "static")]
 extern "C" {
+    /// ## Safety
+    ///
+    /// This assumes that the current thread owns `Mdl`, and thus is not thread-safe.  
     #[link_name = "wrapper_MmGetSystemAddressForMdlSafe"]
     pub fn MmGetSystemAddressForMdlSafe(Mdl: PMDL, Priority: ULONG) -> PVOID;
 
     #[link_name = "wrapper_MmGetMdlByteCount"]
-    pub fn MmGetMdlByteCount(Mdl: PMDL) -> ULONG;
+    pub fn MmGetMdlByteCount(Mdl: *const MDL) -> ULONG;
 
-    #[link_name = "wrapper_NET_BUFFER_LIST_FirstNb"]
-    pub fn NET_BUFFER_LIST_FirstNb(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER;
-
-    #[link_name = "wrapper_NET_BUFFER_LIST_NextNbl"]
-    pub fn NET_BUFFER_LIST_NextNbl(Nbl: PNET_BUFFER_LIST) -> PNET_BUFFER_LIST;
+    #[link_name = "wrapper_MmGetMdlByteOffset"]
+    pub fn MmGetMdlByteOffset(Mdl: *const MDL) -> ULONG;
 
     #[link_name = "wrapper_NdisGetNextMdl"]
     pub fn NdisGetNextMdl(CurrentMdl: PMDL, NextMdl: *mut PMDL) -> PMDL;

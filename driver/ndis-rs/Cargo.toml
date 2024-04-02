@@ -7,5 +7,6 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-windows-kernel-sys.workspace = true
+bitflags.workspace = true
 static_assertions.workspace = true
+windows-kernel-sys.workspace = true
