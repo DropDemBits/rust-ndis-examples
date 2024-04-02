@@ -1,6 +1,6 @@
 use core::{mem::MaybeUninit, pin::Pin, sync::atomic::Ordering};
 
-use ndis_rs::{NblChain, NetBufferList};
+use ndis_rs::{Mdl, MdlMappingFlags, NblChain, NetBufferList};
 use wdf_kmdf::{
     driver::Driver,
     file_object::FileObject,
@@ -13,7 +13,7 @@ use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{
     result::STATUS, Error, MdlMappingNoExecute, MM_PAGE_PRIORITY, NDIS_HANDLE, NDIS_PORT_NUMBER,
-    NET_DEVICE_POWER_STATE, PMDL, PNET_BUFFER_LIST, PUCHAR, PVOID, ULONG,
+    NET_DEVICE_POWER_STATE, PMDL, PNET_BUFFER_LIST, PVOID, UCHAR, ULONG,
 };
 
 use crate::{
@@ -158,19 +158,20 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
                 break 'err Err::<_, Error>(STATUS::UNSUCCESSFUL.into());
             }
 
-            let mut dst = unsafe {
-                windows_kernel_sys::MmGetSystemAddressForMdlSafe(
-                    mdl,
-                    MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-                )
+            let Some(mut mdl) = (unsafe { Mdl::ptr_cast_from_raw(mdl) }) else {
+                // Should be valid since the `nt_status` call succeeded
+                break 'err Err::<_, Error>(STATUS::UNSUCCESSFUL.into());
             };
-            if dst.is_null() {
+            let mdl = unsafe { mdl.as_mut() };
+
+            let Some(mut dst) =
+                mdl.map_mdl(MdlMappingFlags::NormalPagePriority | MdlMappingFlags::NoExecute)
+            else {
                 log::error!(
                     "read: MmGetSystemAddress failed for Request {request:#x?}, MDL {mdl:#x?}"
                 );
-                // nt_status = Err(STATUS::INSUFFICIENT_RESOURCES.into());
                 break 'err Err(STATUS::INSUFFICIENT_RESOURCES.into());
-            }
+            };
 
             // Get the first queued receive packet
             let Some(recv_nbl_entry) = recv_queue.as_mut().dequeue() else {
@@ -184,41 +185,36 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
                 .first_mut()
                 .expect("nbl should have at least one nb");
 
-            // assert!(!recv_nbl.is_null());
-            // assert!(!first_nb.is_null());
-            let mut bytes_remaining = unsafe { windows_kernel_sys::MmGetMdlByteCount(mdl) };
+            let mut bytes_remaining = mdl.byte_count();
             let total_length = bytes_remaining;
 
-            mdl = first_nb.mdl_chain();
+            let mut mdl_chain = first_nb.mdl_chain_mut();
+            let mut mdl_chain_iter = mdl_chain.iter_mut();
 
             // Copy the data in the received packet into the buffer provided by the client.
             // if there's more data in the receive packet than can be written into the buffer,
             // we copy as much as we can, and then discard the remaining data. The request
             // completes even if we did a partial copy.
 
-            while bytes_remaining != 0 && !mdl.is_null() {
-                let mut src = core::ptr::null_mut();
-                let mut bytes_available = 0;
-                unsafe {
-                    windows_kernel_sys::NdisQueryMdl(
-                        mdl,
-                        &mut src,
-                        &mut bytes_available,
-                        MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-                    )
-                };
-                if src.is_null() {
+            while bytes_remaining != 0
+                && let Some(mdl) = mdl_chain_iter.next()
+            {
+                let Some(mut src) =
+                    mdl.map_mdl(MdlMappingFlags::NormalPagePriority | MdlMappingFlags::NoExecute)
+                else {
                     log::error!(
-                    "service_reads: open {open_object:#x?}, NdisQueryMdl failed for MDL {mdl:#x?}"
-                );
+                        "service_reads: open {open_object:#x?}, NdisQueryMdl failed for MDL {mdl:#x?}"
+                    );
                     break;
-                }
+                };
+                let mut bytes_available = mdl.byte_count();
 
                 if bytes_available != 0 {
                     let bytes_to_copy = bytes_available.min(bytes_remaining);
 
                     unsafe {
                         dst.cast::<u8>()
+                            .as_ptr()
                             .copy_from_nonoverlapping(src.cast(), bytes_to_copy as usize)
                     };
                     bytes_remaining -= bytes_to_copy;
@@ -226,8 +222,6 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
                         dst = dst.byte_add(bytes_to_copy as usize);
                     }
                 }
-
-                unsafe { windows_kernel_sys::NdisGetNextMdl(mdl, &mut mdl) };
             }
 
             // Complete the request
@@ -460,11 +454,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
                     continue;
                 }
             };
-
-            let copy_mdl_chain = {
-                let first_nb = nbl.nb_chain().first().unwrap();
-                first_nb.mdl_chain()
-            };
+            let copy_mdl_chain = copy_nbl.mdl_chain();
 
             // Copy the data to the new nbl
             let nt_status =
@@ -654,34 +644,27 @@ fn free_receive_net_buffer_list(
                 .nb_chain_mut()
                 .first_mut()
                 .expect("locally allocated nbl should have 1 nb");
-            let mdl = first_nb.mdl_chain();
             let total_length = first_nb.data_length();
             let layout = core::alloc::Layout::from_size_align(total_length, 1).expect("whoops");
 
-            assert!(!mdl.is_null());
-
-            let mut copy_data = core::ptr::null_mut();
-            let buffer_length = unsafe {
-                let mut length = 0;
-                windows_kernel_sys::NdisQueryMdl(
-                    mdl,
-                    &mut copy_data,
-                    &mut length,
-                    MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-                );
-                length as usize
-            };
-            let copy_data = copy_data.cast::<PUCHAR>();
+            let mdl = first_nb
+                .take_mdl_chain()
+                .pop_front()
+                .expect("locally allocated nb should have 1 mdl");
+            let copy_data = mdl
+                .map_mdl(MdlMappingFlags::NormalPagePriority | MdlMappingFlags::NoExecute)
+                .expect("data should've been allocated in the non-page pool");
+            let buffer_length = mdl.byte_count() as usize;
+            let copy_data = copy_data.cast::<UCHAR>();
 
             assert_eq!(buffer_length, total_length);
-            assert!(!copy_data.is_null()); // we would have allocated non-paged pool
 
             // dealloc it!
             unsafe {
                 windows_kernel_sys::NdisFreeNetBufferList(NetBufferList::as_ptr(net_buffer_list))
             };
-            unsafe { windows_kernel_sys::NdisFreeMdl(mdl) };
-            unsafe { alloc::alloc::dealloc(copy_data.cast(), layout) };
+            unsafe { windows_kernel_sys::NdisFreeMdl(Mdl::as_ptr(mdl)) };
+            unsafe { alloc::alloc::dealloc(copy_data.cast().as_ptr(), layout) };
             break 'out;
         } else {
             // The NetBufferList should be returned back to the miniport
