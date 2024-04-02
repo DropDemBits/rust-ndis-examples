@@ -1,7 +1,8 @@
 rustflags = [
   "--cfg", "windows_raw_dylib",
   "-C", "control-flow-guard=yes",
+  "-C", "linker-flavor=msvc-lld"
 ]
 
 [target.x86_64-pc-windows-msvc]
-linker = "lld-link.exe"
+linker = "rust-lld"

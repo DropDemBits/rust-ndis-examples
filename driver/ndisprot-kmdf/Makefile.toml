@@ -8,8 +8,11 @@ TARGET_BASE_DIR = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}\\${CARGO_MAKE_RUST_TARGE
 # From https://github.com/microsoft/windows-drivers-rs/blob/15a3c50a08d83965ebbf11a8dc62e03a0c131e03/rust-driver-makefile.toml#L11-L12
 TARGET_DIR = { source = "${CARGO_MAKE_CARGO_PROFILE}", default_value = "${TARGET_BASE_DIR}\\${CARGO_MAKE_CARGO_PROFILE}", mapping = { "dev" = "${TARGET_BASE_DIR}\\debug" } }
 
-# Make `cc` use `clang-cl` if we're compiling with LTO
+# Make `cc` use `clang-cl` and `llvm-lib` if we're compiling with LTO
 CC = { value = "clang-cl", condition.env_not_set = [ "NO_LTO" ] }
+AR = { value = "llvm-lib", condition.env_not_set = [ "NO_LTO" ] }
+# Also set CFLAGS to use ThinLTO
+CFLAGS = { value = "/clang:-flto=thin", condition.env_not_set = [ "NO_LTO" ] }
 
 # Platform for executing tools
 Platform = "x86"

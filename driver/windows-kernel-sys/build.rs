@@ -132,7 +132,6 @@ fn generate() {
 
     // Generate the wrappers
     cc::Build::new()
-        .flag_if_supported("-flto=thin")
         .opt_level(1)
         .flag("/kernel")
         .flag("/guard:cf")
