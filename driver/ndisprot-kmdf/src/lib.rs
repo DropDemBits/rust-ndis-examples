@@ -137,29 +137,9 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
     )
     .inspect_err(|err| error!("WdfDriverCreate failed with status {:#x?}", err.0))?;
 
-    // Until we notify WDF that we're done initializing,
-    // all I/O requests are rejected.
-    //
-    // We do this seperately from the main driver context area initialization as
-    // potentially any of the EvtIo* could be called before we mark the driver
-    // context area as initialized, which we panic on.
-    //
-    // This isn't something that we've ever encountered before, but it's
-    // theoretically possible. To be on the safe side, we mark that we're done
-    // initialization here. A proper control device API needs to consider how to
-    // handle this situation nicely, and has the advantage of being able to
-    // integrate nicely into the driver initialization process as it's another WDF
-    // API.
-    // FIXME: Is this even possible?
-    unsafe {
-        wdf_kmdf::raw::WdfControlFinishInitializing(
-            driver.get_context().control_device.raw_handle(),
-        )
-    };
-
     // Register as a protocol driver
     //
-    // We also do this seperately from the main driver context area initialization as
+    // We do this seperately from the main driver context area initialization as
     // unfortunately before `NdisRegisterProtocolDriver` returns, any of the protocol
     // callbacks can be called including `ProtocolPnPEventHandler`, which accesses
     // the driver context area. This ends up accessing the context area while it's
@@ -312,6 +292,15 @@ fn create_control_device(
             Some(&mut queue),
         )
     })?;
+
+    // Until we notify WDF that we're done initializing, all I/O requests are
+    // rejected.
+    //
+    // Note that we won't actually get any I/O requests until we've returned from
+    // `DriverEntry`, see "When are IRPs sent to a device after calling
+    // `WdfControlFinishInitializing`/ clearing `DO_DEVICE_INITIALIZING`?" in the
+    // notes for more details.
+    unsafe { wdf_kmdf::raw::WdfControlFinishInitializing(control_device) };
 
     // Create a device object where an application to use NDIS devices
     //

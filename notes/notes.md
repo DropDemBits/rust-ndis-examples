@@ -253,6 +253,7 @@ Info on the Retpoline components of the DVRT: <https://denuvosoftwaresolutions.g
 #[repr(C)]
 struct RetpolineData {
 	magic: [u8; 12], // b"RetpolineV1\0",
+	// There may be zero or more blobs
 	blobs: RetpolineBlob,
 }
 
@@ -262,3 +263,38 @@ struct RetpolineBlob {
 	blob: [u8; size - 4],
 }
 ```
+
+## When are IRPs sent to a device after calling `WdfControlFinishInitializing`/ clearing `DO_DEVICE_INITIALIZING`?
+
+### For Control devices
+Control devices tend to be created in `DriverEntry` ([CtlDeviceFinishInitDeviceAdd]) or sometimes even `AddDevice` ([CtlDeviceFinishInitDeviceAdd]).
+
+Regarding the former case, it seems like the driver doesn't get to do any IO processing if it returns an error status. From <https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/driverentry-return-values>:
+
+> If a **DriverEntry** routine returns an NTSTATUS value that is not a success or informational value, such as STATUS_SUCCESS, the driver for that **DriverEntry** routine is not loaded.
+
+This also sorta implies that we'll never get IO requests forwarded to us while we're still in `DriverEntry`, since driver initialization is an atomic operation (i.e. it either passes and successfully loads, or fails and gets unloaded).
+
+An interesting note is that for any device object created in `DriverEntry`, `DO_DEVICE_INITIALIZING` automatically gets cleared? From <https://www.codeproject.com/articles/9504/driver-development-part-1-introduction-to-drivers>:
+
+> The “`DO_DEVICE_INITIALIZING`” tells the I/O Manager that the device is being initialized and not to send any I/O requests to the driver. For devices created in the context of the “`DriverEntry`”, this is not needed since the I/O Manager will clear this flag once the “`DriverEntry`” is done. However, if you create a device in any function outside of the `DriverEntry`, you need to manually clear this flag for any device you create with `IoCreateDevice`. This flag is actually set by the `IoCreateDevice` function. We cleared it here just for fun even though we weren’t required to.
+
+While it doesn't state it explicitly, there is mentions that `DO_DEVICE_INITIALIZING` must be cleared in function & filter drivers, see <https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/initializing-a-device-object>. It also explains why the `ndisprot` non-KMDF example doesn't clear `DO_DEVICE_INITIALIZING`, since it's not a function or filter device object, and thus doesn't require clearing `DO_DEVICE_INITIALIZING`.
+
+Generally it seems like a bad idea to create control devices outside of `AddDevice` or `DriverEntry`, as they're owned by the framework and thus will only be deleted upon driver unload. If it's created during an IOCTL, that can cause a memory leak, which is bad™. Thus, we should never be in a state where we mark the device as finishing initialization and mark the queues as ready to start up \[citation needed\], but we haven't marked the context area as being uninitialized.
+### For `AddDevice` devices
+
+According to <https://learn.microsoft.com/en-ca/windows-hardware/drivers/wdf/porting-adddevice-to-evtdriverdeviceadd>:
+
+> A framework-based driver should set up the I/O queues and create the interrupt object in the [_EvtDriverDeviceAdd_](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdriver/nc-wdfdriver-evt_wdf_driver_device_add) callback, immediately after creating the device object. The framework connects the interrupt object and starts the queues at the appropriate time later, during start-device processing.
+
+So queues only start accepting requests after [EvtDriverDeviceAdd] is finished calling, and thus after the context space is initialized.
+
+## For other devices
+
+WDF clears `DO_DEVICE_INITIALIZING` for PDOs, but not FDOs, CDOs, or filter DOs? For FDOs & filter DOs, they can either be cleared inside of [EvtDriverDeviceAdd], or after returning, cleared by WDF.
+
+[CtlDeviceFinishInitDeviceAdd]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDeviceAdd
+[EvtDriverDeviceAdd]: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfdriver/nc-wdfdriver-evt_wdf_driver_device_add
+[CtlDeviceFinishInitDrEntry]: https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/kmdf-CtlDeviceFinishInitDrEntry
+[DriverEntry]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/driverentry-for-kmdf-drivers
