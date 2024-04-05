@@ -1,0 +1,14 @@
+[package]
+name = "ra-check-hack"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# All of the drivers that can be checked
+# This is just so that we enable std when we're doing a plain `cargo check`
+ndisprot-kmdf = { path="../ndisprot-kmdf", features = ["std"] }
+mux = { path="../mux", features = ["std"]  }

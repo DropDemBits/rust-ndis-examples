@@ -733,8 +733,7 @@ unsafe extern "system" fn DriverEntry(
 #[no_mangle]
 pub static _fltused: i32 = 0;
 
-#[cfg(not(any(test, std)))]
-#[panic_handler]
+#[cfg_attr(not(any(test, feature = "std")), panic_handler)]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     windows_kernel_rs::__handle_panic(info);
 }

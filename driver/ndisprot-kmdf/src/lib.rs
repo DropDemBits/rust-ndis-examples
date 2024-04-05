@@ -1593,8 +1593,7 @@ fn ndis_status_to_nt_status(status: NDIS_STATUS) -> Error {
 #[no_mangle]
 pub static _fltused: i32 = 0;
 
-#[cfg(not(test))]
-#[panic_handler]
+#[cfg_attr(not(any(test, feature = "std")), panic_handler)]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     windows_kernel_rs::__handle_panic(info);
 }
