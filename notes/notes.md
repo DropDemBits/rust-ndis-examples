@@ -248,22 +248,70 @@ Overview of Spectre v2 Mitigation: <https://techcommunity.microsoft.com/t5/windo
 Info on the Retpoline components of the DVRT: <https://denuvosoftwaresolutions.github.io/DVRT/dvrt.html>
 
 ### `.retplne` contents
+Note that the section is marked `IMAGE_SCN_LNK_INFO` (0x200)
 
 ```rust
 #[repr(C)]
 struct RetpolineData {
 	magic: [u8; 12], // b"RetpolineV1\0",
-	// There may be zero or more blobs
-	blobs: RetpolineBlob,
+	// There may be zero or more reloc grooups
+	relocs: [RetpolineReloc; 0..],
 }
 
 #[repr(C)]
-struct RetpolineBlob {
+struct RetpolineReloc {
+	// Size of the entire reloc entry
 	size: u32,
-	blob: [u8; size - 4],
+	// Which section are these relocs targeting?
+	section_idx: u32,
+	entries: [RetpolineEntry; (size - 8) / 8],
+}
+
+#[repr(C)]
+struct RetpolineEntry {
+	// What kind of entry this is?
+	kind: u32,
+	// Byte offset in the section
+	offset: u32,
 }
 ```
 
+where kind can be one of:
+```
+0x00: Reserved?
+0x01: Reserved?
+0x02: IAT jmp
+0x03: IAT call
+0x04: Indirect jmp
+0x05: Indirect call
+0x06: Indirect REX.w jmp?
+0x07: Indirect REX.w call?
+0x08: Indirect CFG jmp
+0x09: Indirect CFG call
+0x0A: Indirect CFG REX.w jmp?
+0x0B: Indirect CFG REX.w call?
+0x0C: Reserved?
+0x0D: Reserved?
+0x0E: Reserved?
+0x0F: Reserved?
+0x10: SwitchTable rax?
+0x11: SwitchTable rcx
+0x12: SwitchTable rdx?
+0x13: SwitchTable rbx?
+0x14: SwitchTable rsp?
+0x15: SwitchTable rbp?
+0x16: SwitchTable rsi?
+0x17: SwitchTable rdi?
+0x18: SwitchTable r8?
+0x19: SwitchTable r9?
+0x1A: SwitchTable r10?
+0x1B: SwitchTable r11?
+0x1C: SwitchTable r12?
+0x1D: SwitchTable r13?
+0x1E: SwitchTable r14?
+0x1F: SwitchTable r15?
+```
+Note: not tested against the real fixup process, and everything is speculatively named based on the final Retpoline section generation.
 ## When are IRPs sent to a device after calling `WdfControlFinishInitializing`/ clearing `DO_DEVICE_INITIALIZING`?
 
 ### For Control devices
