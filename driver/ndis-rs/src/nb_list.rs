@@ -2,7 +2,9 @@
 
 use core::ptr::NonNull;
 
-use windows_kernel_sys::{NDIS_NET_BUFFER_LIST_INFO, NET_BUFFER_LIST, PNET_BUFFER_LIST, PVOID};
+use windows_kernel_sys::{
+    NDIS_HANDLE, NDIS_NET_BUFFER_LIST_INFO, NET_BUFFER_LIST, PNET_BUFFER_LIST, PVOID,
+};
 
 use crate::NbChain;
 
@@ -85,6 +87,16 @@ impl NetBufferList {
         // We also have exclusive access over the `NbChain` as we have a `&mut
         // self`.
         unsafe { NbChain::from_raw_field_mut(first_nb_field) }
+    }
+
+    /// Handle which originally created this `NetBufferList`
+    pub fn source_handle(&self) -> NDIS_HANDLE {
+        self.nbl.SourceHandle
+    }
+
+    /// A mutable reference to the handle which originally created this `NetBufferList`
+    pub fn source_handle_mut(&mut self) -> &mut NDIS_HANDLE {
+        &mut self.nbl.SourceHandle
     }
 
     // FIXME: reserved flag wrapper structs?

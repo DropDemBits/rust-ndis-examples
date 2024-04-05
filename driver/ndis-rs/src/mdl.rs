@@ -259,6 +259,7 @@ impl MdlChain {
     pub fn is_empty(&self) -> bool {
         self.head.is_none()
     }
+
     /// Gets the first element of the chain.
     ///
     /// Completes in O(1) time.
@@ -298,6 +299,13 @@ impl MdlChain {
     /// Completes in O(n) time.
     pub fn last_mut(&mut self) -> Option<&mut Mdl> {
         self.iter_mut().last()
+    }
+
+    /// Computes the length of the chain.
+    ///
+    /// Completes in O(n) time.
+    pub fn len(&self) -> usize {
+        self.iter().count()
     }
 
     /// Pushes a [`Mdl`] at the front of the chain.

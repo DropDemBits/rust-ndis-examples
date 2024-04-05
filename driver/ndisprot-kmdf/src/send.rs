@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use ndis_rs::{NblChain, NetBufferList};
+use ndis_rs::{Mdl, MdlMappingFlags, NblChain, NetBufferList};
 use wdf_kmdf::{
     handle::{HandleWrapper, HasContext, Ref, WithContext},
     object::GeneralObject,
@@ -10,8 +10,7 @@ use wdf_kmdf::{
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{
-    result::STATUS, Error, MdlMappingNoExecute, MM_PAGE_PRIORITY, MODE, NDIS_HANDLE,
-    NET_BUFFER_LIST, PNET_BUFFER_LIST, ULONG,
+    result::STATUS, Error, MODE, NDIS_HANDLE, NET_BUFFER_LIST, PNET_BUFFER_LIST, ULONG,
 };
 
 use crate::{
@@ -21,15 +20,15 @@ use crate::{
 
 /// `ProtocolReserved` in sent packets. We save a handle to the io request
 /// which generated the send.
-///
+#[repr(C)]
 pub(crate) struct NprotSendNblRsvd {
     request: WithContext<FileRequest<FileObjectContext>, RequestContext>,
+    /// Which open object this is bound to
+    _open_object: Ref<GeneralObject<OpenContext>>,
     /// Used to determine when to free the packet back to its pool.
     /// It is used to synchronize between a thread completing a send and a thread attempting
     /// to cancel a send.
     ref_count: AtomicU32,
-    /// Which open object this is bound to
-    _open_object: Ref<GeneralObject<OpenContext>>,
 }
 
 impl NprotSendNblRsvd {
@@ -140,22 +139,19 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
             log::error!("write: WdfRequestRetrieveInputWdmMdl failed {err:x?}");
             break 'out;
         }
+        let mdl = unsafe { Mdl::ptr_cast_from_raw(mdl).unwrap_unchecked().as_mut() };
 
         // Try to get a virtual address for the MDL
-        let eth_header = unsafe {
-            windows_kernel_sys::MmGetSystemAddressForMdlSafe(
-                mdl,
-                MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-            )
-        };
-        if eth_header.is_null() {
+        let Some(eth_header) =
+            mdl.map_mdl(MdlMappingFlags::NormalPagePriority | MdlMappingFlags::NoExecute)
+        else {
             log::error!("write: MmGetSystemAddr failed for Request {Request:x?}, MDL {mdl:x?}");
             nt_status = Err(STATUS::INSUFFICIENT_RESOURCES.into());
             break 'out;
-        }
+        };
 
         // Sanity-check the length
-        let data_length = unsafe { windows_kernel_sys::MmGetMdlByteCount(mdl) } as usize;
+        let data_length = mdl.byte_count() as usize;
         if data_length < core::mem::size_of::<EthHeader>() {
             log::warn!("write: too small to be a valid packet ({data_length} bytes)");
             nt_status = Err(STATUS::BUFFER_TOO_SMALL.into());
@@ -203,24 +199,24 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
         }
 
         assert!(!open_context.send_nbl_pool.0.is_null());
-        let nbl = unsafe {
+        let Some(mut nbl) = NetBufferList::ptr_cast_from_raw(unsafe {
             windows_kernel_sys::NdisAllocateNetBufferAndNetBufferList(
                 open_context.send_nbl_pool.0,
                 // Request control offset delta
                 core::mem::size_of::<NprotSendNblRsvd>() as u16,
                 // backfill size
                 0,
-                mdl,
+                Mdl::as_ptr(mdl),
                 // data offset
                 0,
                 data_length as u64,
             )
-        };
-        if nbl.is_null() {
+        }) else {
             log::error!("write: open {open_object:x?}, failed to alloc send net buffer list");
             nt_status = Err(STATUS::INSUFFICIENT_RESOURCES.into());
             break 'out;
-        }
+        };
+        let nbl = unsafe { nbl.as_mut() };
         open_context
             .pended_send_count
             .fetch_add(1, Ordering::Relaxed);
@@ -235,7 +231,7 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
         // logic. An actual driver would likely use `WdfRequestMarkCancelableEx` to
         // do this logic.
         unsafe {
-            NprotSendNblRsvd::init_send_nbl(nbl, Request, send_open_object);
+            NprotSendNblRsvd::init_send_nbl(nbl.as_ptr(), Request, send_open_object);
         }
 
         // We create a cancel id on each send NBL (which gets associated with a
@@ -247,20 +243,27 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
         // but an actual driver might use `WdfRequestMarkCancelableEx` to implement
         // it.
         let cancel_id = open_context.driver.get_context().cancel_id_gen.next();
-        NET_BUFFER_LIST::set_cancel_id(nbl, cancel_id);
+        nbl.set_cancel_id(cancel_id);
 
         drop(inner);
 
         nt_status = Err(STATUS::PENDING.into());
 
-        unsafe { (*nbl).SourceHandle = open_context.binding_handle.0.load() };
-        assert!((*mdl).Next.is_null(), "should only be one mdl fragment");
+        *nbl.source_handle_mut() = open_context.binding_handle.0.load();
+
+        assert_eq!(
+            nbl.nb_chain_mut()
+                .first_mut()
+                .map(|nb| nb.mdl_chain_mut().len()),
+            Some(1),
+            "should only be one mdl fragment"
+        );
 
         let send_flags = windows_kernel_sys::NDIS_SEND_FLAGS_CHECK_FOR_LOOPBACK;
         unsafe {
             windows_kernel_sys::NdisSendNetBufferLists(
                 open_context.binding_handle.0.load(),
-                nbl,
+                NetBufferList::as_ptr(nbl),
                 windows_kernel_sys::NDIS_DEFAULT_PORT_NUMBER,
                 send_flags,
             );
