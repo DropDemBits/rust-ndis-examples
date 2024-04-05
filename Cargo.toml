@@ -33,6 +33,7 @@ cc = "1.0"
 static_assertions = "1.1.0"
 thiserror = "1.0.57"
 windows-registry = "0.1.0"
+windows = "0.54.0"
 
 [profile.dev]
 panic = "abort"

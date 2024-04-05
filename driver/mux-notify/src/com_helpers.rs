@@ -1,19 +1,15 @@
 //! Helpers for working with COM Servers.
 //! Parts borrowed from `com-rs` since `windows-rs` doesn't have a way of covering most of the things.
-use std::{ffi::CString, marker::PhantomData, ptr::NonNull};
+use std::{marker::PhantomData, ptr::NonNull};
 
 use windows::{
-    core::{implement, Error, IUnknown, Interface, Result, GUID, HRESULT, PCSTR},
+    core::{implement, Error, IUnknown, Interface, Result, GUID, HRESULT},
     Win32::{
         Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOTIMPL, E_POINTER, HINSTANCE},
         System::{
             Com::{IClassFactory, IClassFactory_Impl},
             LibraryLoader::GetModuleFileNameA,
             Ole::SELFREG_E_CLASS,
-            Registry::{
-                RegCloseKey, RegCreateKeyExA, RegDeleteKeyA, RegSetValueExA, HKEY,
-                HKEY_CLASSES_ROOT, KEY_ALL_ACCESS, REG_OPTION_NON_VOLATILE, REG_SZ,
-            },
         },
     },
 };
@@ -77,18 +73,18 @@ where
 
 #[doc(hidden)]
 pub struct RegistryKeyInfo {
-    key_path: CString,
-    key_value_name: CString,
-    key_value_data: CString,
+    key_path: String,
+    key_value_name: String,
+    key_value_data: String,
 }
 
 #[doc(hidden)]
 impl RegistryKeyInfo {
     pub fn new(key_path: &str, key_value_name: &str, key_value_data: &str) -> RegistryKeyInfo {
         RegistryKeyInfo {
-            key_path: CString::new(key_path).unwrap(),
-            key_value_name: CString::new(key_value_name).unwrap(),
-            key_value_data: CString::new(key_value_data).unwrap(),
+            key_path: key_path.into(),
+            key_value_name: key_value_name.into(),
+            key_value_data: key_value_data.into(),
         }
     }
 }
@@ -177,50 +173,12 @@ fn unregister_keys(keys_to_remove: &[RegistryKeyInfo]) -> Result<()> {
 }
 
 fn add_class_key(key_info: &RegistryKeyInfo) -> Result<()> {
-    let key = create_class_key(key_info)?;
-    let key = set_class_key(key, key_info)?;
-    unsafe { RegCloseKey(key) }
-}
-
-fn set_class_key(key: HKEY, key_info: &RegistryKeyInfo) -> Result<HKEY> {
-    unsafe {
-        RegSetValueExA(
-            key,
-            PCSTR::from_raw(key_info.key_value_name.as_ptr().cast()),
-            0,
-            REG_SZ,
-            Some(key_info.key_value_data.to_bytes_with_nul()),
-        )
-        .map(|_| key)
-    }
+    let key = windows_registry::CLASSES_ROOT.create(&key_info.key_path)?;
+    key.set_string(&key_info.key_value_name, &key_info.key_value_data)
 }
 
 fn remove_class_key(key_info: &RegistryKeyInfo) -> Result<()> {
-    unsafe {
-        RegDeleteKeyA(
-            HKEY_CLASSES_ROOT,
-            PCSTR::from_raw(key_info.key_path.as_ptr().cast()),
-        )
-    }
-}
-
-fn create_class_key(key_info: &RegistryKeyInfo) -> Result<HKEY> {
-    let mut hk_result = HKEY::default();
-
-    unsafe {
-        RegCreateKeyExA(
-            HKEY_CLASSES_ROOT,
-            PCSTR::from_raw(key_info.key_path.as_ptr().cast()),
-            0,
-            None,
-            REG_OPTION_NON_VOLATILE,
-            KEY_ALL_ACCESS,
-            None,
-            &mut hk_result,
-            None,
-        )
-        .map(|_| hk_result)
-    }
+    windows_registry::CLASSES_ROOT.remove_tree(&key_info.key_path)
 }
 
 #[macro_export]
