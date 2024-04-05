@@ -188,7 +188,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
             let mut bytes_remaining = mdl.byte_count();
             let total_length = bytes_remaining;
 
-            let mut mdl_chain = first_nb.mdl_chain_mut();
+            let mdl_chain = first_nb.mdl_chain_mut();
             let mut mdl_chain_iter = mdl_chain.iter_mut();
 
             // Copy the data in the received packet into the buffer provided by the client.
@@ -199,7 +199,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
             while bytes_remaining != 0
                 && let Some(mdl) = mdl_chain_iter.next()
             {
-                let Some(mut src) =
+                let Some(src) =
                     mdl.map_mdl(MdlMappingFlags::NormalPagePriority | MdlMappingFlags::NoExecute)
                 else {
                     log::error!(
@@ -207,7 +207,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
                     );
                     break;
                 };
-                let mut bytes_available = mdl.byte_count();
+                let bytes_available = mdl.byte_count();
 
                 if bytes_available != 0 {
                     let bytes_to_copy = bytes_available.min(bytes_remaining);
@@ -215,7 +215,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
                     unsafe {
                         dst.cast::<u8>()
                             .as_ptr()
-                            .copy_from_nonoverlapping(src.cast(), bytes_to_copy as usize)
+                            .copy_from_nonoverlapping(src.as_ptr().cast(), bytes_to_copy as usize)
                     };
                     bytes_remaining -= bytes_to_copy;
                     unsafe {
@@ -436,7 +436,11 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
                     continue;
                 }
             };
-            let copy_mdl_chain = copy_nbl.mdl_chain();
+            let Some(copy_mdl_chain) = copy_nbl.nb_chain_mut().first_mut().map(|nb| nb.mdl_chain())
+            else {
+                log::error!("receive_net_buffer_list: open {open_object:x?}, {copy_nbl:x?} is missing first net buffer");
+                continue;
+            };
 
             // Copy the data to the new nbl
             let nt_status =
