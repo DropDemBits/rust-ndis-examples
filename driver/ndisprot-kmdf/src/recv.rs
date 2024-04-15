@@ -12,8 +12,8 @@ use wdf_kmdf::{
 use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{
-    result::STATUS, Error, MdlMappingNoExecute, MM_PAGE_PRIORITY, NDIS_HANDLE, NDIS_PORT_NUMBER,
-    NET_DEVICE_POWER_STATE, PNET_BUFFER_LIST, PVOID, UCHAR, ULONG,
+    result::STATUS, Error, NDIS_HANDLE, NDIS_PORT_NUMBER, NET_DEVICE_POWER_STATE, PNET_BUFFER_LIST,
+    PVOID, UCHAR, ULONG,
 };
 
 use crate::{
@@ -314,43 +314,26 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
         *nbl.reserved_flags_mut() &= !(windows_kernel_sys::NBL_FLAGS_PROTOCOL_RESERVED & !0x3);
 
         // Get the first mdl and data length in the list
-        let Some(first_nb) = nbl.nb_chain().first() else {
+        let Some(first_nb) = nbl.nb_chain_mut().first_mut() else {
             return false;
         };
-
-        let (eth_header, buffer_length) = {
-            let (mdl, offset) = first_nb.current_mdl_offset();
-            let mut buffer_length = 0;
-            let mut eth_header = core::ptr::null_mut();
-
-            assert!(!mdl.is_null());
-
-            if !mdl.is_null() {
-                let mut length = 0;
-                windows_kernel_sys::NdisQueryMdl(
-                    mdl,
-                    &mut eth_header,
-                    &mut length,
-                    MM_PAGE_PRIORITY::NormalPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-                );
-                buffer_length = length as usize;
-            }
-
-            if eth_header.is_null() {
-                // System is low on resources, ignore this nbl
+        let Some(mut span) = first_nb.current_mdl_span_mut() else {
+            if cfg!(debug_assertions) {
+                panic!("Current MDL is null");
+            } else {
                 return false;
             }
-
-            if buffer_length == 0 {
-                // Can't inspect the header if it's 0 sized
-                return false;
-            }
-
-            assert!(buffer_length > offset);
-            buffer_length = buffer_length.saturating_sub(offset);
-            eth_header = unsafe { eth_header.add(offset) };
-            (eth_header, buffer_length)
         };
+        let Some(eth_header) = span.map_mdl(MdlMappingFlags::NormalPagePriority | MdlMappingFlags::NoExecute) else {
+            // System is low on resources, ignore this nbl
+            return false;
+        };
+        let buffer_length = eth_header.len();
+
+        if buffer_length == 0 {
+            // Can't inspect the header if it's 0 sized
+            return false;
+        }
 
         if buffer_length < core::mem::size_of::<EthHeader>() {
             log::warn!("receive_net_buffer_list: open {open_object:#x?}, runt nbl {nbl:#x?}, first buffer length {buffer_length}");
@@ -358,10 +341,9 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
         }
 
         let ether_type = {
-            let eth_header = eth_header.cast::<EthHeader>();
-
             let mut ether_type = unsafe {
                 eth_header
+                    .as_ptr()
                     .byte_add(core::mem::offset_of!(EthHeader, eth_type))
                     .cast::<u16>()
                     .read_unaligned()
@@ -374,6 +356,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
                 }
 
                 ether_type = eth_header
+                    .as_ptr()
                     .byte_add(core::mem::offset_of!(TaggedEthHeader, eth_type))
                     .cast::<u16>()
                     .read_unaligned();

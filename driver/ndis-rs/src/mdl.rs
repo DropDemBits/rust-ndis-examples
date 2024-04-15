@@ -772,6 +772,27 @@ impl<'chain> MdlSpanMut<'chain> {
         }
     }
 
+    /// Creates an `MdlSpanMut` from an [`Mdl`] and an offset into the [`Mdl`].
+    ///
+    /// # Safety
+    ///
+    /// - `mdl` must point to a valid [`Mdl`], and that we have exclusive access
+    ///   to it.
+    /// - `offset` must be within the bounds of the pointed to [`Mdl`] bufffer.
+    pub unsafe fn from_raw_offset(mdl: NonNull<Mdl>, offset: usize) -> Self {
+        let length = {
+            // SAFETY: Caller guarantees that `mdl` points to a valid [`Mdl`].
+            let mdl = unsafe { mdl.as_ref() };
+            mdl.byte_count() - offset
+        };
+
+        // SAFETY: Caller guarantees that `mdl` points to a valid [`Mdl`], and
+        // that `offset` is within the bounds of the [`Mdl`] mapping. We compute
+        // the length based off of the offset, so that it's always smaller than
+        // or equal to the length.
+        unsafe { Self::from_raw_parts(mdl, offset, length) }
+    }
+
     /// Gets the byte length of the MDL span's buffer
     pub fn byte_count(&self) -> usize {
         self.length

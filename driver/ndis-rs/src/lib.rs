@@ -16,7 +16,7 @@ pub mod mdl;
 pub mod nb;
 pub mod nb_list;
 
-pub use mdl::{Mdl, MdlChain, MdlMappingFlags};
+pub use mdl::{Mdl, MdlChain, MdlMappingFlags, MdlSpanMut};
 pub use nb::{chain::NbChain, NetBuffer};
 pub use nb_list::{
     chain::NblChain, counted_queue::NblCountedQueue, queue::NblQueue, NetBufferList,

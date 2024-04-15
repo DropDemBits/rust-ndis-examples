@@ -1,9 +1,9 @@
 //! Helpers for working with `NET_BUFFER`s
 use core::{marker::PhantomData, ptr::NonNull};
 
-use windows_kernel_sys::{NET_BUFFER, PMDL, PNET_BUFFER};
+use windows_kernel_sys::{NET_BUFFER, PNET_BUFFER};
 
-use crate::{MdlChain, NbChain};
+use crate::{Mdl, MdlChain, MdlSpanMut, NbChain};
 
 pub mod chain;
 
@@ -46,20 +46,24 @@ impl NetBuffer {
         nb.map_or(core::ptr::null_mut(), |ptr| ptr.cast().as_ptr())
     }
 
-    /// Get the current `MDL` and offset into the `MDL` that the driver is using.
-    pub fn current_mdl_offset(&self) -> (PMDL, usize) {
-        // SAFETY: Having a `&self` transitively guarantees that all fields are
+    /// Get the current mutable `MDL` span that the driver is using.
+    pub fn current_mdl_span_mut(&mut self) -> Option<MdlSpanMut<'_>> {
+        // SAFETY: Having a `&mut self` transitively guarantees that all fields are
         // properly initialized.
         let mdl = unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.CurrentMdl };
+        // SAFETY: `mdl` is a valid pointer to an `Mdl` as per above.
+        let mdl = unsafe { Mdl::ptr_cast_from_raw(mdl)? };
 
-        // SAFETY: Having a `&self` transitively guarantees that all fields are
-        // properly initialized.
+        // SAFETY: Having a `&mut self` transitively guarantees that all fields
+        // are properly initialized.
         //
         // Note: Windows only supports `usize >= u32`, and `CurrentMdlOffset` is
         // guaranteed to be <= u32::MAX, so this will never truncate.
         let offset = unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.CurrentMdlOffset as usize };
 
-        (mdl, offset)
+        // SAFETY: Having a `&mut self` transitively guarantees that `mdl` is
+        // valid, and we trust that NDIS properly sets the current offset.
+        Some(unsafe { MdlSpanMut::from_raw_offset(mdl, offset) })
     }
 
     /// Pointer to the start of a linked list that maps a data buffer holding
@@ -126,7 +130,7 @@ impl NetBuffer {
 
     /// The data length (in bytes) of the used data space in the MDL chain.
     ///
-    /// Will never be larget than `u32::MAX`.
+    /// Will never be larger than `u32::MAX`.
     pub fn data_length(&self) -> usize {
         let data_length = {
             // Split out access to the `data_length` union due to
