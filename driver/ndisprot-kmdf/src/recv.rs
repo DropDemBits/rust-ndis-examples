@@ -1,6 +1,6 @@
 use core::{mem::MaybeUninit, pin::Pin, sync::atomic::Ordering};
 
-use ndis_rs::{Mdl, MdlMappingFlags, NblChain, NetBufferList};
+use ndis_rs::{mdl::CursorMut, Mdl, MdlMappingFlags, NblChain, NetBufferList};
 use wdf_kmdf::{
     driver::Driver,
     file_object::FileObject,
@@ -13,7 +13,7 @@ use wdf_kmdf_sys::{WDFQUEUE, WDFREQUEST};
 use windows_kernel_rs::log;
 use windows_kernel_sys::{
     result::STATUS, Error, MdlMappingNoExecute, MM_PAGE_PRIORITY, NDIS_HANDLE, NDIS_PORT_NUMBER,
-    NET_DEVICE_POWER_STATE, PMDL, PNET_BUFFER_LIST, PVOID, UCHAR, ULONG,
+    NET_DEVICE_POWER_STATE, PNET_BUFFER_LIST, PVOID, UCHAR, ULONG,
 };
 
 use crate::{
@@ -420,14 +420,14 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
         // If the miniport is out of resources, we need to make a copy of
         // the nbl so that the miniport can reclaim the nbl
         let nbl_to_queue = if !receive_flags.can_pend() {
-            let Some(first_nb) = nbl.nb_chain().first() else {
+            let Some(first_nb) = nbl.nb_chain_mut().first_mut() else {
                 // `nbl` should have a `NetBuffer`, but it's okay if it doesn't
                 // since we can just relinquish ownership of the nbl.
                 continue;
             };
-            let mdl_chain = first_nb.mdl_chain();
             let data_offset = first_nb.data_offset();
             let total_length = first_nb.data_length();
+            let mdl_chain = first_nb.mdl_chain_mut();
 
             let copy_nbl = match allocate_receive_net_buffer_list(&open_object, total_length) {
                 Ok(nbl) => nbl,
@@ -436,15 +436,21 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
                     continue;
                 }
             };
-            let Some(copy_mdl_chain) = copy_nbl.nb_chain_mut().first_mut().map(|nb| nb.mdl_chain())
+            let Some(copy_mdl_chain) = copy_nbl
+                .nb_chain_mut()
+                .first_mut()
+                .map(|nb| nb.mdl_chain_mut())
             else {
                 log::error!("receive_net_buffer_list: open {open_object:x?}, {copy_nbl:x?} is missing first net buffer");
                 continue;
             };
 
             // Copy the data to the new nbl
-            let nt_status =
-                copy_mdl_to_mdl(mdl_chain, data_offset, copy_mdl_chain, 0, total_length);
+            let nt_status = copy_mdl_to_mdl(
+                mdl_chain.at_offset_mut(data_offset),
+                copy_mdl_chain.at_offset_mut(0),
+                total_length,
+            );
 
             let bytes_copied = match nt_status {
                 Ok(len) => len,
@@ -692,152 +698,56 @@ pub(crate) fn flush_receive_queue(open_object: &GeneralObject<OpenContext>) {
     }
 }
 
-/// Copies at most `copy_len` bytes from `source_mdl` to `target_mdl`.
-///
-/// ## Safety:
-///
-/// Caller must ensure that the memory backing the source and target MDL do not overlap.
+/// Copies at most `copy_len` bytes from `source` to `target`.
 ///
 /// IRQL: `..=DISPATCH_LEVEL`
 #[must_use]
-unsafe fn copy_mdl_to_mdl(
-    mut source_mdl: PMDL,
-    mut source_offset: usize,
-    mut target_mdl: PMDL,
-    mut target_offset: usize,
+fn copy_mdl_to_mdl<'chain1, 'chain2>(
+    mut source: CursorMut<'chain1>,
+    mut target: CursorMut<'chain2>,
     copy_len: usize,
 ) -> Result<usize, Error> {
-    let skip_to_start_mdl = |mdl: &mut PMDL, offset: &mut usize| loop {
-        if mdl.is_null() {
-            break;
-        }
-
-        let mdl_len = unsafe { windows_kernel_sys::MmGetMdlByteCount(*mdl) } as usize;
-        let Some(next_offset) = offset.checked_sub(mdl_len) else {
-            // offset is inside this mdl, so we don't need to adjust it
-            break;
-        };
-
-        // Still not at the target mdl, need to go to next one
-        *offset = next_offset;
-        *mdl = unsafe { **mdl }.Next;
-    };
-
-    // Skip by the specified offset. Also skips any leading zero-length MDLs at the
-    // front of the chains, simplifiying the below logic.
-    skip_to_start_mdl(&mut source_mdl, &mut source_offset);
-    skip_to_start_mdl(&mut target_mdl, &mut target_offset);
-
-    if copy_len == 0 || source_mdl.is_null() || target_mdl.is_null() {
+    if copy_len == 0 {
         // No transfer will happen
         return Ok(0);
     }
 
     let mut bytes_remaining = copy_len;
 
-    // Compute the length for the first source mdl, and get a virtual address for it.
-    let mut source_byte_count = (unsafe { windows_kernel_sys::MmGetMdlByteCount(source_mdl) }
-        as usize)
-        .saturating_sub(source_offset)
-        .max(bytes_remaining);
-    let mut source_va = unsafe {
-        windows_kernel_sys::MmGetSystemAddressForMdlSafe(
-            source_mdl,
-            MM_PAGE_PRIORITY::LowPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-        )
-    };
-    if source_va.is_null() {
-        return Err(STATUS::INSUFFICIENT_RESOURCES.into());
+    for (mut source_span, mut target_span) in ndis_rs::mdl::pairwise_spans(&mut source, &mut target)
+    {
+        // Map the spans
+        let Some(source_span) = source_span.map_mdl(
+            MdlMappingFlags::LowPagePriority
+                | MdlMappingFlags::NoExecute
+                | MdlMappingFlags::ReadOnly,
+        ) else {
+            return Err(STATUS::INSUFFICIENT_RESOURCES.into());
+        };
+        let Some(target_span) =
+            target_span.map_mdl(MdlMappingFlags::LowPagePriority | MdlMappingFlags::NoExecute)
+        else {
+            return Err(STATUS::INSUFFICIENT_RESOURCES.into());
+        };
+
+        // Get the length to copy
+        let span_len = target_span.len().min(bytes_remaining);
+        let Some((source_span, target_span)) =
+            Option::zip(source_span.get(..span_len), target_span.get_mut(..span_len))
+        else {
+            // Smaller than we can go, return the amount we copied
+            return Ok(copy_len - bytes_remaining);
+        };
+
+        // Copy the bytes
+        target_span.copy_from_slice(source_span);
+
+        // Update bytes remaining
+        bytes_remaining -= span_len;
     }
-    source_va = unsafe { source_va.add(source_offset) };
 
-    // Compute the length for the first target mdl, and get a virutal address for it.
-    let mut target_byte_count = (unsafe { windows_kernel_sys::MmGetMdlByteCount(target_mdl) }
-        as usize)
-        .saturating_sub(target_offset)
-        .max(bytes_remaining);
-    let mut target_va = unsafe {
-        windows_kernel_sys::MmGetSystemAddressForMdlSafe(
-            target_mdl,
-            MM_PAGE_PRIORITY::LowPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-        )
-    };
-    if target_va.is_null() {
-        return Err(STATUS::INSUFFICIENT_RESOURCES.into());
-    }
-    target_va = unsafe { target_va.add(target_offset) };
-
-    // Copy data between the mdl chains until we reach the copy limit, or the end
-    // of one of the mdl chains
-    loop {
-        // Copy the current block, and update the counts if applicable
-        let copy_size = target_byte_count.min(source_byte_count);
-        unsafe { target_va.copy_from_nonoverlapping(source_va, copy_size) };
-
-        if bytes_remaining == copy_size {
-            return Ok(copy_len);
-        }
-        bytes_remaining = bytes_remaining.saturating_sub(copy_size);
-
-        // Advance to the next nbl in the *target* chain
-        if target_byte_count == copy_size {
-            loop {
-                target_mdl = unsafe { (*target_mdl).Next };
-                if target_mdl.is_null() {
-                    return Ok(copy_len.saturating_sub(bytes_remaining));
-                }
-                target_byte_count =
-                    unsafe { windows_kernel_sys::MmGetMdlByteCount(target_mdl) } as usize;
-                if target_byte_count != 0 {
-                    break;
-                }
-            }
-            target_va = unsafe {
-                windows_kernel_sys::MmGetSystemAddressForMdlSafe(
-                    target_mdl,
-                    MM_PAGE_PRIORITY::LowPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-                )
-            };
-            if target_va.is_null() {
-                return Err(STATUS::INSUFFICIENT_RESOURCES.into());
-            }
-        } else {
-            target_va = target_va.add(copy_size);
-            target_byte_count = target_byte_count.saturating_sub(copy_size);
-        }
-
-        // Advance to the next nbl in the *source* chain
-        if source_byte_count == copy_size {
-            loop {
-                source_mdl = unsafe { (*source_mdl).Next };
-                if source_mdl.is_null() {
-                    return Ok(copy_len.saturating_sub(bytes_remaining));
-                }
-                source_byte_count =
-                    unsafe { windows_kernel_sys::MmGetMdlByteCount(source_mdl) } as usize;
-                if source_byte_count != 0 {
-                    break;
-                }
-            }
-
-            if source_byte_count > bytes_remaining {
-                source_byte_count = source_byte_count.saturating_sub(bytes_remaining);
-            }
-
-            source_va = unsafe {
-                windows_kernel_sys::MmGetSystemAddressForMdlSafe(
-                    source_mdl,
-                    MM_PAGE_PRIORITY::LowPagePriority.0 as u32 | MdlMappingNoExecute as u32,
-                )
-            };
-            if source_va.is_null() {
-                return Err(STATUS::INSUFFICIENT_RESOURCES.into());
-            }
-        } else {
-            source_va = source_va.add(copy_size);
-            source_byte_count = source_byte_count.saturating_sub(copy_size);
-        }
-    }
+    // Reached the end, return the amount we were able to copy
+    return Ok(copy_len - bytes_remaining);
 }
 
 bitflags::bitflags! {

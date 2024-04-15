@@ -2,9 +2,9 @@
 // MdlOffset: Offset within an MdlChain, points to a specific MDL and offset within the buffer
 // MdlSpan: Offset + Length, can be split into two MdlOffsets
 
-use core::{marker::PhantomData, ptr::NonNull};
+use core::{marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 
-use windows_kernel_sys::{MDL, PMDL, PVOID, ULONG};
+use windows_kernel_sys::{MDL, PMDL, ULONG};
 
 /// A single memory descriptor as part of an [`MdlChain`].
 ///
@@ -104,12 +104,17 @@ impl Mdl {
     /// # Safety
     ///
     /// The backing buffer must have a valid instruction stream.
-    pub unsafe fn map_mdl_exec(&mut self, flags: MdlMappingFlags) -> PVOID {
+    pub unsafe fn map_mdl_exec(
+        &mut self,
+        flags: MdlMappingFlags,
+    ) -> Option<NonNull<core::ffi::c_void>> {
         let mdl = &mut self.mdl as PMDL;
         // SAFETY: Having a `&mut self` transitively guarantees that all fields
         // are properly initialized, and exclusive access to the `MDL` is
         // guaranteed by having a  `&mut self`.
-        unsafe { windows_kernel_sys::MmGetSystemAddressForMdlSafe(mdl, flags.bits()) }
+        let ptr = unsafe { windows_kernel_sys::MmGetSystemAddressForMdlSafe(mdl, flags.bits()) };
+
+        NonNull::new(ptr)
     }
 
     /// Get the next [`Mdl`] in a chain
@@ -118,6 +123,7 @@ impl Mdl {
         // accessible `MDL`s are valid by the validity invarint of `Mdl`.
         unsafe { Self::ptr_cast_from_raw(self.mdl.Next) }
     }
+
     /// Gets the next [`Mdl`] in a chain, and detaches the current
     /// [`Mdl`] from the chain.
     pub(crate) fn take_next_mdl(&mut self) -> Option<NonNull<Mdl>> {
@@ -514,11 +520,353 @@ unsafe impl<'a> Send for IterMut<'a> {}
 // SAFETY: Effectively a `&mut Mdl` into the chain.
 unsafe impl<'a> Sync for IterMut<'a> {}
 
-pub struct MdlOffset {
-    inner: Option<MdlOffsetInner>,
+impl MdlChain {
+    pub fn at_offset_mut(&mut self, offset: usize) -> CursorMut<'_> {
+        // SAFETY: `MdlChain::from_raw` and `MdlChain::set_head` ensures that
+        // all of the accessible `MDL`s are valid.
+        let mut cursor = unsafe { CursorMut::from_raw(self.head, offset) };
+        // Need to normalize to get to the correct place (and past any initial 0 length MDLs)
+        cursor.normalize();
+        cursor
+    }
 }
 
-struct MdlOffsetInner {
+pub struct CursorMut<'chain> {
+    /// Invariant: `CursorMut::new` and `CursorMut::normalize` ensures that all
+    /// of the accessible `MDL`s are valid.
+    inner: Option<CursorInner>,
+    _chain: PhantomData<&'chain mut MdlChain>,
+}
+
+impl<'chain> CursorMut<'chain> {
+    /// Creates a [`CursorMut`] from an `MdlChain` and byte offset in the chain.
+    ///
+    /// # Safety
+    ///
+    /// `current` must be a valid pointer to a `MDL`, and all of the directly
+    /// accessible `MDL`s are valid. `current` must also have exclusive access
+    /// to all of the accessible `MDL`s.
+    unsafe fn from_raw(current: Option<NonNull<Mdl>>, offset: usize) -> Self {
+        CursorMut {
+            inner: CursorInner::new(current, offset),
+            _chain: PhantomData,
+        }
+    }
+
+    /// Advances the cursor by `offset` bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new offset is past the end of the `Mdl` chain.
+    pub fn advance(&mut self, offset: usize) {
+        let Some(inner) = &mut self.inner else {
+            panic!("byte offset is out of bounds of the MDL chain")
+        };
+
+        let Some(new_offset) = inner.offset.checked_add(offset) else {
+            panic!("byte offset is out of bounds of the MDL chain")
+        };
+
+        inner.offset = new_offset;
+        self.normalize();
+    }
+
+    /// Ensures that the cursor points to the correct `Mdl` for the current
+    /// offset. This also skips any zero length `Mdl`s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new offset is past the end of the `Mdl` chain.
+    pub(crate) fn normalize(&mut self) {
+        let Some(inner) = &mut self.inner else {
+            // At the end of the chain already
+            return;
+        };
+
+        // SAFETY: `CursorMut::from_raw` and previous `CursorMut::normalize`
+        // calls ensures that all of the accessible `MDL`s from `mdl` are valid.
+        //
+        // `cursor` is a mutable reference which ensures that we have exckusive
+        // access, and this is the only iterator we make, so we don't create
+        // aliasing mutable references.
+        let mut iter = unsafe { IterMut::new(Some(inner.current)) };
+        let mut offset = inner.offset;
+
+        // Find which mdl the offset lands in.
+        while let Some(mdl) = iter.next() {
+            if let Some(remainder) = offset.checked_sub(mdl.byte_count() as usize) {
+                // Offset goes past this mdl, continue to the next one
+                offset = remainder;
+            } else {
+                // Offset is within this mdl, it's normalized
+                self.inner = Some(CursorInner {
+                    // Invariant: Having a mutable reference to an `Mdl`
+                    // guarantees that the validity requirements of `Mdl` are
+                    // met.
+                    current: NonNull::from(mdl),
+                    // Invariant: `offset` is guranteed to be less than or equal
+                    // to the byte count since we don't get a remainder from the
+                    // subtraction above.
+                    offset,
+                });
+                return;
+            }
+        }
+
+        if offset == 0 {
+            // Cursor has reached the end of the chain and the offset is one past the end
+            self.inner = None;
+        } else {
+            panic!("byte offset is out of bounds of the MDL chain")
+        }
+    }
+
+    pub fn iter_spans_mut(&mut self) -> IterSpansMut<'_, 'chain> {
+        IterSpansMut::new(self)
+    }
+
+    // Gets the currently pointed to `Mdl`, offset, and length of the span
+    pub(crate) fn current_mdl_span(&mut self) -> Option<(NonNull<Mdl>, usize, usize)> {
+        let inner = &mut self.inner?;
+        // SAFETY: By the validity of `current`, all of the accessible
+        // `Mdl`s from `current` are valid.
+        let mdl = unsafe { inner.current.as_mut() };
+        let length = (mdl.byte_count() as usize) - inner.offset;
+
+        Some((NonNull::from(mdl), inner.offset, length))
+    }
+
+    /// Derives another cursor from a given cursor.
+    ///
+    /// # Safety
+    ///
+    /// The derived cursor must not be alive as the same time as the parent
+    /// cursor.
+    pub(crate) unsafe fn derived_from(other: &mut CursorMut<'chain>) -> CursorMut<'chain> {
+        CursorMut {
+            inner: other.inner,
+            _chain: other._chain,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CursorInner {
+    current: NonNull<Mdl>,
+    offset: usize,
+}
+
+impl CursorInner {
+    fn new(current: Option<NonNull<Mdl>>, offset: usize) -> Option<CursorInner> {
+        if let Some(current) = current {
+            Some(CursorInner { current, offset })
+        } else {
+            assert_eq!(offset, 0, "byte offset is out of bounds of the MDL chain");
+            None
+        }
+    }
+}
+
+/// A mutable cursor derived from another mutable cursor. The original cursor
+/// is unaffected.
+pub struct DerivedCursorMut<'cursor, 'chain> {
+    cursor: CursorMut<'chain>,
+    _parent_cursor: PhantomData<&'cursor mut CursorMut<'chain>>,
+}
+
+impl<'cursor, 'chain> From<&'cursor mut CursorMut<'chain>> for DerivedCursorMut<'cursor, 'chain> {
+    fn from(value: &'cursor mut CursorMut<'chain>) -> Self {
+        Self {
+            // SAFETY: We tie the derived cursor to the lifetime of the parent
+            // cursor so that the parent cursor cannot be used while the derived
+            // pointer is still alive.
+            cursor: unsafe { CursorMut::derived_from(value) },
+            _parent_cursor: PhantomData,
+        }
+    }
+}
+
+pub struct IterSpansMut<'cursor, 'chain> {
+    cursor: DerivedCursorMut<'cursor, 'chain>,
+}
+
+impl<'cursor, 'chain> IterSpansMut<'cursor, 'chain> {
+    fn new(cursor: &'cursor mut CursorMut<'chain>) -> Self {
+        Self {
+            cursor: DerivedCursorMut::from(cursor),
+        }
+    }
+}
+
+impl<'cursor, 'chain> Iterator for IterSpansMut<'cursor, 'chain> {
+    type Item = MdlSpanMut<'chain>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (mdl, offset, length) = self.cursor.cursor.current_mdl_span()?;
+        // Move on to the next span
+        self.cursor.cursor.advance(length);
+
+        // SAFETY: `mdl`, `offset`, and `length` comes from `CursorMut`, which
+        // guarantees that all of the safety requirements are met
+        Some(unsafe { MdlSpanMut::from_raw_parts(mdl, offset, length) })
+    }
+}
+
+impl<'cursor, 'chain> core::iter::FusedIterator for IterSpansMut<'cursor, 'chain> {}
+
+pub struct MdlSpanMut<'chain> {
     mdl: NonNull<Mdl>,
     offset: usize,
+    length: usize,
+    _chain: PhantomData<&'chain mut MdlChain>,
+}
+
+impl<'chain> MdlSpanMut<'chain> {
+    /// Creates an `MdlSpanMut` from its component parts.
+    ///
+    /// # Safety
+    ///
+    /// - `mdl` must point to a valid `Mdl`, and that we have exclusive access
+    ///   to it.
+    /// - `offset` and `length` must be within the bounds of the pointed to
+    ///   `Mdl` bufffer.
+    pub unsafe fn from_raw_parts(mdl: NonNull<Mdl>, offset: usize, length: usize) -> Self {
+        Self {
+            mdl,
+            offset,
+            length,
+            _chain: PhantomData,
+        }
+    }
+
+    /// Gets the byte length of the MDL span's buffer
+    pub fn byte_count(&self) -> usize {
+        self.length
+    }
+
+    /// Gets the offset within the MDL span's buffer
+    pub fn byte_offset(&self) -> usize {
+        self.offset
+    }
+
+    fn mdl(&mut self) -> &mut Mdl {
+        // SAFETY: `Self::new` guarantees that `mdl` points to a valid `Mdl`,
+        // and that we have exclusive access to it.
+        unsafe { self.mdl.as_mut() }
+    }
+
+    /// Maps the MDL's buffer into system address space.
+    ///
+    /// This always sets the no-execute flag (if supported). If mapping the
+    /// pages as executable memory is desired, use [`Mdl::map_mdl_exec`].
+    ///
+    /// # Returns
+    ///
+    /// If mapping succeeds, a slice to the used part of the span.
+    ///
+    /// If mapping fails, a null pointer is returned.
+    pub fn map_mdl(&mut self, flags: MdlMappingFlags) -> Option<&mut [MaybeUninit<u8>]> {
+        let buffer = self.mdl().map_mdl(flags)?.cast::<MaybeUninit<u8>>();
+
+        // Get a pointer to the start of the span.
+        //
+        // SAFETY: `Self::new` guarantees that `offset` is within the bounds of
+        // the mapped buffer space, or one past the end of the space.
+        let buffer = unsafe { buffer.as_ptr().byte_add(self.offset) };
+        // SAFETY: `Self::new` guarantees that `length` is within the bounds of
+        // the mapped buffer space.
+        Some(unsafe { core::slice::from_raw_parts_mut(buffer, self.length) })
+    }
+
+    /// Maps the MDL's buffer as executable memory into system address space.
+    ///
+    /// # Returns
+    ///
+    /// If mapping succeeds, a pointer to the base virtual address in the system
+    /// address space is returned. Adding [`Mdl::byte_offset`] will point to the
+    /// start of the actual buffer.
+    ///
+    /// If mapping fails, a null pointer is returned.
+    ///
+    /// # Safety
+    ///
+    /// The backing buffer must have a valid instruction stream.
+    pub unsafe fn map_mdl_exec(
+        &mut self,
+        flags: MdlMappingFlags,
+    ) -> Option<&mut [MaybeUninit<u8>]> {
+        // SAFETY: Caller ensures that the backing buffer has a valid instruction stream.
+        let buffer = unsafe { self.mdl().map_mdl_exec(flags)? };
+        let buffer = buffer.cast::<MaybeUninit<u8>>();
+
+        // Get a pointer to the start of the span.
+        //
+        // SAFETY: `Self::new` guarantees that `offset` is within the bounds of
+        // the mapped buffer space, or one past the end of the space.
+        let buffer = unsafe { buffer.as_ptr().byte_add(self.offset) };
+        // SAFETY: `Self::new` guarantees that `length` is within the bounds of
+        // the mapped buffer space.
+        Some(unsafe { core::slice::from_raw_parts_mut(buffer, self.length) })
+    }
+}
+
+/// Iterates over spans of the same length from both cursors.
+/// Stops at the end of the shorter chain
+pub fn pairwise_spans<'cursor, 'chain1, 'chain2>(
+    cursor1: &'cursor mut CursorMut<'chain1>,
+    cursor2: &'cursor mut CursorMut<'chain2>,
+) -> PairwiseSpans<'cursor, 'chain1, 'chain2> {
+    PairwiseSpans::new(cursor1, cursor2)
+}
+
+pub struct PairwiseSpans<'cursor, 'chain1, 'chain2> {
+    cursor1: DerivedCursorMut<'cursor, 'chain1>,
+    cursor2: DerivedCursorMut<'cursor, 'chain2>,
+}
+
+impl<'cursor, 'chain1, 'chain2> PairwiseSpans<'cursor, 'chain1, 'chain2> {
+    pub fn new(
+        cursor1: &'cursor mut CursorMut<'chain1>,
+        cursor2: &'cursor mut CursorMut<'chain2>,
+    ) -> Self {
+        Self {
+            cursor1: DerivedCursorMut::from(cursor1),
+            cursor2: DerivedCursorMut::from(cursor2),
+        }
+    }
+}
+
+impl<'cursor, 'chain1, 'chain2> Iterator for PairwiseSpans<'cursor, 'chain1, 'chain2> {
+    type Item = (MdlSpanMut<'chain1>, MdlSpanMut<'chain2>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let ((span1_mdl, span1_offset, span1_length), (span2_mdl, span2_offset, span2_length)) =
+            Option::zip(
+                self.cursor1.cursor.current_mdl_span(),
+                self.cursor2.cursor.current_mdl_span(),
+            )?;
+
+        // Get the common length between the spans
+        let common_length = span1_length.min(span2_length);
+
+        // Advance the cursors by the same amount
+        self.cursor1.cursor.advance(common_length);
+        self.cursor2.cursor.advance(common_length);
+
+        // SAFETY: `span1_mdl`, `span1_offset`, and `span1_length` comes from
+        // `CursorMut`, which guarantees that all of the safety requirements
+        // are met.
+        let span1 = unsafe { MdlSpanMut::from_raw_parts(span1_mdl, span1_offset, span1_length) };
+        // SAFETY: `span2_mdl`, `span2_offset`, and `span2_length` comes from
+        // `CursorMut`, which guarantees that all of the safety requirements
+        // are met.
+        let span2 = unsafe { MdlSpanMut::from_raw_parts(span2_mdl, span2_offset, span2_length) };
+
+        Some((span1, span2))
+    }
+}
+
+impl<'cursor, 'chain1, 'chain2> core::iter::FusedIterator
+    for PairwiseSpans<'cursor, 'chain1, 'chain2>
+{
 }
