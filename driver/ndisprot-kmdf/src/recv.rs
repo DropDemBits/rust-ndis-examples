@@ -240,7 +240,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
                     raw::WdfRequestCompleteWithInformation(
                         request.raw_handle(),
                         STATUS::SUCCESS.to_u32(),
-                        bytes_copied.into(),
+                        bytes_copied as u64,
                     )
                 };
             }

@@ -64,10 +64,17 @@ impl NetBuffer {
 
     /// Pointer to the start of a linked list that maps a data buffer holding
     /// the network data.
-    pub fn mdl_chain(&self) -> PMDL {
+    pub fn mdl_chain(&self) -> &MdlChain {
         // SAFETY: Having a `&self` transitively guarantees that all fields are
         // properly initialized.
-        unsafe { self.nb.__bindgen_anon_1.__bindgen_anon_1.MdlChain }
+        let mdl_chain_field =
+            unsafe { core::ptr::addr_of!(self.nb.__bindgen_anon_1.__bindgen_anon_1.MdlChain) };
+
+        // SAFETY: `mdl_chain_field` is a pointer to `self.[union
+        // projections].MdlChain` which is a `PMDL`, and the `Mdl` validity
+        // invariant asserted by having a `&self` ensures that all of the
+        // accessible `MDL`s are valid.
+        unsafe { MdlChain::from_raw_field(mdl_chain_field) }
     }
 
     /// Mutable reference to the chain that maps a data buffer holding the network data.
