@@ -125,17 +125,6 @@ pub const POOL_FLAG_OPTIONAL_END: POOL_FLAGS = 0x8000000000000000_u64;
 pub const NDIS_DEFAULT_PORT_NUMBER: NDIS_PORT_NUMBER = 0;
 
 impl NET_BUFFER_LIST {
-    pub unsafe fn info(Nbl: PNET_BUFFER_LIST, Id: NDIS_NET_BUFFER_LIST_INFO) -> *mut PVOID {
-        unsafe { core::ptr::addr_of_mut!((*Nbl).NetBufferListInfo[Id.0 as usize]) }
-    }
-
-    pub unsafe fn set_cancel_id(Nbl: PNET_BUFFER_LIST, CancelId: usize) {
-        unsafe {
-            *Self::info(Nbl, NDIS_NET_BUFFER_LIST_INFO::NetBufferListCancelId) =
-                core::mem::transmute(CancelId);
-        }
-    }
-
     pub unsafe fn context_data_start(Nbl: PNET_BUFFER_LIST) -> PUCHAR {
         let nbl_context = unsafe { (*Nbl).Context };
         let context_data = unsafe {
