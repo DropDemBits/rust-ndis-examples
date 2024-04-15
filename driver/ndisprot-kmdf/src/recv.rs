@@ -716,6 +716,11 @@ fn copy_mdl_to_mdl<'chain1, 'chain2>(
 
     for (mut source_span, mut target_span) in ndis_rs::mdl::pairwise_spans(&mut source, &mut target)
     {
+        if bytes_remaining == 0 {
+            // Done copying all of the bytes requested
+            break;
+        }
+
         // Map the spans
         let Some(source_span) = source_span.map_mdl(
             MdlMappingFlags::LowPagePriority
