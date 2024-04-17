@@ -53,17 +53,17 @@ script='if not exist dist\%CARGO_MAKE_CRATE_NAME% ( mkdir dist\%CARGO_MAKE_CRATE
 dependencies = ["make-dist", "rename", "build-notify"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
-copy %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%.sys dist\%CARGO_MAKE_CRATE_NAME%
-copy %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%.pdb dist\%CARGO_MAKE_CRATE_NAME%
-copy %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%_notify.dll dist\%CARGO_MAKE_CRATE_NAME%
+copy /y %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%.sys dist\%CARGO_MAKE_CRATE_NAME%
+copy /y %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%.pdb dist\%CARGO_MAKE_CRATE_NAME%
+copy /y %TARGET_DIR%\%CARGO_MAKE_CRATE_FS_NAME%_notify.dll dist\%CARGO_MAKE_CRATE_NAME%
 '''
 
 [tasks.stampinf]
 dependencies = ["make-dist"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
-copy "%CARGO_MAKE_CURRENT_TASK_INITIAL_MAKEFILE_DIRECTORY%\%CARGO_MAKE_CRATE_FS_NAME%-protocol.inx" "dist\%CARGO_MAKE_CRATE_NAME%\%CARGO_MAKE_CRATE_FS_NAME%-protocol.inf"
-copy "%CARGO_MAKE_CURRENT_TASK_INITIAL_MAKEFILE_DIRECTORY%\%CARGO_MAKE_CRATE_FS_NAME%-miniport.inx" "dist\%CARGO_MAKE_CRATE_NAME%\%CARGO_MAKE_CRATE_FS_NAME%-miniport.inf"
+copy /y "%CARGO_MAKE_CURRENT_TASK_INITIAL_MAKEFILE_DIRECTORY%\%CARGO_MAKE_CRATE_FS_NAME%-protocol.inx" "dist\%CARGO_MAKE_CRATE_NAME%\%CARGO_MAKE_CRATE_FS_NAME%-protocol.inf"
+copy /y "%CARGO_MAKE_CURRENT_TASK_INITIAL_MAKEFILE_DIRECTORY%\%CARGO_MAKE_CRATE_FS_NAME%-miniport.inx" "dist\%CARGO_MAKE_CRATE_NAME%\%CARGO_MAKE_CRATE_FS_NAME%-miniport.inf"
 "%Wdk_WindowsSdkVerBinPath%\stampinf.exe" -f dist\%CARGO_MAKE_CRATE_NAME%\%CARGO_MAKE_CRATE_FS_NAME%-protocol.inf -a %TARGET_ARCH% -d %DRIVER_VERSION% -v %DRIVER_VERSION% -k 1.31 -x
 "%Wdk_WindowsSdkVerBinPath%\stampinf.exe" -f dist\%CARGO_MAKE_CRATE_NAME%\%CARGO_MAKE_CRATE_FS_NAME%-miniport.inf -a %TARGET_ARCH% -d %DRIVER_VERSION% -v %DRIVER_VERSION% -k 1.31 -x
 '''
@@ -97,5 +97,5 @@ if not exist DriverCertificate.cer (
 @rem And sign the driver
 "%Wdk_WindowsSdkVerBinPath%\signtool.exe" sign /debug /a /ph /v /s PrivateCertStore /n DriverCertificate /fd certHash /t http://timestamp.digicert.com dist/%CARGO_MAKE_CRATE_FS_NAME%.sys dist/%CARGO_MAKE_CRATE_NAME%/*.cat
 
-copy DriverCertificate.cer dist\%CARGO_MAKE_CRATE_NAME%\
+copy /y DriverCertificate.cer dist\%CARGO_MAKE_CRATE_NAME%\
 '''

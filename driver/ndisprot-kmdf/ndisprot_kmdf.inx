@@ -17,34 +17,29 @@ CatalogFile=ndisprot_kmdf.cat
 DriverVer= ; TODO: set DriverVer in stampinf property pages
 PnpLockDown=1
 
+; Note: OS build version 25319 provides an update to the Network Installation UI
+; that allows installing network driver packages into the driver store.
 [Manufacturer]
-%ManufacturerName%=Standard,NT$ARCH$.10.0
+%ManufacturerName%=Standard,NT$ARCH$.10.0,NT$ARCH$.10.0...25319
 
-[Standard.NT$ARCH$.10.0]
+[Standard.NT$ARCH$.10.0...25319]
 %NdisProt_Desc%=Install, MS_NDISPROT
 
-[SourceDisksNames]
-1 = %NdisProt_Disk%,,
-
-[SourceDisksFiles]
-ndisprot_kmdf.sys  = 1,,
-; Don't need ProtNotify.dll because we don't need to start the co-installer
-; Don't need the co-installer because only targeting Windows 10 means that we don't need to distribute it
+[Standard.NT$ARCH$.10.0]
+%NdisProt_Desc%=Install_10, MS_NDISPROT
 
 ;-------------- Installation Section
 ;
-
-[DestinationDirs]
-; Don't need to specify co-installer or notify dirs
-DefaultDestDir = 13
 
 [Install.NT]
 AddReg = Inst_Ndi
 CopyFiles = Driver_Files
 Characteristics=0x0 ;
 
-[Driver_Files]
-ndisprot_kmdf.sys,,,2
+[Install_10.NT]
+AddReg = Inst_Ndi
+CopyFiles = Driver_Files_10
+Characteristics=0x0 ;
 
 ;-------------- Ndi installation support
 ;
@@ -63,6 +58,18 @@ HKR, "Ndi\Interfaces", "LowerRange" , , "ndis5,ndis4,ndis5_prot"
 AddService=Ndisprot,,NdisProt_Service_Inst
 
 [NdisProt_Service_Inst]
+DisplayName    = %NdisProt_Desc%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\ndisprot_kmdf.sys
+Description    = %NdisProt_Desc%
+AddReg         = NdisImPlatformBinding_AddReg
+
+[Install_10.NT.Services]
+AddService=Ndisprot,,NdisProt_Service_Inst_10
+
+[NdisProt_Service_Inst_10]
 DisplayName    = %NdisProt_Desc%
 ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
 StartType      = 3               ; SERVICE_DEMAND_START
@@ -88,14 +95,30 @@ HKR, Parameters, NdisImPlatformBindingOptions,0x00010001,0 ; Subscribe to defaul
 [Install.NT.Remove.Services]
 DelService=Ndisprot,0x200
 
-;--------------  NdisProt Wdf Section
+[Install_10.NT.Remove.Services]
+DelService=Ndisprot,0x200
+
+; -------------- Destination directories for copy/deletion
 ;
 
-[Install.NT.Wdf]
-KmdfService =  NdisProt, NdisProt_WdfSection
+[SourceDisksNames]
+1 = %NdisProt_Disk%,,
 
-[NdisProt_WdfSection]
-KmdfLibraryVersion = $KMDFVERSION$
+[SourceDisksFiles]
+ndisprot_kmdf.sys  = 1,,
+; Don't need ProtNotify.dll because we don't need to start the co-installer
+; Don't need the co-installer because only targeting Windows 10 means that we don't need to distribute it
+
+[DestinationDirs]
+; Don't need to specify co-installer or notify dirs
+Driver_Files = 13
+Driver_Files_10 = 12
+
+[Driver_Files]
+ndisprot_kmdf.sys,,,2
+
+[Driver_Files_10]
+ndisprot_kmdf.sys,,,2
 
 [Strings]
 SPSVCINST_ASSOCSERVICE= 0x00000002
