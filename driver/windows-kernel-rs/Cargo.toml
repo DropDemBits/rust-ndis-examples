@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 log = "0.4.17"
-heapless = "0.7.16"
+heapless = "0.8.0"
 bitflags = "2.3.3"
 
 windows-kernel-sys = { path = "../windows-kernel-sys" }
