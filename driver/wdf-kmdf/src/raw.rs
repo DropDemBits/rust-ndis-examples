@@ -2231,3 +2231,12 @@ pub unsafe fn WdfWaitLockRelease(WaitLock: WDFWAITLOCK) {
 }
 
 // endregion: wdfsync
+
+// region: wdfverifier
+
+/// Breaks into a kernel debugger, if a debuger is attached.
+pub unsafe fn WdfVerifierDbgBreakPoint() {
+    dispatch!(WdfVerifierDbgBreakPoint());
+}
+
+// endregion: wdfverifier
