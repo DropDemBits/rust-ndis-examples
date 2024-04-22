@@ -947,9 +947,9 @@ unsafe extern "C" fn ndisprot_evt_file_close(FileObject: WDFFILEOBJECT) {
     let file_object =
         unsafe { wdf_kmdf::file_object::FileObject::<FileObjectContext>::wrap(FileObject) };
 
-    debug!("Close: FileObject {:#x?}", file_object);
+    let old_open = file_object.get_context().open_context.lock().take();
 
-    let _ = file_object.get_context().open_context.lock().take();
+    debug!("Close: FileObject {file_object:x?} Open {old_open:x?}");
 }
 
 /// Called when the handle representing the `FileObject` is closed.
@@ -962,7 +962,7 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
 
     let open_object = file_object.get_context().open_context();
 
-    debug!("Cleanup: FileObject {file_object:x?}, Open: {open_object:x?}",);
+    debug!("--> Cleanup: FileObject {file_object:x?}, Open: {open_object:x?}",);
 
     if let Some(open_object) = &open_object {
         let open_context = open_object.get_context();
@@ -1014,7 +1014,7 @@ unsafe extern "C" fn ndisprot_evt_file_cleanup(FileObject: WDFFILEOBJECT) {
         recv::flush_receive_queue(&open_object);
     }
 
-    debug!("Cleanup: {open_object:x?}");
+    debug!("<-- Cleanup: {open_object:x?}");
 }
 
 const FSCTL_NDISPROT_BASE: DeviceType = DeviceType::Network;

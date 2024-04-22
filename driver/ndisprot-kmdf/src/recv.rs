@@ -175,7 +175,10 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
 
             // Get the first queued receive packet
             let Some(recv_nbl_entry) = recv_queue.as_mut().dequeue() else {
-                log::error!("service reads: {open_object:#x?} recv queue is empty");
+                log::error!(
+                    "service reads: {open_object:x?} recv queue is empty ({:#?})",
+                    recv_queue.as_ref()
+                );
                 // nt_status = Err(STATUS::NO_MORE_ENTRIES.into());
                 break 'err Err(STATUS::NO_MORE_ENTRIES.into());
             };
@@ -227,7 +230,7 @@ fn service_reads(open_object: &GeneralObject<OpenContext>) {
             // Complete the request
             let bytes_copied = total_length - bytes_remaining;
 
-            log::info!("service_reads: open {open_object:#x?}, request {request:#x?} completed with {bytes_copied} bytes");
+            log::info!("service_reads: open {open_object:x?}, request {request:x?} completed with {bytes_copied} bytes");
 
             unsafe { RecvNblRsvd::drop_init_recv_nbl(recv_nbl) };
             free_receive_net_buffer_list(open_context, recv_nbl, false);
@@ -370,7 +373,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
         }
 
         log::debug!(
-            "receive_net_buffer_list: open {open_object:#x?}, interesting nbl {nbl:#x?}"
+            "receive_net_buffer_list: open {open_object:x?}, interesting nbl {nbl:#x?}"
         );
         return true;
     });

@@ -768,6 +768,13 @@ pub(crate) unsafe extern "C" fn pnp_event_handler(
         .cast::<ProtocolBindingContext>()
         .as_ref();
 
+    log::trace!(
+        "--> pnp_event_handler: Open {:x?}, Event Ptr {:#x?}, Event {:x?}",
+        protocol_binding_context,
+        NetPnPEventNotification,
+        event_notif.NetPnPEvent.NetEvent.0,
+    );
+
     let mut status = STATUS::UNSUCCESSFUL;
 
     match event_notif.NetPnPEvent.NetEvent {
