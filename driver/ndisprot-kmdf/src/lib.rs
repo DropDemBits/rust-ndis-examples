@@ -460,7 +460,9 @@ wdf_kmdf::impl_context_space!(FileObjectContext);
 impl FileObjectContext {
     fn open_context(&self) -> Option<Ref<GeneralObject<OpenContext>>> {
         let guard = self.open_context.lock();
-        guard.as_ref().map(|it| it.clone_ref())
+        guard
+            .as_ref()
+            .map(|it| wdf_kmdf::clone!(tag: b"FOep", ref it))
     }
 }
 
@@ -1326,9 +1328,9 @@ fn open_device(
             let mut inner = file_context.open_context.lock();
 
             match inner.as_ref() {
-                Some(old) => Err(old.clone_ref()),
+                Some(old) => Err(wdf_kmdf::clone!(tag: b"DvEr", ref old)),
                 None => {
-                    *inner = Some(open_object.clone_ref());
+                    *inner = Some(wdf_kmdf::clone!(tag: b"DvOp", ref &open_object));
                     Ok(())
                 }
             }
@@ -1346,7 +1348,7 @@ fn open_device(
             );
             break 'out Err(Error(STATUS::INVALID_DEVICE_REQUEST));
         }
-        inner.file_object = Some(file_object.clone_ref());
+        inner.file_object = Some(wdf_kmdf::clone!(&file_object));
 
         // Start the queus as they may have been in a purged state if someone
         // else has previously opened the device

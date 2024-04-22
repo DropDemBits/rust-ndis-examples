@@ -221,7 +221,7 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
             .pended_send_count
             .fetch_add(1, Ordering::Relaxed);
 
-        let send_open_object = open_object.clone_ref();
+        let send_open_object = wdf_kmdf::clone!(tag: b"Send", ref open_object);
 
         // Clone the request so that we can complete it in the event of an error
         let err_request = Request.clone_ref();
@@ -293,7 +293,7 @@ pub(crate) unsafe extern "C" fn send_complete(
     let protocol_binding_context =
         unsafe { &*protocol_binding_context.cast::<ProtocolBindingContext>() };
 
-    let open_object = protocol_binding_context.open_context.clone_ref();
+    let open_object = wdf_kmdf::clone!(tag: b"SFin", ref protocol_binding_context.open_context);
     let open_context = open_object.get_context();
 
     let _dispatch_level =

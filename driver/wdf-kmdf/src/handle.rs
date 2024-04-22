@@ -486,7 +486,7 @@ where
 // we make this by using `wrap_raw`, which requires that we don't
 // accidentally cause aliasing accesses on drop.
 #[derive(PartialEq, Eq)]
-pub struct Ref<H: HandleWrapper>(ManuallyDrop<H>);
+pub struct Ref<H: HandleWrapper>(ManuallyDrop<H>, usize);
 
 impl<H: HandleWrapper> Ref<H> {
     /// Transforms an owning handle into a parented ref handle
@@ -496,7 +496,7 @@ impl<H: HandleWrapper> Ref<H> {
     /// Handle must be from a [`RawHandle::create_parented`] call
     pub unsafe fn into_parented(handle: H) -> Self {
         // Note: We don't bump up the refcount becausae
-        Self(ManuallyDrop::new(handle))
+        Self(ManuallyDrop::new(handle), context_space::REF_TAG)
     }
 
     /// Creates a new reference to a handle from an existing handle
@@ -517,7 +517,56 @@ impl<H: HandleWrapper> Ref<H> {
             );
         }
 
-        Self(handle)
+        Self(handle, context_space::REF_TAG)
+    }
+
+    /// Creates a new reference to a handle from an existing handle, including
+    /// location info.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn clone_from_handle_location(handle: &H, file: *const i8, line: u32) -> Self {
+        // SAFETY: Manually drop ensures that we only adjust the refcount
+        // and not delete the object
+        let handle = ManuallyDrop::new(unsafe { H::wrap_raw(handle.as_object_handle().cast()) });
+
+        // SAFETY: Caller ensures that we're called at the right IRQL
+        unsafe {
+            raw::WdfObjectReferenceActual(
+                handle.as_object_handle(),
+                Some(context_space::REF_TAG as *mut _),
+                line as i32,
+                Some(file),
+            );
+        }
+
+        Self(handle, context_space::REF_TAG)
+    }
+
+    /// Creates a new reference to a handle from an existing handle, including
+    /// location info and a custom tag.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn clone_from_handle_location_tag(
+        handle: &H,
+        file: *const i8,
+        line: u32,
+        tag: usize,
+    ) -> Self {
+        // SAFETY: Manually drop ensures that we only adjust the refcount
+        // and not delete the object
+        let handle = ManuallyDrop::new(unsafe { H::wrap_raw(handle.as_object_handle().cast()) });
+
+        // SAFETY: Caller ensures that we're called at the right IRQL
+        unsafe {
+            raw::WdfObjectReferenceActual(
+                handle.as_object_handle(),
+                Some(tag as *mut _),
+                line as i32,
+                Some(file),
+            );
+        }
+
+        Self(handle, tag)
     }
 
     /// Makes a new [`Ref`] to this handle
@@ -525,6 +574,20 @@ impl<H: HandleWrapper> Ref<H> {
     /// ## IRQL: `..=DISPATCH_LEVEL`
     pub fn clone_ref(&self) -> Ref<H> {
         Self::clone_from_handle(&self.0)
+    }
+
+    /// Makes a new [`Ref`] to this handle, including location info.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn clone_ref_location(&self, file: *const i8, line: u32) -> Ref<H> {
+        Self::clone_from_handle_location(&self.0, file, line)
+    }
+
+    /// Makes a new [`Ref`] to this handle, including location info and tag.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn clone_ref_location_tag(&self, file: *const i8, line: u32, tag: usize) -> Ref<H> {
+        Self::clone_from_handle_location_tag(&self.0, file, line, tag)
     }
 }
 
@@ -537,7 +600,7 @@ impl<H: HandleWrapper> Drop for Ref<H> {
         unsafe {
             raw::WdfObjectDereferenceActual(
                 self.0.as_object_handle(),
-                Some(context_space::REF_TAG as *mut _),
+                Some(self.1 as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             );
@@ -551,7 +614,10 @@ impl<H: HandleWrapper> HandleWrapper for Ref<H> {
     #[inline]
     unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         // SAFETY: Caller ensures that we don't alias on drop
-        Self(ManuallyDrop::new(unsafe { H::wrap_raw(raw) }))
+        Self(
+            ManuallyDrop::new(unsafe { H::wrap_raw(raw) }),
+            context_space::REF_TAG,
+        )
     }
 
     #[inline]

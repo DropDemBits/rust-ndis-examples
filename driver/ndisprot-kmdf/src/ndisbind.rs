@@ -222,7 +222,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
             let driver = &driver;
 
             // initialize the binding context helper
-            let protocol_open_context = open_context.clone_ref();
+            let protocol_open_context = wdf_kmdf::clone!(tag: b"Open", *open_context);
             let protocol_binding_context = Box::pin_init(pinned_init::pin_init! {
                 ProtocolBindingContext {
                     open_context: protocol_open_context,
@@ -1454,7 +1454,8 @@ pub(crate) fn ndisprot_lookup_device(
         .find_map(|open_obj| {
             let open_obj = &open_obj.as_ref()?;
             let open_context = open_obj.get_context();
-            (open_context.device_name.0 == adapter_name).then(|| open_obj.clone_ref())
+            (open_context.device_name.0 == adapter_name)
+                .then(|| wdf_kmdf::clone!(tag: b"Lkup", ref open_obj))
         })
 }
 

@@ -276,7 +276,7 @@ pub(crate) unsafe extern "C" fn receive_net_buffer_lists(
     let receive_flags = ReceiveFlags::from_bits_truncate(receive_flags);
     let mut return_flags = ReturnFlags::empty();
 
-    let open_object = protocol_binding_context.open_context.clone_ref();
+    let open_object = wdf_kmdf::clone!(tag: b"Recv", protocol_binding_context.open_context);
     let open_context = open_object.get_context();
 
     let driver = Driver::<NdisProt>::get();
@@ -492,7 +492,9 @@ fn queue_receive_net_buffer_list(
         {
             // Translation Note: `init_recv_nbl` sets `nbl` to itself, since we can't
             // queue and then set `nbl` in case the queue becomes full.
-            unsafe { RecvNblRsvd::init_recv_nbl(recv_nbl, open_object.clone_ref()) };
+            unsafe {
+                RecvNblRsvd::init_recv_nbl(recv_nbl, wdf_kmdf::clone!(tag: b"rNbl", open_object))
+            };
 
             // Queue the nbl
             // let mut entry = unsafe { RecvNblRsvd::from_nbl(recv_nbl) };

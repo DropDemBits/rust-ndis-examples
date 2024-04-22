@@ -17,6 +17,39 @@ macro_rules! cstr {
     }};
 }
 
+#[macro_export]
+macro_rules! clone {
+    ($handle:expr) => {
+        $crate::handle::Ref::clone_from_handle_location(
+            &$handle,
+            $crate::cstr!(file!()).as_ptr(),
+            line!(),
+        )
+    };
+
+    (ref $handle:expr) => {
+        $crate::handle::Ref::clone_ref_location(&$handle, $crate::cstr!(file!()).as_ptr(), line!())
+    };
+
+    (tag:$tag:literal, $handle:expr) => {
+        $crate::handle::Ref::clone_from_handle_location_tag(
+            &$handle,
+            $crate::cstr!(file!()).as_ptr(),
+            line!(),
+            u32::from_le_bytes(*$tag) as usize,
+        )
+    };
+
+    (tag:$tag:literal, ref $handle:expr) => {
+        $crate::handle::Ref::clone_ref_location_tag(
+            &$handle,
+            $crate::cstr!(file!()).as_ptr(),
+            line!(),
+            u32::from_le_bytes(*$tag) as usize,
+        )
+    };
+}
+
 pub mod context_space;
 pub mod raw;
 
