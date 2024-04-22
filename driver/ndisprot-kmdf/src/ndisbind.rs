@@ -54,8 +54,8 @@ use windows_kernel_sys::{
 
 use crate::{
     recv, BindingHandle, EventType, IndicateStatus, KeEvent, MACAddr, NblPool, OpenContext,
-    OpenContextFlags, OpenContextInner, OpenState, QueryBinding, QueryOid, RecvQueue, SetOid,
-    SyncWrapper, Timeout, MAX_MULTICAST_ADDRESS,
+    OpenContextFlags, OpenContextInner, OpenState, QueryBinding, QueryOid, SetOid, SyncWrapper,
+    Timeout, MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;
@@ -541,7 +541,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     recv_nbl_pool: NblPool(ScopeGuard::into_inner(recv_nbl_pool)),
                     read_queue,
                     pended_read_count: AtomicU32::new(0),
-                    recv_queue <- SpinPinMutex::new(RecvQueue::new()),
+                    recv_queue <- SpinPinMutex::new(recv_queue::RecvQueue::new()),
 
                     status_indication_queue,
 

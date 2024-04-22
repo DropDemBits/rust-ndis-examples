@@ -19,7 +19,6 @@ use core::{
 
 use alloc::vec::Vec;
 use crossbeam_utils::atomic::AtomicCell;
-use ndis_rs::NetBufferList;
 use pinned_init::{pin_data, pinned_drop, PinInit};
 use wdf_kmdf::{
     device::ControlDevice,
@@ -548,7 +547,7 @@ struct OpenContext {
     pended_read_count: AtomicU32,
 
     #[pin]
-    recv_queue: SpinPinMutex<RecvQueue<4>>,
+    recv_queue: SpinPinMutex<recv_queue::RecvQueue<4>>,
 
     // Used in
     // - recv::QueueReceiveNBL (read)
@@ -687,117 +686,6 @@ struct OpenContextInner {
     //
     // Essentially just used as debugging for figuring out the assoc'd file object
     file_object: Option<Ref<FileObject<FileObjectContext>>>,
-}
-
-struct RecvQueue<const LEN: usize> {
-    // Used in
-    // - recv::ServiceReads (read, technically write into_iter)
-    // - recv::QueueReceiveNBL (write)
-    // - recv::FlushReceiveQueue (write into_iter)
-    // - BindAdapter (write)
-    queue: [Option<&'static mut NetBufferList>; LEN],
-
-    // read == write
-    // write is always ahead or at read
-    //
-    // ???: wrapping behaviour?
-    //
-    // replacement behaviour:
-    // bump read head
-    // take element
-    // bump write head
-
-    //
-    // |  0  |  0  |  0  |  0  |
-    // ^
-    // read (0, 0)
-    // write (0, 0)
-    //
-    // |  a  |  0  |  0  |  0  |
-    // ^     ^
-    // read  |
-    //       write (0, 1)
-    //
-    // |  a  |  b  |  0  |  0  |
-    // ^           ^
-    // read        |
-    //             write (0, 2)
-    //
-    // |  a  |  b  |  c  |  0  |
-    // ^                 ^
-    // read              |
-    //                   write (0, 3)
-    //
-    // |  a  |  b  |  c  |  d  |
-    // ^                       ^
-    // read                    |
-    //                         write (1, 0)
-
-    // read head & write head are composed of a
-    // - lap portion (head / LEN)
-    // - index portion (head % LEN)
-    //
-    // the queue is empty if they're on the same index & lap
-    read_head: usize,
-    write_head: usize,
-}
-
-impl<const LEN: usize> RecvQueue<LEN> {
-    fn new() -> Self {
-        Self {
-            queue: core::array::from_fn(|_| None),
-            read_head: 0,
-            write_head: 0,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.read_head == self.write_head
-    }
-
-    fn len(&self) -> u32 {
-        (self.write_head.wrapping_sub(self.read_head) % LEN) as u32
-    }
-
-    fn enqueue(
-        &mut self,
-        element: &'static mut NetBufferList,
-    ) -> Option<&'static mut NetBufferList> {
-        let new_write_head = self.write_head.wrapping_add(1) % LEN;
-
-        let old_element = if new_write_head == self.read_head {
-            // queue is full, need to move the read head
-            let old_element = self.queue[self.read_head].replace(element);
-            self.read_head = self.read_head.wrapping_add(1) % LEN;
-            old_element
-        } else {
-            // there's still room, so we can write to the write head
-            self.queue[self.write_head] = Some(element);
-            None
-        };
-
-        self.write_head = new_write_head;
-        old_element
-    }
-
-    fn dequeue(&mut self) -> Option<&'static mut NetBufferList> {
-        if self.read_head == self.write_head {
-            // queue is empty
-            return None;
-        }
-
-        let element = self.queue[self.read_head].take();
-        self.read_head = self.read_head.wrapping_add(1) % LEN;
-        element
-    }
-
-    fn front(&self) -> Option<&NetBufferList> {
-        if self.is_empty() {
-            return None;
-        }
-
-        self.queue[self.read_head].as_ref().map(|it| &**it)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

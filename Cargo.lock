@@ -523,6 +523,7 @@ dependencies = [
  "ndis-rs",
  "nt-list",
  "pinned-init",
+ "recv-queue",
  "scopeguard",
  "static_assertions",
  "vtable",
@@ -680,6 +681,13 @@ version = "0.1.0"
 dependencies = [
  "mux",
  "ndisprot-kmdf",
+]
+
+[[package]]
+name = "recv-queue"
+version = "0.1.0"
+dependencies = [
+ "ndis-rs",
 ]
 
 [[package]]
