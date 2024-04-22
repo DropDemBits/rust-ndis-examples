@@ -705,16 +705,16 @@ bitflags::bitflags! {
     struct OpenContextFlags: u32 {
         /// State of binding
         const BIND_FLAGS = 0x0000_000F;
-        const BIND_IDLE = 1 << 0;
-        const BIND_OPENING = 1 << 1;
-        const BIND_FAILED = 1 << 2;
-        const BIND_ACTIVE = 1 << 3;
-        const BIND_CLOSING = 1 << 4;
+        const BIND_IDLE = 0;
+        const BIND_OPENING = 1 << 0;
+        const BIND_FAILED = 1 << 1;
+        const BIND_ACTIVE = 1 << 2;
+        const BIND_CLOSING = 1 << 3;
 
         /// State of IO opening
         const OPEN_FLAGS = 0x0000_00F0;
         const OPEN_IDLE = 0;
-        const OPEN_ACTIVE = 1 << 5;
+        const OPEN_ACTIVE = 1 << 4;
 
         const RESET_FLAGS = Self::RESET_IN_PROGRESS.bits() | Self::NOT_RESETTING.bits();
         const RESET_IN_PROGRESS = 1 << 8;
