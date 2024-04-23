@@ -17,12 +17,9 @@ PnpLockDown=1
 ExcludeFromSelect = MS_MUXMP	
 
 [Manufacturer]
-%ManufacturerName% = Standard,NTx86,NTamd64
+%ManufacturerName% = Standard,NT$ARCH$
 
-[Standard.NTx86]
-%MUXMP_Desc% = MUXMP.ndi, MS_MUXMP
-
-[Standard.NTamd64]
+[Standard.NT$ARCH$]
 %MUXMP_Desc% = MUXMP.ndi, MS_MUXMP
 
 [MUXMP.ndi]

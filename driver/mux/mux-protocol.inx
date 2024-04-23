@@ -14,12 +14,9 @@ DriverVer= ; TODO: set DriverVer in stampinf property pages
 PnpLockDown=1
 
 [Manufacturer]
-%ManufacturerName% = Standard,NTx86,NTia64,NTamd64
+%ManufacturerName% = Standard,NT$ARCH$
 
-[Standard.NTx86]
-%MUXP_Desc% = MUXP.ndi, MS_MUXP
-
-[Standard.NTamd64]
+[Standard.NT$ARCH$]
 %MUXP_Desc% = MUXP.ndi, MS_MUXP
 
 ; Note:
@@ -86,9 +83,6 @@ HKR, , TypesSupported,   0x10001, 7
 
 [MUXP.ndi.Remove.Services]
 DelService = MUXP
-
-[MUXP.ndi.Remove]
-DelFiles = MUXP.CopyFiles.DLL, MUXP.CopyFiles.sys
 
 [Strings]
 ProviderString = "TODO-Set-Provider"
