@@ -34,6 +34,7 @@ static_assertions = "1.1.0"
 thiserror = "1.0.57"
 windows-registry = "0.1.1"
 windows = "0.56.0"
+windows-core = "0.56.0"
 
 [profile.dev]
 panic = "abort"

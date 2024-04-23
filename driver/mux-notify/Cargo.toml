@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 windows-registry.workspace = true
+windows-core.workspace = true
 
 [dependencies.windows]
 workspace = true
