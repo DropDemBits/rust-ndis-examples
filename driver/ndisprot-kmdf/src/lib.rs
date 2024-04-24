@@ -13,13 +13,12 @@ mod recv;
 use core::{
     mem::ManuallyDrop,
     pin::Pin,
-    ptr::addr_of_mut,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
 use alloc::vec::Vec;
 use crossbeam_utils::atomic::AtomicCell;
-use pinned_init::{pin_data, pinned_drop, PinInit};
+use pinned_init::{pin_data, pinned_drop};
 use wdf_kmdf::{
     device::ControlDevice,
     driver::Driver,
@@ -41,17 +40,17 @@ use windows_kernel_rs::{
         nt_unicode_str,
         unicode_string::{NtUnicodeStr, NtUnicodeString},
     },
+    sync::{EventType, KeEvent, Timeout},
     DriverObject,
 };
 use windows_kernel_sys::{
-    result::STATUS, Error, KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, NdisFreeMemory,
-    NdisFreeNetBufferListPool, NdisGeneratePartialCancelId, KEVENT, NDIS_HANDLE,
-    NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_OID, NDIS_PACKET_TYPE_BROADCAST,
-    NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST, NDIS_PORT_NUMBER,
-    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
-    NDIS_REQUEST_TYPE, NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_STATUS,
-    NET_DEVICE_POWER_STATE, NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT,
-    PUNICODE_STRING, ULONG, ULONG_PTR,
+    result::STATUS, Error, NdisFreeMemory, NdisFreeNetBufferListPool, NdisGeneratePartialCancelId,
+    NDIS_HANDLE, NDIS_OBJECT_TYPE_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_OID,
+    NDIS_PACKET_TYPE_BROADCAST, NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST,
+    NDIS_PORT_NUMBER, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS,
+    NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_REQUEST_TYPE,
+    NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_STATUS, NET_DEVICE_POWER_STATE,
+    NTSTATUS, OID_GEN_CURRENT_PACKET_FILTER, PDRIVER_OBJECT, PUNICODE_STRING, ULONG, ULONG_PTR,
 };
 
 #[allow(non_snake_case)]
@@ -448,7 +447,7 @@ impl<T> core::ops::DerefMut for SyncWrapper<T> {
     }
 }
 
-unsafe impl<T> Send for SyncWrapper<T> {}
+// unsafe impl<T> Send for SyncWrapper<T> {}
 unsafe impl<T> Sync for SyncWrapper<T> {}
 
 struct FileObjectContext {
@@ -781,134 +780,6 @@ impl wdf_kmdf::driver::DriverCallbacks for NdisProt {
         // self.control_device = core::ptr::null_mut();
         debug!("Unload Exit");
     }
-}
-
-#[pin_data]
-pub struct KeEvent {
-    #[pin]
-    event: KEVENT,
-}
-
-impl core::fmt::Debug for KeEvent {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("KeEvent").finish_non_exhaustive()
-    }
-}
-
-unsafe impl Sync for KeEvent {}
-
-impl KeEvent {
-    pub fn new(event_type: EventType, start_signaled: bool) -> impl PinInit<Self> {
-        unsafe {
-            pinned_init::pin_init_from_closure(move |slot: *mut Self| {
-                KeInitializeEvent(
-                    addr_of_mut!((*slot).event),
-                    windows_kernel_sys::_EVENT_TYPE(event_type as i32),
-                    start_signaled.into(),
-                );
-
-                Ok(())
-            })
-        }
-    }
-
-    pub fn wait(&self, timeout: Timeout) -> Result<(), Error> {
-        let timeout = timeout
-            .0
-            .as_ref()
-            .map_or(core::ptr::null::<i64>(), |it| (it as *const i64).cast());
-        let timeout = timeout.cast_mut();
-
-        let event = &self.event as *const KEVENT;
-
-        // SAFETY:
-        // We must imagine the `KEVENT` as Thread-safe
-        // or: The limits of my sanity when interfacing with implicit documentation
-        //
-        // We're going off of the "General Objects" description from here:
-        // <https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/ntos/ntosdef_x/dispatcher_header/index.htm>
-        //
-        // Calling `KeWaitForSingleObject` on a `KEVENT` likely accesses the following fields:
-        // - `Signalling: UCHAR` likely to check if the `KEVENT` is in the signalling state
-        // - `SignalState: LONG` for what kind of signaling to do
-        // - `WaitListHead: LIST_ENTRY` to add the current thread to the waiting list
-        //
-        // The thing is that there's an assumption of it being possible for multiple threads
-        // to access a `KEVENT` object as in <https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/defining-and-using-an-event-object>
-        // there's a description of a worker thread which is separate from the main thread.
-        //
-        // Multiple threads may also add themselves to `WaitListHead`, which
-        // can be done atomically using a CAS on a U128 or memory fence magic
-        //
-        // There's also the situation of this has been used in multithreaded
-        // contexts without crashing or blowing up.
-        //
-        // By all accounts, this must operate on a *const
-        Error::to_err(unsafe {
-            KeWaitForSingleObject(
-                event.cast::<core::ffi::c_void>().cast_mut(),
-                windows_kernel_sys::KWAIT_REASON::Executive,
-                windows_kernel_sys::MODE::KernelMode.0 as i8,
-                false as u8,
-                // LARGE_INTEGER basically has the same layout as an i64
-                timeout.cast(),
-            )
-        })
-    }
-
-    pub fn signal(&self) {
-        unsafe { KeSetEvent(core::ptr::addr_of!(self.event).cast_mut(), 1, 0) };
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Timeout(Option<i64>);
-
-impl Timeout {
-    /// Wait until reaching an absolute timestamp, relative to January 1st, 1601, in 100-nanosecond increments
-    ///
-    /// Also accounts for changes in the system time.
-    pub fn absolute(timestamp: i64) -> Self {
-        assert!(timestamp > 0);
-        Self(Some(timestamp))
-    }
-
-    /// Waits for an interval (in units of 100-nanoseconds) to pass
-    pub fn relative(duration: i64) -> Self {
-        assert!(duration > 0);
-        Self(Some(duration.wrapping_neg()))
-    }
-
-    /// Like [`Self::relative`], but in units of milliseconds
-    pub fn relative_ms(duration: i64) -> Self {
-        // 100 ns is basically 0.1 us
-        // 1 ms = 1_000 us = 1_000_0 100-ns
-        Self::relative(
-            duration
-                .checked_mul(1_000_0)
-                .expect("overflow in ms to 100-ns conversion"),
-        )
-    }
-
-    /// Don't wait and return immediately
-    pub fn dont_wait() -> Self {
-        Self(Some(0))
-    }
-
-    /// Wait indefinitely until the object is set to the signaled state.
-    ///
-    /// ## Note
-    ///
-    /// Caller must be at IRQL <= APC_LEVEL
-    pub fn forever() -> Self {
-        Self(None)
-    }
-}
-
-#[repr(i32)]
-pub enum EventType {
-    Notification = windows_kernel_sys::_EVENT_TYPE::NotificationEvent.0,
-    Synchronization = windows_kernel_sys::_EVENT_TYPE::SynchronizationEvent.0,
 }
 
 /// Called when the framework recives a IRP_MJ_CREATE request (e.g. when an application opens the device

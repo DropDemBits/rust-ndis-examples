@@ -13,3 +13,4 @@ bitflags = "2.3.3"
 
 windows-kernel-sys = { path = "../windows-kernel-sys" }
 nt-string = { version = "0.1.1", default-features = false, features = [ "alloc" ] }
+pinned-init.workspace = true

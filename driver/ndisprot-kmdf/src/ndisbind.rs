@@ -25,6 +25,7 @@ use wdf_kmdf_sys::WDF_IO_QUEUE_CONFIG;
 use windows_kernel_rs::{
     log,
     string::unicode_string::{NtUnicodeStr, NtUnicodeString},
+    sync::Timeout,
 };
 use windows_kernel_sys::{
     result::STATUS, Error, NdisAllocateNetBufferListPool, NdisCloseAdapterEx,
@@ -55,7 +56,7 @@ use windows_kernel_sys::{
 use crate::{
     recv, BindingHandle, EventType, IndicateStatus, KeEvent, MACAddr, NblPool, OpenContext,
     OpenContextFlags, OpenContextInner, OpenState, QueryBinding, QueryOid, SetOid, SyncWrapper,
-    Timeout, MAX_MULTICAST_ADDRESS,
+    MAX_MULTICAST_ADDRESS,
 };
 
 use super::NdisProt;

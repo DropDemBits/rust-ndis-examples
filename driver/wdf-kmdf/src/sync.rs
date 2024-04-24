@@ -8,7 +8,7 @@ use core::{
 };
 
 use pinned_init::{pin_data, Init, PinInit};
-use windows_kernel_rs::Timeout;
+use windows_kernel_rs::sync::Timeout;
 use windows_kernel_sys::Error;
 
 use crate::{

@@ -125,7 +125,6 @@ pub mod log {
 }
 
 pub use nt_string as string;
-use windows_kernel_sys::PLONGLONG;
 
 pub mod ioctl {
     use windows_kernel_sys::{
@@ -438,6 +437,148 @@ pub mod ioctl {
     }
 }
 
+pub mod sync {
+    use windows_kernel_sys::{
+        Error, KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, KEVENT, PLONGLONG,
+    };
+
+    #[pinned_init::pin_data]
+    pub struct KeEvent {
+        #[pin]
+        event: KEVENT,
+    }
+
+    impl core::fmt::Debug for KeEvent {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("KeEvent").finish_non_exhaustive()
+        }
+    }
+
+    unsafe impl Sync for KeEvent {}
+
+    impl KeEvent {
+        pub fn new(event_type: EventType, start_signaled: bool) -> impl pinned_init::PinInit<Self> {
+            unsafe {
+                pinned_init::pin_init_from_closure(move |slot: *mut Self| {
+                    KeInitializeEvent(
+                        core::ptr::addr_of_mut!((*slot).event),
+                        windows_kernel_sys::_EVENT_TYPE(event_type as i32),
+                        start_signaled.into(),
+                    );
+
+                    Ok(())
+                })
+            }
+        }
+
+        pub fn wait(&self, timeout: Timeout) -> Result<(), Error> {
+            let timeout = timeout
+                .0
+                .as_ref()
+                .map_or(core::ptr::null::<i64>(), |it| (it as *const i64).cast());
+            let timeout = timeout.cast_mut();
+
+            let event = &self.event as *const KEVENT;
+
+            // SAFETY:
+            // We must imagine the `KEVENT` as Thread-safe
+            // or: The limits of my sanity when interfacing with implicit documentation
+            //
+            // We're going off of the "General Objects" description from here:
+            // <https://www.geoffchappell.com/studies/windows/km/ntoskrnl/inc/ntos/ntosdef_x/dispatcher_header/index.htm>
+            //
+            // Calling `KeWaitForSingleObject` on a `KEVENT` likely accesses the following fields:
+            // - `Signalling: UCHAR` likely to check if the `KEVENT` is in the signalling state
+            // - `SignalState: LONG` for what kind of signaling to do
+            // - `WaitListHead: LIST_ENTRY` to add the current thread to the waiting list
+            //
+            // The thing is that there's an assumption of it being possible for multiple threads
+            // to access a `KEVENT` object as in <https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/defining-and-using-an-event-object>
+            // there's a description of a worker thread which is separate from the main thread.
+            //
+            // Multiple threads may also add themselves to `WaitListHead`, which
+            // can be done atomically using a CAS on a U128 or memory fence magic
+            //
+            // There's also the situation of this has been used in multithreaded
+            // contexts without crashing or blowing up.
+            //
+            // By all accounts, this must operate on a *const
+            Error::to_err(unsafe {
+                KeWaitForSingleObject(
+                    event.cast::<core::ffi::c_void>().cast_mut(),
+                    windows_kernel_sys::KWAIT_REASON::Executive,
+                    windows_kernel_sys::MODE::KernelMode.0 as i8,
+                    false as u8,
+                    // LARGE_INTEGER basically has the same layout as an i64
+                    timeout.cast(),
+                )
+            })
+        }
+
+        pub fn signal(&self) {
+            unsafe { KeSetEvent(core::ptr::addr_of!(self.event).cast_mut(), 1, 0) };
+        }
+    }
+
+    #[repr(i32)]
+    pub enum EventType {
+        Notification = windows_kernel_sys::_EVENT_TYPE::NotificationEvent.0,
+        Synchronization = windows_kernel_sys::_EVENT_TYPE::SynchronizationEvent.0,
+    }
+
+    /// Represents a timeout used by `KeWaitForSingleObject` and `KeWaitForMultipleObjects`.
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct Timeout(Option<i64>);
+
+    impl Timeout {
+        /// Wait until reaching an absolute timestamp, relative to
+        /// January 1st, 1601, in 100-nanosecond increments.
+        ///
+        /// Also accounts for changes in the system time.
+        pub const fn absolute(timestamp: i64) -> Self {
+            assert!(timestamp > 0);
+            Self(Some(timestamp))
+        }
+
+        /// Waits for an interval (in units of 100-nanoseconds) to pass.
+        pub const fn relative(duration: i64) -> Self {
+            assert!(duration > 0);
+            Self(Some(duration.wrapping_neg()))
+        }
+
+        /// Like [`Self::relative`], but in units of milliseconds.
+        pub const fn relative_ms(duration: i64) -> Self {
+            // 100 ns is basically 0.1 us
+            // 1 ms = 1_000 us = 1_000_0 100-ns
+            let Some(duration) = duration.checked_mul(1_000_0) else {
+                panic!("overflow in ms to 100-ns conversion")
+            };
+
+            Self::relative(duration)
+        }
+
+        /// Don't wait and return immediately
+        pub const fn dont_wait() -> Self {
+            Self(Some(0))
+        }
+
+        /// Wait indefinitely until the object is set to the signaled state.
+        ///
+        /// ## IRQL: `..=APC_LEVEL`
+        pub const fn forever() -> Self {
+            Self(None)
+        }
+
+        /// Gets the raw timeout representation to pass to kernel functions.
+        pub fn value(&mut self) -> PLONGLONG {
+            match &mut self.0 {
+                Some(timeout) => timeout as *mut _,
+                None => core::ptr::null_mut(),
+            }
+        }
+    }
+}
+
 pub struct DriverObject(windows_kernel_sys::PDRIVER_OBJECT);
 
 impl DriverObject {
@@ -455,58 +596,6 @@ impl DriverObject {
     #[must_use]
     pub fn into_raw(self) -> windows_kernel_sys::PDRIVER_OBJECT {
         self.0
-    }
-}
-
-/// Represents a timeout used by `KeWaitForSingleObject` and `KeWaitForMultipleObjects`.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Timeout(Option<i64>);
-
-impl Timeout {
-    /// Wait until reaching an absolute timestamp, relative to
-    /// January 1st, 1601, in 100-nanosecond increments.
-    ///
-    /// Also accounts for changes in the system time.
-    pub const fn absolute(timestamp: i64) -> Self {
-        assert!(timestamp > 0);
-        Self(Some(timestamp))
-    }
-
-    /// Waits for an interval (in units of 100-nanoseconds) to pass.
-    pub const fn relative(duration: i64) -> Self {
-        assert!(duration > 0);
-        Self(Some(duration.wrapping_neg()))
-    }
-
-    /// Like [`Self::relative`], but in units of milliseconds.
-    pub const fn relative_ms(duration: i64) -> Self {
-        // 100 ns is basically 0.1 us
-        // 1 ms = 1_000 us = 1_000_0 100-ns
-        let Some(duration) = duration.checked_mul(1_000_0) else {
-            panic!("overflow in ms to 100-ns conversion")
-        };
-
-        Self::relative(duration)
-    }
-
-    /// Don't wait and return immediately
-    pub const fn dont_wait() -> Self {
-        Self(Some(0))
-    }
-
-    /// Wait indefinitely until the object is set to the signaled state.
-    ///
-    /// ## IRQL: `..=APC_LEVEL`
-    pub const fn forever() -> Self {
-        Self(None)
-    }
-
-    /// Gets the raw timeout representation to pass to kernel functions.
-    pub fn value(&mut self) -> PLONGLONG {
-        match &mut self.0 {
-            Some(timeout) => timeout as *mut _,
-            None => core::ptr::null_mut(),
-        }
     }
 }
 
