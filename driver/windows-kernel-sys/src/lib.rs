@@ -155,6 +155,9 @@ impl NET_BUFFER_LIST {
 
 #[link(name = "wrapper_bindings", kind = "static")]
 extern "C" {
+    #[link_name = "wrapper_IoGetCurrentIrpStackLocation"]
+    pub fn IoGetCurrentIrpStackLocation(Irp: PIRP) -> PIO_STACK_LOCATION;
+
     /// ## Safety
     ///
     /// This assumes that the current thread owns `Mdl`, and thus is not thread-safe.  
@@ -174,6 +177,13 @@ extern "C" {
     pub fn NdisQueryMdl(Mdl: PMDL, VirtualAddress: *mut PVOID, Length: *mut ULONG, Priority: ULONG);
 }
 
+#[inline]
+pub unsafe fn IoCompleteRequest(Irp: PIRP, PriorityBoost: CCHAR) {
+    unsafe { IofCompleteRequest(Irp, PriorityBoost) }
+}
+
+pub const NDIS_SIZEOF_DEVICE_OBJECT_ATTRIBUTES_REVISION_1: u16 =
+    sizeof_through_field!(NDIS_DEVICE_OBJECT_ATTRIBUTES, DeviceClassGuid) as u16;
 pub const NDIS_SIZEOF_LINK_STATE_REVISION_1: u16 =
     sizeof_through_field!(NDIS_LINK_STATE, AutoNegotiationFlags) as u16;
 pub const NDIS_SIZEOF_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1: u16 = sizeof_through_field!(

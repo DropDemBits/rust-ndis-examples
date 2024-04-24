@@ -2,33 +2,39 @@
 
 use core::{
     pin::Pin,
-    sync::atomic::{AtomicI32, AtomicU32},
+    sync::atomic::{AtomicI32, AtomicU32, Ordering},
 };
 
 use vtable::vtable;
 use wdf_kmdf::{
     handle::HasContext,
-    miniport::{MiniportDriver, MiniportDriverCallbacks, MiniportDriverConfig},
+    miniport::{MiniportDevice, MiniportDriver, MiniportDriverCallbacks, MiniportDriverConfig},
     sync::{WaitMutex, WaitPinMutex},
 };
 use windows_kernel_rs::{
+    log::debug,
     string::{nt_unicode_str, unicode_string::NtUnicodeStr},
     DriverObject,
 };
 use windows_kernel_sys::{
-    result::STATUS, Error, NdisDeregisterProtocolDriver, NdisIMAssociateMiniport,
-    NdisMDeregisterMiniportDriver, NdisMRegisterMiniportDriver, NdisRegisterProtocolDriver,
-    NDIS_HANDLE, NDIS_INTERMEDIATE_DRIVER, NDIS_MINIPORT_DRIVER_CHARACTERISTICS,
+    result::STATUS, Error, IoCompleteRequest, IoGetCurrentIrpStackLocation, NdisDeregisterDeviceEx,
+    NdisDeregisterProtocolDriver, NdisIMAssociateMiniport, NdisMDeregisterMiniportDriver,
+    NdisMRegisterMiniportDriver, NdisRegisterDeviceEx, NdisRegisterProtocolDriver, IO_NO_INCREMENT,
+    IRP_MJ_CLEANUP, IRP_MJ_CLOSE, IRP_MJ_CREATE, IRP_MJ_DEVICE_CONTROL, IRP_MJ_MAXIMUM_FUNCTION,
+    NDIS_DEVICE_OBJECT_ATTRIBUTES, NDIS_DEVICE_OBJECT_ATTRIBUTES_REVISION_1, NDIS_HANDLE,
+    NDIS_INTERMEDIATE_DRIVER, NDIS_MINIPORT_DRIVER_CHARACTERISTICS,
     NDIS_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_OBJECT_TYPE_DEFAULT,
     NDIS_PROTOCOL_DRIVER_CHARACTERISTICS, NDIS_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1,
+    NDIS_SIZEOF_DEVICE_OBJECT_ATTRIBUTES_REVISION_1,
     NDIS_SIZEOF_MINIPORT_DRIVER_CHARACTERISTICS_REVISION_1,
     NDIS_SIZEOF_PROTOCOL_DRIVER_CHARACTERISTICS_REVISION_1, NDIS_STATUS, NTSTATUS, PDEVICE_OBJECT,
-    PIRP,
+    PDRIVER_DISPATCH, PIRP,
 };
 
 use crate::{
-    miniport, protocol, Mux, NdisHandle, TrustMeList, MUX_MAJOR_NDIS_VERSION,
-    MUX_MINOR_NDIS_VERSION, MUX_TAG,
+    miniport, ndis_status_to_nt_status, protocol,
+    public::{GLOBAL_LINKNAME_STRING, NTDEVICE_STRING},
+    Mux, NdisHandle, TrustMeList, MUX_MAJOR_NDIS_VERSION, MUX_MINOR_NDIS_VERSION, MUX_TAG,
 };
 
 /// First entry point to be called when this driver is loaded.
@@ -208,17 +214,137 @@ unsafe extern "C" fn pt_set_options(
 /// NOTE: Do not call this from `DriverEntry`, it will prevent the driver from
 /// being unloaded (e.g. on uninstall)
 fn pt_register_device() -> Result<(), Error> {
-    Ok(())
+    fn inner() -> Result<(), Error> {
+        let driver = MiniportDriver::<Mux>::get();
+        let globals = driver.get_context();
+
+        let mut cdo = globals.ControlDevice.lock();
+
+        if globals.MiniportCount.fetch_add(1, Ordering::Relaxed) == 0 {
+            // This is the first ioctl device to be created
+            let mut device_object_attributes =
+                unsafe { core::mem::zeroed::<NDIS_DEVICE_OBJECT_ATTRIBUTES>() };
+
+            let mut dispatch_table: [PDRIVER_DISPATCH; (IRP_MJ_MAXIMUM_FUNCTION + 1) as usize] =
+                [None; (IRP_MJ_MAXIMUM_FUNCTION + 1) as usize];
+
+            dispatch_table[IRP_MJ_CREATE as usize] = Some(pt_dispatch);
+            dispatch_table[IRP_MJ_CLEANUP as usize] = Some(pt_dispatch);
+            dispatch_table[IRP_MJ_CLOSE as usize] = Some(pt_dispatch);
+            dispatch_table[IRP_MJ_DEVICE_CONTROL as usize] = Some(pt_dispatch);
+
+            device_object_attributes.Header.Type = NDIS_OBJECT_TYPE_DEFAULT as u8;
+            device_object_attributes.Header.Revision =
+                NDIS_DEVICE_OBJECT_ATTRIBUTES_REVISION_1 as u8;
+            device_object_attributes.Header.Size = NDIS_SIZEOF_DEVICE_OBJECT_ATTRIBUTES_REVISION_1;
+            device_object_attributes.DeviceName = NTDEVICE_STRING.as_ptr().cast_mut().cast();
+            device_object_attributes.SymbolicName =
+                GLOBAL_LINKNAME_STRING.as_ptr().cast_mut().cast();
+            device_object_attributes.MajorFunctions = dispatch_table.as_mut_ptr();
+            device_object_attributes.ExtensionSize = 0;
+            device_object_attributes.DefaultSDDLString = core::ptr::null();
+            device_object_attributes.DeviceClassGuid = core::ptr::null();
+
+            let mut out_cdo = core::ptr::null_mut();
+            let mut out_device_handle = core::ptr::null_mut();
+
+            // Create the base NDIS device
+            ndis_status_to_nt_status(unsafe {
+                NdisRegisterDeviceEx(
+                    globals.DriverHandle.get(),
+                    &mut device_object_attributes,
+                    &mut out_cdo,
+                    &mut out_device_handle,
+                )
+            })?;
+
+            // Create the wrapper WDF device
+            // This CDO is at the top of the driver stack, so we don't need to
+            // pass in the attached device or the underlying PDO
+            let out_cdo = MiniportDevice::create(driver.as_ref(), out_cdo, None, None, |_| Ok(()))?;
+
+            *cdo = Some(crate::ControlDeviceObject {
+                cdo: out_cdo,
+                device_handle: NdisHandle::new(out_device_handle),
+            });
+        }
+
+        Ok(())
+    }
+
+    debug!("==> pt_register_device");
+    let status = inner();
+    debug!(
+        "<== pt_register_device: {:x?}",
+        status.err().map_or(0, |err| err.0.to_u32())
+    );
+
+    status
 }
 
 /// Process IRPs sent to this device
-unsafe extern "C" fn pt_dispatch(DeviceObject: PDEVICE_OBJECT, Irp: PIRP) -> NTSTATUS {
-    STATUS::SUCCESS.to_u32()
+unsafe extern "C" fn pt_dispatch(_DeviceObject: PDEVICE_OBJECT, Irp: PIRP) -> NTSTATUS {
+    let irp = unsafe { &mut *Irp };
+    let irp_stack = IoGetCurrentIrpStackLocation(Irp);
+    let irp_stack = unsafe { &mut *irp_stack };
+    let status = STATUS::SUCCESS;
+
+    debug!("==> pt_dispatch {}", irp_stack.MajorFunction);
+
+    match irp_stack.MajorFunction as u32 {
+        IRP_MJ_CREATE | IRP_MJ_CLEANUP | IRP_MJ_CLOSE => {}
+        IRP_MJ_DEVICE_CONTROL => {
+            let _buffer = irp.AssociatedIrp.SystemBuffer;
+            let _in_len = irp_stack.Parameters.DeviceIoControl.InputBufferLength;
+
+            match irp_stack.Parameters.DeviceIoControl.IoControlCode {
+                _ => {
+                    // Add code here to handle ioctl commands.
+                }
+            }
+        }
+        _ => {}
+    }
+
+    irp.IoStatus.Information = 0;
+    *irp.IoStatus.__bindgen_anon_1.Status.as_mut() = status.to_u32();
+    IoCompleteRequest(Irp, IO_NO_INCREMENT as i8);
+
+    debug!("<== pt_dispatch {:x?}", status.to_u32());
+
+    status.to_u32()
 }
 
 /// Deregister the ioctl interface. This is called whenever a miniport instance
 /// is halted. When the last miniport instance is halted, we request NDIS to
 /// delete the device object.
 fn pt_deregister_device() -> Result<(), Error> {
-    Ok(())
+    fn inner() -> Result<(), Error> {
+        let driver = MiniportDriver::<Mux>::get();
+        let globals = driver.get_context();
+
+        let old_count = globals.MiniportCount.fetch_sub(1, Ordering::Release);
+
+        // Count must always have been previously positive or 0
+        assert!(old_count >= 1);
+
+        if old_count == 1 {
+            // All VELan miniport instances have been halted.
+            // Deregister the control device.
+            if let Some(cdo) = globals.ControlDevice.lock().take() {
+                unsafe { NdisDeregisterDeviceEx(cdo.device_handle.get()) }
+            }
+        }
+
+        Ok(())
+    }
+
+    debug!("==> pt_deregister_device");
+    let status = inner();
+    debug!(
+        "<== pt_deregister_device {}",
+        status.err().map_or(0, |err| err.0.to_u32())
+    );
+
+    status
 }

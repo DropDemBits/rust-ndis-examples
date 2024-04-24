@@ -570,6 +570,37 @@ struct ControlDeviceObject {
     device_handle: NdisHandle,
 }
 
+fn ndis_status_to_nt_status(status: NDIS_STATUS) -> Result<(), windows_kernel_sys::Error> {
+    // handle the status codes which map to NT status codes first
+    use windows_kernel_sys::{
+        result::{NtStatus, ERROR::NDIS},
+        Error,
+    };
+
+    let status = match NtStatus::from(status) {
+        STATUS::SUCCESS => return Ok(()),
+        same @ (STATUS::PENDING
+        | STATUS::BUFFER_OVERFLOW
+        | STATUS::UNSUCCESSFUL
+        | STATUS::INSUFFICIENT_RESOURCES
+        | STATUS::NOT_SUPPORTED) => same,
+        not_same => {
+            let status = windows_kernel_sys::result::HResultError::from(not_same.to_u32());
+
+            match status {
+                NDIS::BUFFER_TOO_SHORT => STATUS::BUFFER_TOO_SMALL,
+                NDIS::INVALID_LENGTH => STATUS::INVALID_BUFFER_SIZE,
+                NDIS::INVALID_DATA => STATUS::INVALID_PARAMETER,
+                NDIS::ADAPTER_NOT_FOUND => STATUS::NO_MORE_ENTRIES,
+                NDIS::ADAPTER_NOT_READY => STATUS::DEVICE_NOT_READY,
+                _ => STATUS::UNSUCCESSFUL,
+            }
+        }
+    };
+
+    Err(Error(status))
+}
+
 // === Helper types ===
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]

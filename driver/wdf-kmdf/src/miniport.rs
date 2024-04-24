@@ -283,16 +283,17 @@ where
     ///
     /// ## IRQL: `..=PASSIVE_LEVEL`
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn create<D, I>(
+    pub fn create<D, I, Err>(
         driver: &MiniportDriver<D>,
         device_object: PDEVICE_OBJECT,
         attached_device_object: Option<PDEVICE_OBJECT>,
         pdo: Option<PDEVICE_OBJECT>,
-        init_context: impl FnOnce(&Self) -> Result<I, Error>,
+        init_context: impl FnOnce(&Self) -> Result<I, Err>,
     ) -> Result<Self, Error>
     where
         D: IntoContextSpace,
-        I: PinInit<T, Error>,
+        I: PinInit<T, Err>,
+        Error: From<Err>,
     {
         let mut object_attrs = context_space::default_object_attributes::<T>();
 

@@ -1,5 +1,10 @@
 #include "wrapper.h"
 
+PIO_STACK_LOCATION wrapper_IoGetCurrentIrpStackLocation(
+  PIRP Irp
+) {
+  return IoGetCurrentIrpStackLocation(Irp);
+}
 
 ULONG wrapper_MmGetMdlByteCount(
   const MDL* Mdl
