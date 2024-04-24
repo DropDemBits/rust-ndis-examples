@@ -10,7 +10,6 @@ use core::{
 };
 
 use crossbeam_utils::atomic::AtomicCell;
-use ndis_rs::NetBuffer;
 use nt_list::{
     list::{NtList, NtListEntry, NtListHead},
     NtListElement,
@@ -32,13 +31,14 @@ use windows_kernel_sys::{
     NDIS_LINK_STATE, NDIS_MEDIUM, NDIS_OID_REQUEST, NDIS_PACKET_TYPE_ALL_MULTICAST,
     NDIS_PACKET_TYPE_BROADCAST, NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST,
     NDIS_PACKET_TYPE_PROMISCUOUS, NDIS_PNP_CAPABILITIES, NDIS_RECEIVE_SCALE_CAPABILITIES,
-    NDIS_RW_LOCK, NDIS_SPIN_LOCK, NDIS_STATUS, NET_IFINDEX, NPAGED_LOOKASIDE_LIST, NTSTATUS,
-    PDRIVER_OBJECT, PLOCK_STATE, PNDIS_OID_REQUEST, PUNICODE_STRING, ULONG, ULONG64,
+    NDIS_RW_LOCK, NDIS_SPIN_LOCK, NDIS_STATUS, NET_IFINDEX, NTSTATUS, PDRIVER_OBJECT, PLOCK_STATE,
+    PNDIS_OID_REQUEST, PUNICODE_STRING, ULONG, ULONG64,
 };
 
 mod miniport;
 mod mux;
 mod protocol;
+mod public;
 
 const MUX_MAJOR_NDIS_VERSION: u8 = 6;
 const MUX_MINOR_NDIS_VERSION: u8 = 0;
@@ -186,6 +186,7 @@ struct Adapt {
 #[derive(nt_list::list::NtList)]
 enum AdapterVELanList {}
 
+/// Represents a virtual ELAN instance and its associated miniport adapter.
 #[derive(nt_list::NtListElement)]
 #[repr(C)]
 struct VELan {
@@ -304,18 +305,10 @@ struct VELan {
     LatestUnIndicateLinkState: NDIS_LINK_STATE,
     LastIndicatedLinkState: NDIS_LINK_STATE,
 
-    // #[cfg(ieee_vlan_support)]
-    VlanSupport: VELanVlan,
+    #[cfg(feature = "ieee_vlan")]
+    VlanSupport: ieee_vlan_support::VELanVlan,
 
     IfIndex: NET_IFINDEX,
-}
-
-struct VELanVlan {
-    VlanID: ULONG,
-    RcvFormatErrors: ULONG,
-    RcvVlanIdErrors: ULONG,
-    RestoreLookaheadSize: BOOLEAN,
-    TagLookaside: NPAGED_LOOKASIDE_LIST,
 }
 
 #[inline]
@@ -344,14 +337,26 @@ fn release_spin_lock(spinlock: *mut NDIS_SPIN_LOCK, dispatch_level: bool) {
     }
 }
 
+#[cfg(feature = "ieee_vlan")]
 mod ieee_vlan_support {
     use core::ptr::NonNull;
 
     use modular_bitfield::specifiers::{B1, B12, B3};
     use ndis_rs::NetBuffer;
-    use windows_kernel_sys::{NDIS_NET_BUFFER_LIST_8021Q_INFO, PMDL};
+    use windows_kernel_sys::{
+        BOOLEAN, NDIS_NET_BUFFER_LIST_8021Q_INFO, NPAGED_LOOKASIDE_LIST, PMDL, ULONG,
+    };
 
     use crate::VELan;
+
+    #[repr(C)]
+    pub(crate) struct VELanVlan {
+        VlanID: ULONG,
+        RcvFormatErrors: ULONG,
+        RcvVlanIdErrors: ULONG,
+        RestoreLookaheadSize: BOOLEAN,
+        TagLookaside: NPAGED_LOOKASIDE_LIST,
+    }
 
     pub(crate) const TPID: u16 = 0x0081;
 
@@ -426,10 +431,10 @@ mod ieee_vlan_support {
 struct ImNblEntry {
     PreviousSourceHanlde: NDIS_HANDLE,
     pVElan: *mut VELan,
-    // if ieee_vlan_support
+    #[cfg(feature = "ieee_vlan")]
     Flags: ULONG,
-    // if ieee_vlan_support
-    MdlAllocatedNetBuffers: Option<NonNull<NetBuffer>>,
+    #[cfg(feature = "ieee_vlan")]
+    MdlAllocatedNetBuffers: Option<NonNull<ndis_rs::NetBuffer>>,
 }
 
 fn is_low_power_state(power_state: NDIS_DEVICE_POWER_STATE) -> bool {

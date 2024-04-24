@@ -11,4 +11,4 @@ crate-type = ["cdylib"]
 # All of the drivers that can be checked
 # This is just so that we enable std when we're doing a plain `cargo check`
 ndisprot-kmdf = { path="../ndisprot-kmdf", features = ["std"] }
-mux = { path="../mux", features = ["std"]  }
+mux = { path="../mux", features = ["std", "ieee_vlan"]  }

@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [features]
 std = []
+ieee_vlan = []
 
 [dependencies]
 wdf-kmdf-sys = { path = "../wdf-kmdf-sys" }

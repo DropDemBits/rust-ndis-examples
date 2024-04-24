@@ -29,7 +29,7 @@ BUILD_RELEASE = "--release"
 [tasks.build]
 env = { "RUSTFLAGS" = { value = "-Clinker-plugin-lto -Clinker=lld-link -Clink-arg=-fuse-ld=lld-link", condition = { env_not_set = ["NO_LTO"] } } }
 # Specify the target triple so that -Cprefer-dynamic doesn't conflict with -Clinker-plugin-lto while building proc macros
-args = ["build", "--target", "${CARGO_MAKE_RUST_TARGET_TRIPLE}", "@@remove-empty(BUILD_RELEASE)"]
+args = ["build", "--target", "${CARGO_MAKE_RUST_TARGET_TRIPLE}", "@@remove-empty(BUILD_RELEASE)", "--features", "ieee_vlan"]
 
 [tasks.build-notify]
 command = "cargo"
