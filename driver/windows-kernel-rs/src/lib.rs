@@ -438,6 +438,8 @@ pub mod ioctl {
 }
 
 pub mod sync {
+    use core::cell::UnsafeCell;
+
     use windows_kernel_sys::{
         Error, KeInitializeEvent, KeSetEvent, KeWaitForSingleObject, KEVENT, PLONGLONG,
     };
@@ -445,7 +447,7 @@ pub mod sync {
     #[pinned_init::pin_data]
     pub struct KeEvent {
         #[pin]
-        event: KEVENT,
+        event: UnsafeCell<KEVENT>,
     }
 
     impl core::fmt::Debug for KeEvent {
@@ -461,7 +463,7 @@ pub mod sync {
             unsafe {
                 pinned_init::pin_init_from_closure(move |slot: *mut Self| {
                     KeInitializeEvent(
-                        core::ptr::addr_of_mut!((*slot).event),
+                        UnsafeCell::raw_get(core::ptr::addr_of!((*slot).event)),
                         windows_kernel_sys::_EVENT_TYPE(event_type as i32),
                         start_signaled.into(),
                     );
@@ -471,14 +473,8 @@ pub mod sync {
             }
         }
 
-        pub fn wait(&self, timeout: Timeout) -> Result<(), Error> {
-            let timeout = timeout
-                .0
-                .as_ref()
-                .map_or(core::ptr::null::<i64>(), |it| (it as *const i64).cast());
-            let timeout = timeout.cast_mut();
-
-            let event = &self.event as *const KEVENT;
+        pub fn wait(&self, mut timeout: Timeout) -> Result<(), Error> {
+            let event = UnsafeCell::raw_get(&self.event);
 
             // SAFETY:
             // We must imagine the `KEVENT` as Thread-safe
@@ -502,21 +498,28 @@ pub mod sync {
             // There's also the situation of this has been used in multithreaded
             // contexts without crashing or blowing up.
             //
-            // By all accounts, this must operate on a *const
+            // By all accounts, this must operate on a *const, but we use UnsafeCell to signify that
+            // we're doing interior mutability.
             Error::to_err(unsafe {
                 KeWaitForSingleObject(
-                    event.cast::<core::ffi::c_void>().cast_mut(),
+                    event.cast::<core::ffi::c_void>(),
                     windows_kernel_sys::KWAIT_REASON::Executive,
                     windows_kernel_sys::MODE::KernelMode.0 as i8,
                     false as u8,
-                    // LARGE_INTEGER basically has the same layout as an i64
-                    timeout.cast(),
+                    // LARGE_INTEGER has the same layout as an i64.
+                    timeout.value().cast(),
                 )
             })
         }
 
         pub fn signal(&self) {
-            unsafe { KeSetEvent(core::ptr::addr_of!(self.event).cast_mut(), 1, 0) };
+            unsafe {
+                KeSetEvent(
+                    UnsafeCell::raw_get(core::ptr::addr_of!(self.event)),
+                    1,
+                    false as u8,
+                )
+            };
         }
     }
 
@@ -535,18 +538,30 @@ pub mod sync {
         /// January 1st, 1601, in 100-nanosecond increments.
         ///
         /// Also accounts for changes in the system time.
+        ///
+        /// ## IRQL: `..=APC_LEVEL`
+        /// Must also be in a non-arbitrary thread context to prevent stalls
+        /// in random threads.
         pub const fn absolute(timestamp: i64) -> Self {
             assert!(timestamp > 0);
             Self(Some(timestamp))
         }
 
         /// Waits for an interval (in units of 100-nanoseconds) to pass.
+        ///
+        /// ## IRQL: `..=APC_LEVEL`
+        /// Must also be in a non-arbitrary thread context to prevent stalls
+        /// in random threads.
         pub const fn relative(duration: i64) -> Self {
             assert!(duration > 0);
             Self(Some(duration.wrapping_neg()))
         }
 
         /// Like [`Self::relative`], but in units of milliseconds.
+        ///
+        /// ## IRQL: `..=APC_LEVEL`
+        /// Must also be in a non-arbitrary thread context to prevent stalls
+        /// in random threads.
         pub const fn relative_ms(duration: i64) -> Self {
             // 100 ns is basically 0.1 us
             // 1 ms = 1_000 us = 1_000_0 100-ns
@@ -558,6 +573,8 @@ pub mod sync {
         }
 
         /// Don't wait and return immediately
+        ///
+        /// ## IRQL: `..=DISPATCH_LEVEL`
         pub const fn dont_wait() -> Self {
             Self(Some(0))
         }
@@ -565,6 +582,8 @@ pub mod sync {
         /// Wait indefinitely until the object is set to the signaled state.
         ///
         /// ## IRQL: `..=APC_LEVEL`
+        /// Must also be in a non-arbitrary thread context to prevent stalls
+        /// in random threads.
         pub const fn forever() -> Self {
             Self(None)
         }
