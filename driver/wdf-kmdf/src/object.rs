@@ -7,7 +7,8 @@ use windows_kernel_sys::Error;
 use crate::{
     context_space::{self, IntoContextSpace},
     handle::{
-        DriverOwned, HandleWrapper, HasContext, RawHandleWithContext, RawObject, Ref, Wrapped,
+        DriverOwned, HandleWrapper, HasContext, RawHandleWithContext, RawObject, Ref, Unique,
+        Wrapped,
     },
     raw,
 };
@@ -163,6 +164,62 @@ where
         })
     }
 
+    /// Creates a new WDF General Object with exclusive access to the context space
+    ///
+    /// ## IRQL: <= `DISPATCH_LEVEL`
+    ///
+    /// ## Errors
+    ///
+    /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+    ///
+    /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+    /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+    pub fn create_unique<I>(
+        init_context: impl FnOnce(&Self) -> Result<I, Error>,
+    ) -> Result<Unique<Self, T>, Error>
+    where
+        I: PinInit<T, Error>,
+    {
+        Self::_create_unique(
+            context_space::default_object_attributes::<T>(),
+            init_context,
+            |handle| {
+                // SAFETY: We own this handle as we take it from `WdfObjectCreate`.
+                let handle = unsafe { RawHandleWithContext::create(handle) };
+                Self { handle }
+            },
+        )
+    }
+
+    /// Creates a new WDF General Object attached to an object, with exclusive access to the context space
+    ///
+    /// ## IRQL: <= `DISPATCH_LEVEL`
+    ///
+    /// ## Errors
+    ///
+    /// - Other `NTSTATUS` values (see [Framework Object Creation Errors] and [`NTSTATUS` values])
+    ///
+    /// [Framework Object Creation Errors]: https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/framework-object-creation-errors
+    /// [`NTSTATUS` values]: https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/ntstatus-values
+    pub fn with_parent_unique<I>(
+        parent: &impl HandleWrapper,
+        init_context: impl FnOnce(&Self) -> Result<I, Error>,
+    ) -> Result<Unique<Ref<Self>, T>, Error>
+    where
+        I: PinInit<T, Error>,
+    {
+        let mut object_attrs = context_space::default_object_attributes::<T>();
+        object_attrs.ParentObject = parent.as_object_handle();
+
+        Self::_create_unique(object_attrs, init_context, |handle| {
+            // SAFETY: We own this handle as we take it from `WdfObjectCreate`.
+            let handle = unsafe { RawHandleWithContext::create_parented(handle) };
+            let handle = Self { handle };
+            // SAFETY: `handle` comes from the `create_parented` call above
+            unsafe { Ref::into_parented(handle) }
+        })
+    }
+
     fn _create<Handle, I>(
         mut object_attrs: WDF_OBJECT_ATTRIBUTES,
         init_context: impl FnOnce(&Self) -> Result<I, Error>,
@@ -186,6 +243,35 @@ where
         //   the default object attributes with T's context area
         // - The object was just created, and the context space has not been initialized yet
         unsafe { context_space::context_pin_init(handle.as_ref(), init_context)? };
+
+        Ok(handle)
+    }
+
+    fn _create_unique<Handle, I>(
+        mut object_attrs: WDF_OBJECT_ATTRIBUTES,
+        init_context: impl FnOnce(&Self) -> Result<I, Error>,
+        create_handle: impl FnOnce(WDFOBJECT) -> Handle,
+    ) -> Result<Unique<Handle, T>, Error>
+    where
+        Handle: HandleWrapper + AsRef<Self> + HasContext<T>,
+        I: PinInit<T, Error>,
+    {
+        let handle = {
+            let mut handle = core::ptr::null_mut();
+            // SAFETY:
+            // - Caller ensures that we're at the right IRQL
+            unsafe { Error::to_err(raw::WdfObjectCreate(Some(&mut object_attrs), &mut handle)) }?;
+            // Wrap it in the right raw handle
+            create_handle(handle)
+        };
+
+        // SAFETY:
+        // - It's WDF's responsibility to insert the context area, since we create
+        //   the default object attributes with T's context area
+        // - The object was just created, and the context space has not been initialized yet
+        unsafe { context_space::context_pin_init_mut(handle.as_ref(), init_context)? };
+
+        let handle = unsafe { Unique::into_unique(handle) };
 
         Ok(handle)
     }

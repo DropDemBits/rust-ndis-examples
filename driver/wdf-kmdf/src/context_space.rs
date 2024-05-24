@@ -169,10 +169,44 @@ impl<T> ContextSpaceWithDropLock<T> {
         // Caller also ensures that we have exclusive access to the context space
         unsafe { &mut *drop_flag }
     }
+
+    /// ## Safety
+    ///
+    /// `this` must be a pointer to an allocated context space, and must
+    /// be valid for the whole area.
+    unsafe fn data<'a>(this: *mut Self) -> &'a MaybeUninit<T> {
+        // SAFETY: Caller guarantees that the pointer is to an allocated context space
+        // and that it is to the full context space area.
+        let data = unsafe { core::ptr::addr_of!((*this).data) };
+
+        // SAFETY: Context space is guaranteed to be aligned to at most 16-byte alignment,
+        // and is a pointer to a `MaybeUninit` which allows the backing memory to be
+        // uninitialized.
+        unsafe { &*data }
+    }
+
+    /// ## Safety
+    ///
+    /// `this` must be a pointer to an allocated context space, must
+    /// be valid for the whole area, and must have exclusive access to the context space
+    unsafe fn data_mut<'a>(this: *mut Self) -> &'a mut MaybeUninit<T> {
+        // SAFETY: Caller guarantees that the pointer is to an allocated context space
+        // and that it is to the full context space area.
+        let data = unsafe { core::ptr::addr_of_mut!((*this).data) };
+
+        // SAFETY: Context space is guaranteed to be aligned to at most 16-byte alignment,
+        // and is a pointer to a `MaybeUninit` which allows the backing memory to be
+        // uninitialized.
+        //
+        // Caller also ensures that we have exclusive access to the context space.
+        unsafe { &mut *data }
+    }
 }
 
-/// Marker for when the context space is initialized
-const CONTEXT_SPACE_INIT_MARKER: u8 = 0xAA;
+/// Marker for when the context space is initialized with exclusive access
+const CONTEXT_SPACE_INIT_EXCLUSIVE_MARKER: u8 = 0xEE;
+/// Marker for when the context space is initialized with shared access
+const CONTEXT_SPACE_INIT_SHARED_MARKER: u8 = 0xAA;
 /// Marker for when the context space has been dropped
 const CONTEXT_SPACE_DROPPED_MARKER: u8 = 0xDD;
 
@@ -186,26 +220,67 @@ struct DropFlag {
 }
 
 impl DropFlag {
-    fn is_init(&self) -> bool {
-        // `Acquire` is paired with the `Release `store in `mark_initialized`
-        // and `acquire_exclusive`
-        self.init_flag.load(Ordering::Acquire) == CONTEXT_SPACE_INIT_MARKER
+    fn is_init_exclusive(&self) -> bool {
+        // `Acquire` is paired with the `Release `store in `mark_init_shared`
+        // and `mark_init_exclusive`
+        self.init_flag.load(Ordering::Acquire) == CONTEXT_SPACE_INIT_EXCLUSIVE_MARKER
+    }
+
+    fn is_init_shared(&self) -> bool {
+        // `Acquire` is paired with the `Release `store in `mark_init_shared`
+        // and `mark_init_exclusive`
+        self.init_flag.load(Ordering::Acquire) == CONTEXT_SPACE_INIT_SHARED_MARKER
+    }
+
+    /// ## Safety
+    ///
+    /// The associated context space must be initialized, and there must be exclusive
+    /// access to the context space
+    unsafe fn mark_init_exclusive(&self) {
+        // Needs to be `Release` ordering so as to guarantee that the initialization
+        // writes are visible to other threads
+        self.init_flag
+            .store(CONTEXT_SPACE_INIT_EXCLUSIVE_MARKER, Ordering::Release)
     }
 
     /// ## Safety
     ///
     /// The associated context space must be initialized
-    unsafe fn mark_initialized(&self) {
+    unsafe fn mark_init_shared(&self) {
         // Needs to be `Release` ordering so as to guarantee that the initialization
         // writes are visible to other threads
         self.init_flag
-            .store(CONTEXT_SPACE_INIT_MARKER, Ordering::Release)
+            .store(CONTEXT_SPACE_INIT_SHARED_MARKER, Ordering::Release)
+    }
+
+    /// ## Safety
+    ///
+    /// The associated context space must be initialized, and have been initialized
+    /// with exclusive access.
+    unsafe fn into_shared(&self) {
+        // Needs to be `AcqRel` ordering so as to guarantee that the initialization
+        // writes are visible to other threads
+        let old_flag = self.init_flag.compare_exchange(
+            CONTEXT_SPACE_INIT_EXCLUSIVE_MARKER,
+            CONTEXT_SPACE_INIT_SHARED_MARKER,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+
+        debug_assert_eq!(
+            old_flag,
+            Ok(CONTEXT_SPACE_INIT_EXCLUSIVE_MARKER),
+            "trying to make a non-exclusive context space into a shared one"
+        );
     }
 
     /// Returns true if the context space was previously initialized
     fn mark_uninitialized(&mut self) -> bool {
         let flag = self.init_flag.get_mut();
-        let is_init = *flag == CONTEXT_SPACE_INIT_MARKER;
+        let is_init = matches!(
+            *flag,
+            CONTEXT_SPACE_INIT_EXCLUSIVE_MARKER | CONTEXT_SPACE_INIT_SHARED_MARKER
+        );
         *flag = CONTEXT_SPACE_DROPPED_MARKER;
 
         is_init
@@ -216,7 +291,7 @@ impl DropFlag {
 ///
 /// - `context_space` must be a pointer to the original context space
 /// - The context space must actually be initialized
-unsafe fn mark_context_space_init<T: IntoContextSpace>(
+unsafe fn mark_context_space_init_shared<T: IntoContextSpace>(
     context_space: *mut ContextSpaceWithDropLock<T>,
 ) {
     // SAFETY: Caller guarantees that the pointer is to an allocated context space
@@ -224,7 +299,23 @@ unsafe fn mark_context_space_init<T: IntoContextSpace>(
     let drop_lock = unsafe { ContextSpaceWithDropLock::drop_flag(context_space) };
 
     // SAFETY: Caller guarantees that the context space is initialized
-    unsafe { drop_lock.mark_initialized() };
+    unsafe { drop_lock.mark_init_shared() };
+}
+
+/// ## Safety:
+///
+/// - `context_space` must be a pointer to the original context space
+/// - The context space must actually be initialized
+/// - There must be exclusive access to the context space
+unsafe fn mark_context_space_init_exclusive<T: IntoContextSpace>(
+    context_space: *mut ContextSpaceWithDropLock<T>,
+) {
+    // SAFETY: Caller guarantees that the pointer is to an allocated context space
+    // and that it is to the full context space area
+    let drop_lock = unsafe { ContextSpaceWithDropLock::drop_flag(context_space) };
+
+    // SAFETY: Caller guarantees that the context space is initialized and has exclusive access
+    unsafe { drop_lock.mark_init_exclusive() };
 }
 
 fn get_context_space_ptr<T: IntoContextSpace, H: HandleWrapper>(
@@ -260,15 +351,55 @@ pub(crate) fn get_context<T: IntoContextSpace, H: HandleWrapper>(
     // - We've checked `context_space` to not be NULL
     //
     // Note that the actual context space data isn't required to be initialized since it's behind a `MaybeUninit`
-    let context_space = unsafe { &*context_space };
+    let drop_flag = unsafe { ContextSpaceWithDropLock::drop_flag(context_space) };
 
-    // Ensure the context space is initialized
-    if context_space.drop_flag.is_init() {
-        // SAFETY: `is_init` returning true ensures that the context space is initialized
-        let context_space = unsafe { &*context_space.data.as_ptr() };
+    // Ensure the context space is initialized and is shared
+    if drop_flag.is_init_shared() {
+        // SAFETY: This is also okay per the same requirements as getting the drop flag field above.
+        let context_space = unsafe { ContextSpaceWithDropLock::data(context_space) };
+
+        // SAFETY: `is_init_shared` returning true ensures that the context space data is initialized
+        let context_space = unsafe { context_space.assume_init_ref() };
 
         // SAFETY: `context_space` has a stable address as it is heap allocated, and will never be moved
         // as it is an immutable reference.
+        Ok(unsafe { Pin::new_unchecked(context_space) })
+    } else {
+        Err(GetContextSpaceError::NotInitialized)
+    }
+}
+
+/// Gets a mutable ref to the associated context space, or the appropriate [`GetContextSpaceError`] code
+///
+/// ## Safety
+///
+/// Must have exclusive access to the context space
+pub(crate) unsafe fn get_context_mut<T: IntoContextSpace, H: HandleWrapper>(
+    handle: &H,
+) -> Result<Pin<&mut T>, GetContextSpaceError> {
+    let context_space = get_context_space_ptr::<T, H>(handle)?;
+
+    // SAFETY:
+    // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
+    //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
+    // - `IntoContextSpace` requires alignment to MEMORY_ALLOCATION_ALIGNMENT or smaller
+    // - We've checked `context_space` to not be NULL
+    //
+    // Note that the actual context space data isn't required to be initialized since it's behind a `MaybeUninit`
+    let drop_flag = unsafe { ContextSpaceWithDropLock::drop_flag(context_space) };
+
+    // Ensure the context space is initialized and is exclusive
+    if drop_flag.is_init_exclusive() {
+        // SAFETY: This is also okay per the same requirements as getting the drop flag field above.
+        //
+        // `is_init_exclusive` also ensures that we have exclusive access to the context space.
+        let context_space = unsafe { ContextSpaceWithDropLock::data_mut(context_space) };
+
+        // SAFETY: `is_init_exclusive` returning true ensures that the context space data is initialized
+        let context_space = unsafe { context_space.assume_init_mut() };
+
+        // SAFETY: `data` has a stable address as it is heap allocated, and we never let the
+        // intermediate unpinned `context_space` mutable ref outside of here.
         Ok(unsafe { Pin::new_unchecked(context_space) })
     } else {
         Err(GetContextSpaceError::NotInitialized)
@@ -371,6 +502,49 @@ where
     Handle: HandleWrapper,
     I: PinInit<T, Err>,
 {
+    // Initialize the context space
+    let context_space = context_pin_init_inner(handle, init_context)?;
+
+    // SAFETY: By this point we've successfully initialized the context space
+    unsafe { mark_context_space_init_shared::<T>(context_space) };
+
+    Ok(())
+}
+
+/// Initializes the object's context area, using the closure provided
+///
+/// ## Safety
+///
+/// - Must not reinitialize an object's context space
+/// - Object must actually have the context space
+pub(crate) unsafe fn context_pin_init_mut<T, Handle, I, Err>(
+    handle: &Handle,
+    init_context: impl FnOnce(&Handle) -> Result<I, Err>,
+) -> Result<(), Err>
+where
+    T: IntoContextSpace,
+    Handle: HandleWrapper,
+    I: PinInit<T, Err>,
+{
+    // Initialize the context space
+    let context_space = context_pin_init_inner(handle, init_context)?;
+
+    // SAFETY: By this point we've successfully initialized the context space,
+    // and the caller guarantees that we have exclusive access
+    unsafe { mark_context_space_init_exclusive::<T>(context_space) };
+
+    Ok(())
+}
+
+fn context_pin_init_inner<T, Handle, I, Err>(
+    handle: &Handle,
+    init_context: impl FnOnce(&Handle) -> Result<I, Err>,
+) -> Result<*mut ContextSpaceWithDropLock<T>, Err>
+where
+    T: IntoContextSpace,
+    Handle: HandleWrapper,
+    I: PinInit<T, Err>,
+{
     let context_space =
         get_context_space_ptr::<T, Handle>(handle).expect("object must have the context space");
 
@@ -406,8 +580,29 @@ where
     // - We directly `?` the produced error
     unsafe { pin_init.__pinned_init(context_data)? }
 
-    // SAFETY: By this point we've successfully initialized the context space
-    unsafe { mark_context_space_init::<T>(context_space) };
+    Ok(context_space)
+}
 
-    Ok(())
+/// Marks a previously exclusive context space as being shared, allowing multiple shared refs into the context space.
+///
+/// ## Safety
+///
+/// The context space must be initialized and be currently marked as exclusive.
+pub(crate) unsafe fn make_context_shared<T, Handle>(handle: &Handle)
+where
+    T: IntoContextSpace,
+    Handle: HandleWrapper,
+{
+    let context_space =
+        get_context_space_ptr::<T, Handle>(handle).expect("object must have the context space");
+
+    // SAFETY:
+    // - WDF aligns memory to MEMORY_ALLOCATION_ALIGNMENT
+    //   (see https://github.com/microsoft/Windows-Driver-Frameworks/blob/3b9780e847/src/framework/shared/inc/private/common/fxhandle.h#L98)
+    // - `IntoContextSpace` requires alignment to MEMORY_ALLOCATION_ALIGNMENT or smaller
+    // - We've checked `context_space` to not be NULL
+    let drop_flag = unsafe { ContextSpaceWithDropLock::drop_flag(context_space) };
+
+    // SAFETY: Caller ensures the context space is initialized with exclusive access
+    unsafe { drop_flag.into_shared() }
 }

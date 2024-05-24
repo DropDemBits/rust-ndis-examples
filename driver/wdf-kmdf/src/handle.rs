@@ -706,6 +706,64 @@ impl<H: HandleWrapper> core::ops::DerefMut for Wrapped<H> {
     }
 }
 
+/// A handle with unique access to a context space
+///
+/// ## Drop IRQL: `..=DISPATCH_LEVEL`
+#[derive(PartialEq, Eq)]
+pub struct Unique<H: HandleWrapper, T: IntoContextSpace>(H, PhantomData<T>);
+
+impl<H, T> Unique<H, T>
+where
+    T: IntoContextSpace,
+    H: HandleWrapper + HasContext<T>,
+{
+    /// Creates a new `Unique` wrapper for a context space
+    ///
+    /// ## Safety
+    ///
+    /// Must have exclusive access to the context space
+    pub unsafe fn into_unique(handle: H) -> Self {
+        Self(handle, PhantomData)
+    }
+
+    /// Gets the context space of a specific type on a handle
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn get_context(&self) -> Pin<&T> {
+        // SAFETY: Having a `Unique` guarantee that we have exclusive access to the context space
+        unsafe {
+            context_space::get_context_mut::<T, _>(&self.0)
+                .expect("object context space should be initialized")
+                .into_ref()
+        }
+    }
+
+    /// Gets a mutable reference to the context space of a specific type on a handle
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    pub fn get_context_mut(&mut self) -> Pin<&mut T> {
+        // SAFETY: Having a `Unique` guarantee that we have exclusive access to the context space
+        unsafe {
+            context_space::get_context_mut(&self.0)
+                .expect("object context space should be initialized")
+        }
+    }
+
+    /// Unwraps the `Unique` wrapper, allowing the handle to be cloned.
+    pub fn into_shared(self) -> H {
+        // SAFETY: Having a `Unique` guarantee that we have exclusive access to the context space
+        unsafe {
+            context_space::make_context_shared::<T, _>(&self.0);
+        }
+
+        self.0
+    }
+
+    pub fn raw_handle(&self) -> *mut H::Handle {
+        self.0.as_object_handle().cast()
+    }
+}
+
 pub trait HasContext<T: IntoContextSpace>: HandleWrapper {
     /// Gets the context space of a specific type on a handle
     ///
@@ -721,6 +779,24 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HasContext<T>
 }
 
 impl<H: HandleWrapper, T: IntoContextSpace> HasContext<T> for WithContext<H, T> {}
+
+impl<T: IntoContextSpace, H: HandleWrapper + HasContext<T>> HasContext<T> for Ref<H> {}
+
+// /// ## Safety
+// ///
+// /// Must have exclusive access to the context space
+// pub unsafe trait HasContextMut<T: IntoContextSpace>: HasContext<T> {
+//     /// Gets the context space of a specific type on a handle
+//     ///
+//     /// ## IRQL: `..=DISPATCH_LEVEL`
+//     fn get_context_mut(&self) -> Pin<&mut T> {
+//         // SAFETY: Trait implementors guarantee that we have exclusive access to the context space
+//         unsafe {
+//             context_space::get_context_mut(self)
+//                 .expect("object context space should be initialized")
+//         }
+//     }
+// }
 
 /// Represents a wrapper around a framework handle
 pub trait HandleWrapper: Sized {

@@ -17,6 +17,7 @@ macro_rules! cstr {
     }};
 }
 
+// FIXME: Use a `CloneRef` trait to handle both `Ref` and non-`Ref` handles
 #[macro_export]
 macro_rules! clone {
     ($handle:expr) => {
