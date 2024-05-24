@@ -165,7 +165,7 @@ pub(crate) unsafe extern "C" fn mp_cancel_send_nbls(
 
     debug!("==> mp_cancel_send_nbls: VELan {MiniportAdapterContext:x?}, CancelId {CancelId:?}");
 
-    unsafe { NdisCancelSendNetBufferLists((&*velan.pAdapt).BindingHandle, CancelId) }
+    // unsafe { NdisCancelSendNetBufferLists((&*velan.pAdapt).BindingHandle, CancelId) }
 
     debug!("<== mp_cancel_send_nbls: VELan {MiniportAdapterContext:x?}, CancelId {CancelId:?}");
 }

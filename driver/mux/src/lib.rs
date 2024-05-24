@@ -1,7 +1,10 @@
 #![no_std]
 #![allow(non_upper_case_globals, non_snake_case, dead_code)]
 
+extern crate alloc;
+
 use core::{
+    cell::UnsafeCell,
     ffi::CStr,
     mem::{ManuallyDrop, MaybeUninit},
     pin::Pin,
@@ -9,30 +12,31 @@ use core::{
     sync::atomic::{AtomicI32, AtomicU32, AtomicU64},
 };
 
+use alloc::vec::Vec;
 use crossbeam_utils::atomic::AtomicCell;
 use nt_list::{
-    list::{NtList, NtListEntry, NtListHead},
+    list::{NtListEntry, NtListHead},
     NtListElement,
 };
-use wdf_kmdf::{
-    miniport::MiniportDevice,
-    sync::{WaitMutex, WaitPinMutex},
-};
+use wdf_kmdf::{miniport::MiniportDevice, object::GeneralObject, sync::WaitMutex};
 use windows_kernel_rs::{
     log,
     string::unicode_string::{NtUnicodeStr, NtUnicodeString},
+    sync::KeEvent,
     DriverObject,
 };
 use windows_kernel_sys::{
     result::STATUS, KeAcquireSpinLockAtDpcLevel, KeAcquireSpinLockRaiseToDpc, KeInitializeMutex,
-    KeReleaseMutex, KeReleaseSpinLock, KeReleaseSpinLockFromDpcLevel, KeWaitForSingleObject,
-    NdisAcquireReadWriteLock, NdisInitializeReadWriteLock, NdisReleaseReadWriteLock, BOOLEAN,
-    KMUTEX, NDIS_BIND_PARAMETERS, NDIS_DEVICE_POWER_STATE, NDIS_EVENT, NDIS_HANDLE,
-    NDIS_LINK_STATE, NDIS_MEDIUM, NDIS_OID_REQUEST, NDIS_PACKET_TYPE_ALL_MULTICAST,
-    NDIS_PACKET_TYPE_BROADCAST, NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST,
-    NDIS_PACKET_TYPE_PROMISCUOUS, NDIS_PNP_CAPABILITIES, NDIS_RECEIVE_SCALE_CAPABILITIES,
-    NDIS_RW_LOCK, NDIS_SPIN_LOCK, NDIS_STATUS, NET_IFINDEX, NTSTATUS, PDRIVER_OBJECT, PLOCK_STATE,
-    PNDIS_OID_REQUEST, PUNICODE_STRING, ULONG, ULONG64,
+    KeInitializeSpinLock, KeReleaseMutex, KeReleaseSpinLock, KeReleaseSpinLockFromDpcLevel,
+    KeWaitForSingleObject, NdisAcquireReadWriteLock, NdisInitializeReadWriteLock,
+    NdisReleaseReadWriteLock, BOOLEAN, DISPATCH_LEVEL, KIRQL, KMUTEX, KSPIN_LOCK,
+    NDIS_BIND_PARAMETERS, NDIS_DEVICE_POWER_STATE, NDIS_EVENT, NDIS_HANDLE, NDIS_LINK_STATE,
+    NDIS_MEDIUM, NDIS_OID_REQUEST, NDIS_PACKET_TYPE_ALL_MULTICAST, NDIS_PACKET_TYPE_BROADCAST,
+    NDIS_PACKET_TYPE_DIRECTED, NDIS_PACKET_TYPE_MULTICAST, NDIS_PACKET_TYPE_PROMISCUOUS,
+    NDIS_PHYSICAL_MEDIUM, NDIS_PNP_CAPABILITIES, NDIS_RECEIVE_SCALE_CAPABILITIES, NDIS_RW_LOCK,
+    NDIS_SPIN_LOCK, NDIS_STATUS, NET_IFINDEX, NET_IFTYPE, NET_IF_ACCESS_TYPE,
+    NET_IF_CONNECTION_TYPE, NET_IF_DIRECTION_TYPE, NTSTATUS, PDRIVER_OBJECT, PLOCK_STATE,
+    PNDIS_OID_REQUEST, PUNICODE_STRING, UCHAR, ULONG, ULONG64, USHORT,
 };
 
 mod miniport;
@@ -111,62 +115,70 @@ struct MuxNdisRequest {
 
 #[repr(u8)]
 enum AdapterBindingState {
+    Opening,
     Paused,
-    Pausing,
     Running,
+    Pausing,
 }
 
 const MUX_BINDING_ACTIVE: u32 = 0b01;
 const MUX_BINDING_CLOSING: u32 = 0b10;
 
-#[derive(NtList)]
-enum AdaptList {}
+// #[derive(NtList)]
+// enum AdaptList {}
 
 /// The Adapt struct represents a binding to a lower adapter by the protocol
 /// edge of this adapter. Based on the configured Upper bindings, zero or more
 /// virtual miniport devices (VELANs) are created above this binding.
-#[derive(NtListElement)]
+// #[derive(NtListElement)]
+#[pinned_init::pin_data]
 #[repr(C)]
 struct Adapt {
     /// Chain adapters. Access to this is protected by the global lock.
-    Link: NtListEntry<Self, AdaptList>,
+    // Link: NtListEntry<Self, AdaptList>,
 
     /// References to this adapter
-    RefCount: AtomicU32,
+    // RefCount: AtomicU32,
 
     /// Handle to the lower adapter, used in NDIS calls referring to this adapter.
-    BindingHandle: NDIS_HANDLE,
+    BindingHandle: NdisHandle,
 
     /// List of all the virtual ELANs created on this lower binding
-    VElanList: NtListHead<VELan, AdapterVELanList>,
+    // VElanList: TrustMeList<VELan, AdapterVELanList>,
+    VElanList: (),
     VElanCount: u32,
 
     /// String used to access configuration for this binding
-    ConfigString: ManuallyDrop<NtUnicodeString>,
+    ConfigString: SyncWrapper<ManuallyDrop<NtUnicodeString>>,
 
     /// Open Status. used by bind/halt for Open/Close adapter status.
     Status: NDIS_STATUS,
 
-    Event: NDIS_EVENT,
+    #[pin]
+    Event: KeEvent,
 
     /// Packet filter set to the underlying adapter. This is a union of filter
     /// bits set on all attached VELAN miniports.
     PacketFilter: u32,
+
+    /// Power state of the underlying adapter
+    PtDevicePowerState: NDIS_DEVICE_POWER_STATE,
 
     /// NDIS Medium of VELAN taken from the miniport below
     Medium: NDIS_MEDIUM,
 
     /// BindParameters passed to protocol giving it information on the miniport
     /// below.
-    BindParameters: NDIS_BIND_PARAMETERS,
+    BindParameters: BindInfo,
     PowerManagementCaps: NDIS_PNP_CAPABILITIES,
     RcvScaleCapabilities: NDIS_RECEIVE_SCALE_CAPABILITIES,
     LastIndicatedLinkState: NDIS_LINK_STATE,
     BindingState: AdapterBindingState,
 
     OutstandingSends: AtomicU32,
-    PauseEvent: Option<NonNull<NDIS_EVENT>>,
-    Lock: NDIS_SPIN_LOCK,
+    PauseEvent: Option<SyncWrapper<NonNull<KeEvent>>>,
+    #[pin]
+    Lock: NdisSpinMutex<AdaptInner>,
 
     /// Read/Write lock: allows multiple readers but only a single writer.
     ///
@@ -176,11 +188,69 @@ struct Adapt {
     /// Code that needs to safely modify the VELAN list or shared fields acquires a WRITE lock (which also excludes readers).
     ///
     /// See `AcquireAdapt_xxx`/`ReleaseAdapt_xxx` below.
-    RWLock: NDIS_RW_LOCK,
+    #[pin]
+    RWLock: NdisRwLock,
 
     OutstandingRequests: AtomicU32,
-    CloseEvent: Option<NonNull<NDIS_EVENT>>,
+    CloseEvent: Option<SyncWrapper<NonNull<KeEvent>>>,
+}
+
+wdf_kmdf::impl_context_space!(Adapt);
+
+struct AdaptInner {
     Flags: u32,
+}
+
+struct BindInfo {
+    pub MediaType: NDIS_MEDIUM,
+    pub MtuSize: ULONG,
+    pub MaxXmitLinkSpeed: ULONG64,
+    pub MaxRcvLinkSpeed: ULONG64,
+    pub XmitLinkSpeed: ULONG64,
+    pub RcvLinkSpeed: ULONG64,
+    //
+    pub LookaheadSize: ULONG,
+    pub MaxMulticastListSize: ULONG,
+    pub CurrentMacAddress: [UCHAR; 32usize],
+    pub MacAddressLength: USHORT,
+    pub PhysicalMediumType: NDIS_PHYSICAL_MEDIUM,
+    pub AccessType: NET_IF_ACCESS_TYPE,
+    pub DirectionType: NET_IF_DIRECTION_TYPE,
+    pub ConnectionType: NET_IF_CONNECTION_TYPE,
+    pub IfType: NET_IFTYPE,
+    pub IfConnectorPresent: BOOLEAN,
+    // note: would have to point to Adapt's RSS capabilities
+    // pub RcvScaleCapabilities: PNDIS_RECEIVE_SCALE_CAPABILITIES,
+    pub SupportedPacketFilters: ULONG,
+    //
+    pub BoundIfIndex: NET_IFINDEX,
+}
+
+unsafe impl Sync for BindInfo {}
+
+impl BindInfo {
+    fn from_bind_parameters(bind_parameters: &NDIS_BIND_PARAMETERS) -> BindInfo {
+        BindInfo {
+            MediaType: bind_parameters.MediaType,
+            MtuSize: bind_parameters.MtuSize,
+            MaxXmitLinkSpeed: bind_parameters.MaxXmitLinkSpeed,
+            MaxRcvLinkSpeed: bind_parameters.MaxRcvLinkSpeed,
+            XmitLinkSpeed: bind_parameters.XmitLinkSpeed,
+            RcvLinkSpeed: bind_parameters.RcvLinkSpeed,
+            LookaheadSize: bind_parameters.LookaheadSize,
+            MaxMulticastListSize: bind_parameters.MaxMulticastListSize,
+            CurrentMacAddress: bind_parameters.CurrentMacAddress,
+            MacAddressLength: bind_parameters.MacAddressLength,
+            PhysicalMediumType: bind_parameters.PhysicalMediumType,
+            AccessType: bind_parameters.AccessType,
+            DirectionType: bind_parameters.DirectionType,
+            ConnectionType: bind_parameters.ConnectionType,
+            IfType: bind_parameters.IfType,
+            IfConnectorPresent: bind_parameters.IfConnectorPresent,
+            SupportedPacketFilters: bind_parameters.SupportedPacketFilters,
+            BoundIfIndex: bind_parameters.BoundIfIndex,
+        }
+    }
 }
 
 #[derive(nt_list::list::NtList)]
@@ -311,32 +381,6 @@ struct VELan {
     IfIndex: NET_IFINDEX,
 }
 
-#[inline]
-fn acquire_spin_lock(spinlock: *mut NDIS_SPIN_LOCK, dispatch_level: bool) {
-    if dispatch_level {
-        unsafe { KeAcquireSpinLockAtDpcLevel(core::ptr::addr_of_mut!((*spinlock).SpinLock)) }
-    } else {
-        unsafe {
-            (*spinlock).OldIrql =
-                KeAcquireSpinLockRaiseToDpc(core::ptr::addr_of_mut!((*spinlock).SpinLock))
-        }
-    }
-}
-
-#[inline]
-fn release_spin_lock(spinlock: *mut NDIS_SPIN_LOCK, dispatch_level: bool) {
-    if dispatch_level {
-        unsafe { KeReleaseSpinLockFromDpcLevel(core::ptr::addr_of_mut!((*spinlock).SpinLock)) }
-    } else {
-        unsafe {
-            KeReleaseSpinLock(
-                core::ptr::addr_of_mut!((*spinlock).SpinLock),
-                (*spinlock).OldIrql,
-            )
-        }
-    }
-}
-
 #[cfg(feature = "ieee_vlan")]
 mod ieee_vlan_support {
     use core::ptr::NonNull;
@@ -441,43 +485,172 @@ fn is_low_power_state(power_state: NDIS_DEVICE_POWER_STATE) -> bool {
     power_state.0 > NDIS_DEVICE_POWER_STATE::NdisDeviceStateD0.0
 }
 
-fn adapt_init_rw_lock(adapt: *mut MaybeUninit<Adapt>) {
-    unsafe {
-        NdisInitializeReadWriteLock(core::ptr::addr_of_mut!((*(*adapt).as_mut_ptr()).RWLock))
-    };
+#[pinned_init::pin_data]
+pub struct NdisSpinMutex<T> {
+    #[pin]
+    lock: NdisSpinLock,
+    data: UnsafeCell<T>,
 }
 
-#[inline]
-fn adapt_acquire_read_lock(adapt: *mut Adapt, lock_state: PLOCK_STATE) {
-    unsafe {
-        NdisAcquireReadWriteLock(
-            core::ptr::addr_of_mut!((*adapt).RWLock),
-            false as u8,
-            lock_state,
-        )
+impl<T> NdisSpinMutex<T> {
+    fn new(data: T) -> impl pinned_init::PinInit<Self> {
+        pinned_init::pin_init! {
+            NdisSpinMutex {
+                lock <- NdisSpinLock::new(),
+                data: UnsafeCell::new(data),
+            }
+        }
+    }
+
+    fn lock(&self, dispatch_level: bool) -> NdisSpinMutexGuard<'_, T> {
+        NdisSpinMutexGuard {
+            mutex: self,
+            guard: self.lock.acquire(dispatch_level),
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut T {
+        self.data.get_mut()
     }
 }
 
-#[inline]
-fn adapt_release_read_lock(adapt: *mut Adapt, lock_state: PLOCK_STATE) {
-    unsafe { NdisReleaseReadWriteLock(core::ptr::addr_of_mut!((*adapt).RWLock), lock_state) }
+unsafe impl<T> Sync for NdisSpinMutex<T> {}
+
+pub struct NdisSpinMutexGuard<'a, T> {
+    mutex: &'a NdisSpinMutex<T>,
+    guard: NdisSpinLockGuard<'a>,
 }
 
-#[inline]
-fn adapt_acquire_write_lock(adapt: *mut Adapt, lock_state: PLOCK_STATE) {
-    unsafe {
-        NdisAcquireReadWriteLock(
-            core::ptr::addr_of_mut!((*adapt).RWLock),
-            true as u8,
-            lock_state,
-        )
+impl<'a, T> core::ops::Deref for NdisSpinMutexGuard<'a, T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: We have exclusive access to the data
+        unsafe { &*self.mutex.data.get() }
     }
 }
 
-#[inline]
-fn adapt_release_write_lock(adapt: *mut Adapt, lock_state: PLOCK_STATE) {
-    unsafe { NdisReleaseReadWriteLock(core::ptr::addr_of_mut!((*adapt).RWLock), lock_state) }
+impl<'a, T> core::ops::DerefMut for NdisSpinMutexGuard<'a, T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: We have exclusive access to the data
+        unsafe { &mut *self.mutex.data.get() }
+    }
 }
+
+#[pinned_init::pin_data]
+pub struct NdisSpinLock {
+    #[pin]
+    lock: UnsafeCell<KSPIN_LOCK>,
+}
+
+impl NdisSpinLock {
+    fn new() -> impl pinned_init::PinInit<Self> {
+        unsafe {
+            pinned_init::pin_init_from_closure(move |slot: *mut Self| {
+                KeInitializeSpinLock(UnsafeCell::raw_get(core::ptr::addr_of_mut!((*slot).lock)));
+                Ok(())
+            })
+        }
+    }
+
+    fn acquire(&self, dispatch_level: bool) -> NdisSpinLockGuard<'_> {
+        let spin_lock = UnsafeCell::raw_get(core::ptr::addr_of!(self.lock));
+        let old_irql = if dispatch_level {
+            unsafe { KeAcquireSpinLockAtDpcLevel(spin_lock) }
+            DISPATCH_LEVEL as KIRQL
+        } else {
+            unsafe { KeAcquireSpinLockRaiseToDpc(spin_lock) }
+        };
+
+        NdisSpinLockGuard {
+            lock: self,
+            old_irql,
+            dispatch_level,
+        }
+    }
+}
+
+unsafe impl Sync for NdisSpinLock {}
+
+struct NdisSpinLockGuard<'a> {
+    lock: &'a NdisSpinLock,
+    old_irql: KIRQL,
+    dispatch_level: bool,
+}
+
+impl<'a> Drop for NdisSpinLockGuard<'a> {
+    fn drop(&mut self) {
+        let spin_lock = UnsafeCell::raw_get(core::ptr::addr_of!(self.lock.lock));
+        if self.dispatch_level {
+            unsafe { KeReleaseSpinLockFromDpcLevel(spin_lock) }
+        } else {
+            unsafe { KeReleaseSpinLock(spin_lock, self.old_irql) }
+        }
+    }
+}
+
+#[pinned_init::pin_data]
+pub struct NdisRwLock {
+    #[pin]
+    lock: UnsafeCell<NDIS_RW_LOCK>,
+}
+
+impl NdisRwLock {
+    pub fn new() -> impl pinned_init::PinInit<Self> {
+        unsafe {
+            pinned_init::pin_init_from_closure(move |slot: *mut Self| {
+                NdisInitializeReadWriteLock(UnsafeCell::raw_get(core::ptr::addr_of_mut!(
+                    (*slot).lock
+                )));
+                Ok(())
+            })
+        }
+    }
+
+    #[inline]
+    pub fn read(&self, lock_state: PLOCK_STATE) -> ReadGuard<'_> {
+        unsafe { NdisAcquireReadWriteLock(self.lock.get(), false as u8, lock_state) };
+
+        ReadGuard(RwGuard {
+            lock: self,
+            lock_state,
+        })
+    }
+
+    #[inline]
+    pub fn write(&self, lock_state: PLOCK_STATE) -> WriteGuard<'_> {
+        unsafe { NdisAcquireReadWriteLock(self.lock.get(), true as u8, lock_state) };
+
+        WriteGuard(RwGuard {
+            lock: self,
+            lock_state,
+        })
+    }
+}
+
+impl core::fmt::Debug for NdisRwLock {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NdisRwLock").finish_non_exhaustive()
+    }
+}
+
+unsafe impl Sync for NdisRwLock {}
+
+struct RwGuard<'a> {
+    lock: &'a NdisRwLock,
+    lock_state: PLOCK_STATE,
+}
+
+impl<'a> Drop for RwGuard<'a> {
+    fn drop(&mut self) {
+        unsafe { NdisReleaseReadWriteLock(self.lock.lock.get(), self.lock_state) }
+    }
+}
+
+pub struct ReadGuard<'a>(RwGuard<'a>);
+pub struct WriteGuard<'a>(RwGuard<'a>);
 
 #[inline]
 fn velan_inc_pending_receives(velan: &VELan) {
@@ -547,8 +720,7 @@ pub(crate) struct Mux {
     // NOTE: Not really used, and we should use the adapter list instead to get all velans.
     // VElanList: wdf_kmdf::sync::SpinPinMutex<TrustMeList<VELan, VELanList>>,
     /// List of all bound adapters.
-    #[pin]
-    AdapterList: WaitPinMutex<TrustMeList<Adapt, AdaptList>>,
+    AdapterList: WaitMutex<Vec<GeneralObject<Adapt>>>,
     /// Used to assign VELAN numbers (which are used to generate MAC addresses).
     NextVElanNumber: AtomicU32,
 
@@ -723,6 +895,31 @@ where
     L: nt_list::NtTypedList<T = nt_list::list::NtList>,
 {
 }
+
+// FIXME: This a wrapper which allows `T` in `Sync` contexts
+struct SyncWrapper<T>(T);
+
+impl<T> core::ops::Deref for SyncWrapper<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> core::ops::DerefMut for SyncWrapper<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T> From<T> for SyncWrapper<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+unsafe impl<T> Sync for SyncWrapper<T> {}
 
 // === Common dispatch functions ===
 

@@ -12,7 +12,8 @@
     clippy::useless_transmute,
     clippy::too_many_arguments,
     clippy::unnecessary_cast,
-    clippy::pedantic
+    clippy::pedantic,
+    dead_code
 )]
 mod bindings;
 
@@ -155,6 +156,9 @@ impl NET_BUFFER_LIST {
 
 #[link(name = "wrapper_bindings", kind = "static")]
 extern "C" {
+    #[link_name = "wrapper_KeInitializeSpinLock"]
+    pub fn KeInitializeSpinLock(SpinLock: PKSPIN_LOCK);
+
     #[link_name = "wrapper_IoGetCurrentIrpStackLocation"]
     pub fn IoGetCurrentIrpStackLocation(Irp: PIRP) -> PIO_STACK_LOCATION;
 

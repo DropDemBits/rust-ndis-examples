@@ -80,6 +80,31 @@ We could just \*makes ur wait into a queue\*, though that's new code™. Doing i
 - WDF requests are completion-based, which would need to be adapted to the readiness-based API of async Rust (this is something we'd need to do anyway).
 
 There's also the option of making our own OID request messages and relate them to WDF requests somehow, though that does mean we'd have to manually handle cancellation.
+
+# Does `ProtocolBindAdapterEx` have exclusive access to the binding context?
+
+Per the remarks on `ProtocolBindAdapterEx`, these callbacks cannot happen during `ProtocolBindAdapterEx` until specific points:
+- `ProtocolOidRequestComplete` and `ProtocolDirectOidRequestComplete` since OID requests cannot be sent until the open operation is complete.
+- `ProtocolReceiveNetBufferLists` since the packet filter must be set up, which requires an OID request.
+- `ProtocolSendNetBufferListsComplete` since after the operation is complete, the binding is in the paused state.
+- `ProtocolUnbindAdapterEx` can only be called after the binding state transitions to "Paused", which can only happen after a successful `ProtocolBindAdapterEx` callback.
+where the completion of the open operation refers to when `NdisOpenAdapterEx` returns `STATUS_SUCCESS`, or `ProtocolOpenAdapterCompleteEx` is called if `NdisOpenAdapterEx` returned `STATUS_PENDING`.
+
+Callbacks that have/have not been verified to be called during the execution of `ProtocolBindAdapterEx`:
+
+- [x] `ProtocolBindAdapterEx`
+- [ ] `ProtocolOpenAdapterCompleteEx`
+- [x] `ProtocolUnbindAdapterEx`
+- [ ] `ProtocolCloseAdapterCompleteEx`
+- [x] `ProtocolOidRequestComplete`
+- [x] `ProtocolDirectOidRequestComplete`
+- [x] `ProtocolReceiveNetBufferLists`
+- [x] `ProtocolSendNetBufferListsComplete`
+- [ ] `ProtocolStatusEx`
+- [x] `ProtocolUninstall`
+- [ ] `ProtocolNetPnPEvent`
+
+
 ## Using Critical Regions
 
 Critical regions should be used while acquiring a lock so that the operations inside the critical region aren't interrupted by a normal kernel APC (but still get interrupted by special Kernel APCs). There are executive resources which automatically wrap acquire & release inside a critical region (including spinlocks, mutexes), but otherwise acquiring a resource must also manually be enclosed by `KeEnterCriticalRegion` and `KeLeaveCriticalRegion`.

@@ -5,11 +5,12 @@ use core::{
     sync::atomic::{AtomicI32, AtomicU32, Ordering},
 };
 
+use alloc::vec::Vec;
 use vtable::vtable;
 use wdf_kmdf::{
     handle::HasContext,
     miniport::{MiniportDevice, MiniportDriver, MiniportDriverCallbacks, MiniportDriverConfig},
-    sync::{WaitMutex, WaitPinMutex},
+    sync::WaitMutex,
 };
 use windows_kernel_rs::{
     log::debug,
@@ -34,7 +35,7 @@ use windows_kernel_sys::{
 use crate::{
     miniport, ndis_status_to_nt_status, protocol,
     public::{GLOBAL_LINKNAME_STRING, NTDEVICE_STRING},
-    Mux, NdisHandle, TrustMeList, MUX_MAJOR_NDIS_VERSION, MUX_MINOR_NDIS_VERSION, MUX_TAG,
+    Mux, NdisHandle, MUX_MAJOR_NDIS_VERSION, MUX_MINOR_NDIS_VERSION, MUX_TAG,
 };
 
 /// First entry point to be called when this driver is loaded.
@@ -52,7 +53,7 @@ pub(super) fn driver_entry(
         |_| {
             Ok(pinned_init::try_pin_init! {
                 Mux {
-                    AdapterList <- WaitPinMutex::new(TrustMeList::new()),
+                    AdapterList <- WaitMutex::new(Vec::new()),
                     NextVElanNumber: AtomicU32::new(0),
 
                     ProtHandle: NdisHandle::empty(),
@@ -181,7 +182,7 @@ impl MiniportDriverCallbacks for Mux {
         }
 
         // All adapters should've been closed
-        debug_assert!(self.AdapterList.lock().as_ref().as_list().is_empty());
+        debug_assert!(self.AdapterList.lock().is_empty());
 
         // The control device should've been cleaned up.
         debug_assert!(self.ControlDevice.lock().is_none());

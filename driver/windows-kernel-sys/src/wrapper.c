@@ -1,5 +1,10 @@
 #include "wrapper.h"
 
+VOID wrapper_KeInitializeSpinLock(PKSPIN_LOCK SpinLock)
+{
+  KeInitializeSpinLock(SpinLock);
+}
+
 PIO_STACK_LOCATION wrapper_IoGetCurrentIrpStackLocation(
   PIRP Irp
 ) {
