@@ -29,6 +29,40 @@ use crate::{
     raw,
 };
 
+#[macro_export]
+macro_rules! impl_clone_ref {
+    ($ty:ident$(<$($ty_arg:ident $(: $clause:tt)?),+>)?) => {
+        impl $(<$($ty_arg)+>)? $crate::handle::CloneRef for $ty$(<$($ty_arg)+>)?
+        $(where
+            $($ty_arg: $($clause)?,)+
+        )?
+        {
+            type Ref<const TAG: usize> = $crate::handle::Ref<Self>;
+
+            fn clone_ref<const TAG: usize>(
+                &self,
+                file: *const i8,
+                line: u32,
+            ) -> Self::Ref<{ TAG }> {
+                $crate::handle::Ref::clone_from_handle_location_tag(self, file, line)
+            }
+        }
+    };
+    ($ty:ident) => {
+        impl $crate::handle::CloneRef for $ty {
+            type Ref<const TAG: usize> = $crate::handle::Ref<Self>;
+
+            fn clone_ref<const TAG: usize>(
+                &self,
+                file: *const i8,
+                line: u32,
+            ) -> Self::Ref<{ TAG }> {
+                $crate::handle::Ref::clone_from_handle_location_tag(self, file, line)
+            }
+        }
+    };
+}
+
 /// A wrapper around a raw handle
 ///
 /// ## Drop IRQL: `..=DISPATCH_LEVEL`
@@ -486,19 +520,25 @@ where
 // we make this by using `wrap_raw`, which requires that we don't
 // accidentally cause aliasing accesses on drop.
 #[derive(PartialEq, Eq)]
-pub struct Ref<H: HandleWrapper>(ManuallyDrop<H>, usize);
+pub struct Ref<H: HandleWrapper, const TAG: usize = { context_space::REF_TAG }>(ManuallyDrop<H>);
 
-impl<H: HandleWrapper> Ref<H> {
+// For any handle, must be pointer-sized
+static_assertions::assert_eq_size!(Ref<RawHandle<RawDriver, DriverOwned>>, *const ());
+
+impl<H: HandleWrapper> Ref<H, { context_space::REF_TAG }> {
     /// Transforms an owning handle into a parented ref handle
     ///
     /// ## Safety
     ///
     /// Handle must be from a [`RawHandle::create_parented`] call
     pub unsafe fn into_parented(handle: H) -> Self {
-        // Note: We don't bump up the refcount becausae
-        Self(ManuallyDrop::new(handle), context_space::REF_TAG)
+        // Note: We don't bump up the refcount because [`RawHandle::create_parented`]
+        // already bumps the refcount
+        Self(ManuallyDrop::new(handle))
     }
+}
 
+impl<H: HandleWrapper, const TAG: usize> Ref<H, TAG> {
     /// Creates a new reference to a handle from an existing handle
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
@@ -511,13 +551,13 @@ impl<H: HandleWrapper> Ref<H> {
         unsafe {
             raw::WdfObjectReferenceActual(
                 handle.as_object_handle(),
-                Some(context_space::REF_TAG as *mut _),
+                Some(TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             );
         }
 
-        Self(handle, context_space::REF_TAG)
+        Self(handle)
     }
 
     /// Creates a new reference to a handle from an existing handle, including
@@ -533,25 +573,20 @@ impl<H: HandleWrapper> Ref<H> {
         unsafe {
             raw::WdfObjectReferenceActual(
                 handle.as_object_handle(),
-                Some(context_space::REF_TAG as *mut _),
+                Some(TAG as *mut _),
                 line as i32,
                 Some(file),
             );
         }
 
-        Self(handle, context_space::REF_TAG)
+        Self(handle)
     }
 
     /// Creates a new reference to a handle from an existing handle, including
     /// location info and a custom tag.
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_from_handle_location_tag(
-        handle: &H,
-        file: *const i8,
-        line: u32,
-        tag: usize,
-    ) -> Self {
+    pub fn clone_from_handle_location_tag(handle: &H, file: *const i8, line: u32) -> Self {
         // SAFETY: Manually drop ensures that we only adjust the refcount
         // and not delete the object
         let handle = ManuallyDrop::new(unsafe { H::wrap_raw(handle.as_object_handle().cast()) });
@@ -560,38 +595,56 @@ impl<H: HandleWrapper> Ref<H> {
         unsafe {
             raw::WdfObjectReferenceActual(
                 handle.as_object_handle(),
-                Some(tag as *mut _),
+                Some(TAG as *mut _),
                 line as i32,
                 Some(file),
             );
         }
 
-        Self(handle, tag)
+        Self(handle)
     }
 
     /// Makes a new [`Ref`] to this handle
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref(&self) -> Ref<H> {
+    pub fn clone_ref(&self) -> Self {
         Self::clone_from_handle(&self.0)
     }
 
     /// Makes a new [`Ref`] to this handle, including location info.
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref_location(&self, file: *const i8, line: u32) -> Ref<H> {
+    pub fn clone_ref_location(&self, file: *const i8, line: u32) -> Self {
         Self::clone_from_handle_location(&self.0, file, line)
     }
 
     /// Makes a new [`Ref`] to this handle, including location info and tag.
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref_location_tag(&self, file: *const i8, line: u32, tag: usize) -> Ref<H> {
-        Self::clone_from_handle_location_tag(&self.0, file, line, tag)
+    pub fn clone_ref_location_tag(&self, file: *const i8, line: u32) -> Self {
+        Self::clone_from_handle_location_tag(&self.0, file, line)
+    }
+
+    pub fn handle_eq<const OTHER_TAG: usize>(&self, other: &Ref<H, OTHER_TAG>) -> bool
+    where
+        H: Eq,
+    {
+        &self.0 == &other.0
     }
 }
 
-impl<H: HandleWrapper> Drop for Ref<H> {
+impl<H, const PARENT_TAG: usize> CloneRef for Ref<H, PARENT_TAG>
+where
+    H: HandleWrapper,
+{
+    type Ref<const TAG: usize> = Ref<H, TAG>;
+
+    fn clone_ref<const TAG: usize>(&self, file: *const i8, line: u32) -> Self::Ref<{ TAG }> {
+        Ref::<H, TAG>::clone_from_handle_location_tag(&self.0, file, line)
+    }
+}
+
+impl<H: HandleWrapper, const TAG: usize> Drop for Ref<H, TAG> {
     fn drop(&mut self) {
         // FIXME: Assert that this is at `..=DISPATCH_LEVEL`
 
@@ -600,7 +653,7 @@ impl<H: HandleWrapper> Drop for Ref<H> {
         unsafe {
             raw::WdfObjectDereferenceActual(
                 self.0.as_object_handle(),
-                Some(self.1 as *mut _),
+                Some(TAG as *mut _),
                 line!() as i32,
                 Some(cstr!(file!()).as_ptr()),
             );
@@ -608,16 +661,13 @@ impl<H: HandleWrapper> Drop for Ref<H> {
     }
 }
 
-impl<H: HandleWrapper> HandleWrapper for Ref<H> {
+impl<H: HandleWrapper, const TAG: usize> HandleWrapper for Ref<H, TAG> {
     type Handle = <H as HandleWrapper>::Handle;
 
     #[inline]
     unsafe fn wrap_raw(raw: *mut Self::Handle) -> Self {
         // SAFETY: Caller ensures that we don't alias on drop
-        Self(
-            ManuallyDrop::new(unsafe { H::wrap_raw(raw) }),
-            context_space::REF_TAG,
-        )
+        Self(ManuallyDrop::new(unsafe { H::wrap_raw(raw) }))
     }
 
     #[inline]
@@ -626,13 +676,13 @@ impl<H: HandleWrapper> HandleWrapper for Ref<H> {
     }
 }
 
-impl<H: HandleWrapper> AsRef<H> for Ref<H> {
+impl<H: HandleWrapper, const TAG: usize> AsRef<H> for Ref<H, TAG> {
     fn as_ref(&self) -> &H {
         &self.0
     }
 }
 
-impl<H: HandleWrapper> Deref for Ref<H> {
+impl<H: HandleWrapper, const TAG: usize> Deref for Ref<H, TAG> {
     type Target = H;
 
     fn deref(&self) -> &Self::Target {
@@ -640,7 +690,7 @@ impl<H: HandleWrapper> Deref for Ref<H> {
     }
 }
 
-impl<H> core::fmt::Debug for Ref<H>
+impl<H, const TAG: usize> core::fmt::Debug for Ref<H, TAG>
 where
     H: HandleWrapper + core::fmt::Debug,
 {
@@ -649,7 +699,7 @@ where
     }
 }
 
-impl<H: HandleWrapper> PartialEq<H> for Ref<H>
+impl<H: HandleWrapper, const TAG: usize> PartialEq<H> for Ref<H, TAG>
 where
     H: PartialEq,
 {
@@ -662,12 +712,14 @@ where
 #[derive(Debug)]
 pub struct Wrapped<H: HandleWrapper>(ManuallyDrop<H>);
 
-impl<H: HandleWrapper> Wrapped<H> {
-    /// Makes a new [`Ref`] to this handle
-    ///
-    /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref(&self) -> Ref<H> {
-        Ref::clone_from_handle(&self.0)
+impl<H> CloneRef for Wrapped<H>
+where
+    H: HandleWrapper,
+{
+    type Ref<const TAG: usize> = Ref<H>;
+
+    fn clone_ref<const TAG: usize>(&self, file: *const i8, line: u32) -> Self::Ref<{ TAG }> {
+        Ref::clone_from_handle_location_tag(&self.0, file, line)
     }
 }
 
@@ -780,7 +832,10 @@ impl<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> HasContext<T>
 
 impl<H: HandleWrapper, T: IntoContextSpace> HasContext<T> for WithContext<H, T> {}
 
-impl<T: IntoContextSpace, H: HandleWrapper + HasContext<T>> HasContext<T> for Ref<H> {}
+impl<T: IntoContextSpace, H: HandleWrapper + HasContext<T>, const TAG: usize> HasContext<T>
+    for Ref<H, TAG>
+{
+}
 
 // /// ## Safety
 // ///
@@ -809,6 +864,36 @@ pub trait HandleWrapper: Sized {
 
     /// Yield the raw handle backing this wrapper
     fn as_object_handle(&self) -> WDFOBJECT;
+}
+
+/// Any handle that can be cloned into a [`Ref`] wrapper.
+pub trait CloneRef: Sized {
+    type Ref<const TAG: usize>: HandleWrapper;
+
+    /// Makes a shared reference to the handle, with location and tagging info.
+    ///
+    /// ## IRQL: `..=DISPATCH_LEVEL`
+    fn clone_ref<const TAG: usize>(&self, file: *const i8, line: u32) -> Self::Ref<{ TAG }>;
+
+    /// Helper method to clone without caring about the tag
+    fn clone_ref_untagged(
+        &self,
+        file: *const i8,
+        line: u32,
+    ) -> Self::Ref<{ context_space::REF_TAG }> {
+        Self::clone_ref(self, file, line)
+    }
+}
+
+impl<T> CloneRef for &T
+where
+    T: CloneRef,
+{
+    type Ref<const TAG: usize> = <T as CloneRef>::Ref<TAG>;
+
+    fn clone_ref<const TAG: usize>(&self, file: *const i8, line: u32) -> Self::Ref<{ TAG }> {
+        <T as CloneRef>::clone_ref(self, file, line)
+    }
 }
 
 /// A raw framework handle type

@@ -8,10 +8,8 @@ use windows_kernel_sys::{result::STATUS, Error, NTSTATUS};
 
 use crate::{
     context_space::{self, default_object_attributes, IntoContextSpace},
-    handle::{
-        FrameworkOwned, HandleWrapper, HasContext, RawDriver, RawHandleWithContext, Ref, Wrapped,
-    },
-    raw,
+    handle::{FrameworkOwned, HandleWrapper, HasContext, RawDriver, RawHandleWithContext, Wrapped},
+    impl_clone_ref, raw,
 };
 
 pub struct Driver<T: IntoContextSpace> {
@@ -176,13 +174,6 @@ where
         Ok(handle)
     }
 
-    /// Makes a shared reference to the driver
-    ///
-    /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref(&self) -> Ref<Self> {
-        Ref::clone_from_handle(self)
-    }
-
     /// Gets the global driver object.
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
@@ -280,3 +271,5 @@ impl<T: IntoContextSpace> AsRef<Driver<T>> for Driver<T> {
         self
     }
 }
+
+impl_clone_ref!(Driver<T: IntoContextSpace>);

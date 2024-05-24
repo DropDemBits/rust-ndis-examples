@@ -451,17 +451,15 @@ impl<T> core::ops::DerefMut for SyncWrapper<T> {
 unsafe impl<T> Sync for SyncWrapper<T> {}
 
 struct FileObjectContext {
-    open_context: SpinMutex<Option<Ref<GeneralObject<OpenContext>>>>,
+    open_context: SpinMutex<Option<Ref<GeneralObject<OpenContext>, { wdf_kmdf::tag!(b"DvOp") }>>>,
 }
 
 wdf_kmdf::impl_context_space!(FileObjectContext);
 
 impl FileObjectContext {
-    fn open_context(&self) -> Option<Ref<GeneralObject<OpenContext>>> {
+    fn open_context(&self) -> Option<Ref<GeneralObject<OpenContext>, { wdf_kmdf::tag!(b"DvOp") }>> {
         let guard = self.open_context.lock();
-        guard
-            .as_ref()
-            .map(|it| wdf_kmdf::clone!(tag: b"FOep", ref it))
+        guard.as_ref().map(|it| wdf_kmdf::clone!(it))
     }
 }
 
@@ -1151,7 +1149,7 @@ unsafe extern "C" fn ndisprot_evt_io_device_control(
 fn open_device(
     device_name: &[u8],
     file_object: Ref<FileObject<FileObjectContext>>,
-) -> Result<Ref<GeneralObject<OpenContext>>, Error> {
+) -> Result<Ref<GeneralObject<OpenContext>, { wdf_kmdf::tag!(b"DvOp") }>, Error> {
     let driver = Driver::<NdisProt>::get();
     let globals = driver.get_context();
 
@@ -1199,9 +1197,9 @@ fn open_device(
             let mut inner = file_context.open_context.lock();
 
             match inner.as_ref() {
-                Some(old) => Err(wdf_kmdf::clone!(tag: b"DvEr", ref old)),
+                Some(old) => Err(wdf_kmdf::clone!(tag: b"DvEr", old)),
                 None => {
-                    *inner = Some(wdf_kmdf::clone!(tag: b"DvOp", ref &open_object));
+                    *inner = Some(wdf_kmdf::clone!(tag: b"DvOp", &open_object));
                     Ok(())
                 }
             }
@@ -1258,7 +1256,9 @@ fn open_device(
 
             // Need to set OpenContext to null again, so others can open for this file object later
             let current_open_context_obj = file_context.open_context.lock().take();
-            assert_eq!(current_open_context_obj.as_ref(), Some(&open_object));
+            assert!(current_open_context_obj
+                .as_ref()
+                .is_some_and(|current| current.handle_eq(&open_object)));
 
             inner.flags.remove(OpenContextFlags::OPEN_FLAGS);
             inner.flags.set(OpenContextFlags::OPEN_IDLE, true);

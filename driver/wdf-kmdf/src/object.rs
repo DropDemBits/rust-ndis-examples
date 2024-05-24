@@ -10,7 +10,7 @@ use crate::{
         DriverOwned, HandleWrapper, HasContext, RawHandleWithContext, RawObject, Ref, Unique,
         Wrapped,
     },
-    raw,
+    impl_clone_ref, raw,
 };
 
 /// The maximum IRQL the object's event callback functions will be called at
@@ -292,13 +292,6 @@ where
     pub fn raw_handle(&self) -> WDFOBJECT {
         self.handle.as_handle()
     }
-
-    /// Makes a shared reference to the object
-    ///
-    /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref(&self) -> Ref<Self> {
-        Ref::clone_from_handle(self)
-    }
 }
 
 impl<T: IntoContextSpace> HandleWrapper for GeneralObject<T> {
@@ -317,6 +310,8 @@ impl<T: IntoContextSpace> HandleWrapper for GeneralObject<T> {
         self.handle.as_object_handle()
     }
 }
+
+impl_clone_ref!(GeneralObject<T: IntoContextSpace>);
 
 impl<T: IntoContextSpace> HasContext<T> for GeneralObject<T> {}
 

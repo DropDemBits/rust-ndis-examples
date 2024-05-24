@@ -516,7 +516,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
             Ok(pinned_init::try_pin_init! {
                 OpenContext {
                     oc_sig: 0x030EE030,
-                    driver: driver.clone_ref(),
+                    driver: wdf_kmdf::clone!(ref driver),
 
                     inner <- SpinPinMutex::new(OpenContextInner {
                         flags,
@@ -1446,7 +1446,7 @@ pub(crate) fn query_binding(
 pub(crate) fn ndisprot_lookup_device(
     globals: Pin<&NdisProt>,
     adapter_name: NtUnicodeStr<'_>,
-) -> Option<Ref<GeneralObject<OpenContext>>> {
+) -> Option<Ref<GeneralObject<OpenContext>, { wdf_kmdf::tag!(b"DvOp") }>> {
     globals
         .open_list
         .lock()
@@ -1455,8 +1455,7 @@ pub(crate) fn ndisprot_lookup_device(
         .find_map(|open_obj| {
             let open_obj = &open_obj.as_ref()?;
             let open_context = open_obj.get_context();
-            (open_context.device_name.0 == adapter_name)
-                .then(|| wdf_kmdf::clone!(tag: b"Lkup", ref open_obj))
+            (open_context.device_name.0 == adapter_name).then(|| wdf_kmdf::clone!(open_obj))
         })
 }
 

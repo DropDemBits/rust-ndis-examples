@@ -11,9 +11,9 @@ use crate::{
     context_space::{self, default_object_attributes, IntoContextSpace},
     handle::{
         DriverOwned, FrameworkOwned, HandleWrapper, HasContext, RawDevice, RawDriver,
-        RawHandleWithContext, Ref, Wrapped,
+        RawHandleWithContext, Wrapped,
     },
-    raw,
+    impl_clone_ref, raw,
 };
 
 /// Event callbacks for a miniport driver
@@ -155,13 +155,6 @@ where
         Ok(handle)
     }
 
-    /// Makes a shared reference to the driver
-    ///
-    /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref(&self) -> Ref<Self> {
-        Ref::clone_from_handle(self)
-    }
-
     /// Gets the global miniport driver object.
     ///
     /// ## IRQL: `..=DISPATCH_LEVEL`
@@ -260,6 +253,8 @@ impl<T: IntoContextSpace> HandleWrapper for MiniportDriver<T> {
     }
 }
 
+impl_clone_ref!(MiniportDriver<T: IntoContextSpace>);
+
 impl<T: IntoContextSpace> HasContext<T> for MiniportDriver<T> {}
 
 impl<T: IntoContextSpace> AsRef<MiniportDriver<T>> for MiniportDriver<T> {
@@ -342,13 +337,6 @@ where
     pub fn raw_handle(&self) -> WDFDEVICE {
         self.handle.as_handle()
     }
-
-    /// Makes a shared reference to the device
-    ///
-    /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref(&self) -> Ref<Self> {
-        Ref::clone_from_handle(self)
-    }
 }
 
 impl<T: IntoContextSpace> HandleWrapper for MiniportDevice<T> {
@@ -365,6 +353,8 @@ impl<T: IntoContextSpace> HandleWrapper for MiniportDevice<T> {
         self.handle.as_object_handle()
     }
 }
+
+impl_clone_ref!(MiniportDevice<T: IntoContextSpace>);
 
 impl<T: IntoContextSpace> HasContext<T> for MiniportDevice<T> {}
 

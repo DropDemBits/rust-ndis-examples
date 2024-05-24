@@ -17,37 +17,34 @@ macro_rules! cstr {
     }};
 }
 
-// FIXME: Use a `CloneRef` trait to handle both `Ref` and non-`Ref` handles
+/// Clones a WDF handle, providing location and optional tagging information
 #[macro_export]
 macro_rules! clone {
     ($handle:expr) => {
-        $crate::handle::Ref::clone_from_handle_location(
-            &$handle,
-            $crate::cstr!(file!()).as_ptr(),
-            line!(),
-        )
+        $crate::handle::CloneRef::clone_ref(&$handle, $crate::cstr!(file!()).as_ptr(), line!())
     };
 
     (ref $handle:expr) => {
-        $crate::handle::Ref::clone_ref_location(&$handle, $crate::cstr!(file!()).as_ptr(), line!())
+        $crate::handle::CloneRef::clone_ref_untagged(
+            &$handle,
+            $crate::cstr!(file!()).as_ptr(),
+            line!(),
+        )
     };
 
     (tag:$tag:literal, $handle:expr) => {
-        $crate::handle::Ref::clone_from_handle_location_tag(
+        $crate::handle::CloneRef::clone_ref::<{ u32::from_le_bytes(*$tag) as usize }>(
             &$handle,
             $crate::cstr!(file!()).as_ptr(),
             line!(),
-            u32::from_le_bytes(*$tag) as usize,
         )
     };
+}
 
-    (tag:$tag:literal, ref $handle:expr) => {
-        $crate::handle::Ref::clone_ref_location_tag(
-            &$handle,
-            $crate::cstr!(file!()).as_ptr(),
-            line!(),
-            u32::from_le_bytes(*$tag) as usize,
-        )
+#[macro_export]
+macro_rules! tag {
+    ($tag:literal) => {
+        u32::from_le_bytes(*$tag) as usize
     };
 }
 

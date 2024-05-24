@@ -24,7 +24,7 @@ use crate::{
 pub(crate) struct NprotSendNblRsvd {
     request: WithContext<FileRequest<FileObjectContext>, RequestContext>,
     /// Which open object this is bound to
-    _open_object: Ref<GeneralObject<OpenContext>>,
+    _open_object: Ref<GeneralObject<OpenContext>, { wdf_kmdf::tag!(b"Send") }>,
     /// Used to determine when to free the packet back to its pool.
     /// It is used to synchronize between a thread completing a send and a thread attempting
     /// to cancel a send.
@@ -35,7 +35,7 @@ impl NprotSendNblRsvd {
     unsafe fn init_send_nbl(
         nbl: PNET_BUFFER_LIST,
         request: WithContext<FileRequest<FileObjectContext>, RequestContext>,
-        open_object: Ref<GeneralObject<OpenContext>>,
+        open_object: Ref<GeneralObject<OpenContext>, { wdf_kmdf::tag!(b"Send") }>,
     ) {
         let this = NET_BUFFER_LIST::context_data_start(nbl).cast::<Self>();
         this.write(Self {
@@ -221,10 +221,10 @@ pub(crate) unsafe extern "C" fn ndisprot_evt_io_write(
             .pended_send_count
             .fetch_add(1, Ordering::Relaxed);
 
-        let send_open_object = wdf_kmdf::clone!(tag: b"Send", ref open_object);
+        let send_open_object = wdf_kmdf::clone!(tag: b"Send", open_object);
 
         // Clone the request so that we can complete it in the event of an error
-        let err_request = Request.clone_ref();
+        let err_request = wdf_kmdf::clone!(ref &*Request);
 
         // Initialize the send nbl context, setting the initial ref count to 1
         // Note that currently this sample code does not implement the cancellation
@@ -293,7 +293,7 @@ pub(crate) unsafe extern "C" fn send_complete(
     let protocol_binding_context =
         unsafe { &*protocol_binding_context.cast::<ProtocolBindingContext>() };
 
-    let open_object = wdf_kmdf::clone!(tag: b"SFin", ref protocol_binding_context.open_context);
+    let open_object = wdf_kmdf::clone!(tag: b"SFin", protocol_binding_context.open_context);
     let open_context = open_object.get_context();
 
     let _dispatch_level =

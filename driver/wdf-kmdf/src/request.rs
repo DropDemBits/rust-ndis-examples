@@ -5,8 +5,8 @@ use wdf_kmdf_sys::WDFREQUEST;
 use crate::{
     context_space::IntoContextSpace,
     file_object::FileObject,
-    handle::{FrameworkOwned, HandleWrapper, RawHandle, RawRequest, Ref, Wrapped},
-    raw,
+    handle::{FrameworkOwned, HandleWrapper, RawHandle, RawRequest, Wrapped},
+    impl_clone_ref, raw,
 };
 
 /// Trait implemented by all request types
@@ -45,13 +45,6 @@ where
         // that the `file_object` we get is a vaild `WDFFILEOBJECT`
         unsafe { FileObject::wrap(file_object) }
     }
-
-    /// Makes a shared reference to the object
-    ///
-    /// ## IRQL: `..=DISPATCH_LEVEL`
-    pub fn clone_ref(&self) -> Ref<Self> {
-        Ref::clone_from_handle(self)
-    }
 }
 
 impl<F> HandleWrapper for FileRequest<F> {
@@ -69,6 +62,8 @@ impl<F> HandleWrapper for FileRequest<F> {
         self.handle.as_object_handle()
     }
 }
+
+impl_clone_ref!(FileRequest<F>);
 
 impl<F> core::fmt::Debug for FileRequest<F> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
