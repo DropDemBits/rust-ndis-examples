@@ -51,6 +51,7 @@ macro_rules! tag {
 pub mod context_space;
 pub mod raw;
 
+pub mod collection;
 pub mod device;
 pub mod driver;
 pub mod file_object;

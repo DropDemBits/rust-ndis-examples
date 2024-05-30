@@ -914,7 +914,10 @@ dependencies = [
 name = "wdf-kmdf"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-utils",
  "lock_api",
+ "moveit",
+ "nt-list",
  "paste",
  "pinned-init",
  "static_assertions",

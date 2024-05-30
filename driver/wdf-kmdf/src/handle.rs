@@ -66,6 +66,7 @@ macro_rules! impl_clone_ref {
 /// A wrapper around a raw handle
 ///
 /// ## Drop IRQL: `..=DISPATCH_LEVEL`
+#[repr(transparent)]
 pub struct RawHandle<H: WdfHandle, Mode: OwningMode> {
     handle: *mut H,
     _mode: PhantomData<Mode>,
@@ -218,6 +219,7 @@ unsafe impl<H: WdfHandle, Mode: OwningMode> Sync for RawHandle<H, Mode> {}
 /// A wrapper around a raw handle, with a context space allocated at creation
 ///
 /// ## Drop IRQL: `..=DISPATCH_LEVEL`
+#[repr(transparent)]
 pub struct RawHandleWithContext<H: WdfHandle, T: IntoContextSpace, Mode: OwningMode> {
     handle: RawHandle<H, Mode>,
     _context_space: PhantomData<fn() -> T>,
@@ -520,6 +522,7 @@ where
 // we make this by using `wrap_raw`, which requires that we don't
 // accidentally cause aliasing accesses on drop.
 #[derive(PartialEq, Eq)]
+#[repr(transparent)]
 pub struct Ref<H: HandleWrapper, const TAG: usize = { context_space::REF_TAG }>(ManuallyDrop<H>);
 
 // For any handle, must be pointer-sized
@@ -710,6 +713,7 @@ where
 
 /// Wraps a foreign handle, ensuring that it won't be dropped
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct Wrapped<H: HandleWrapper>(ManuallyDrop<H>);
 
 impl<H> CloneRef for Wrapped<H>
@@ -809,6 +813,22 @@ where
         }
 
         self.0
+    }
+
+    pub fn leak_raw_handle(&self) -> *mut H::Handle {
+        let raw_handle = self.0.as_object_handle();
+
+        // SAFETY: Caller ensures that we're called at the right IRQL
+        unsafe {
+            raw::WdfObjectReferenceActual(
+                raw_handle,
+                Some(context_space::REF_TAG as *mut _),
+                line!() as i32,
+                Some(cstr!(file!()).as_ptr()),
+            );
+        }
+
+        raw_handle.cast()
     }
 
     pub fn raw_handle(&self) -> *mut H::Handle {

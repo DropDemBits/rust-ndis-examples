@@ -15,3 +15,6 @@ static_assertions = "1.1.0"
 vtable.workspace = true
 pinned-init.workspace = true
 lock_api = "0.4.10"
+nt-list.workspace = true
+moveit.workspace = true
+crossbeam-utils.workspace = true
