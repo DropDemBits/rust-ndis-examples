@@ -42,6 +42,9 @@ extern "C" {}
 #[link(name = "wdfdriverentry")]
 extern "C" {}
 
+unsafe impl Send for WDF_OBJECT_CONTEXT_TYPE_INFO {}
+unsafe impl Sync for WDF_OBJECT_CONTEXT_TYPE_INFO {}
+
 // We also define `WdfMinimumVersionRequired` as a static since bindgen
 // interprets the original `WdfMinimumVersionRequired` as a constant.
 //

@@ -15,10 +15,13 @@ AR = { value = "llvm-lib", condition.env_not_set = [ "NO_LTO" ] }
 CFLAGS = { value = "/clang:-flto=thin", condition.env_not_set = [ "NO_LTO" ] }
 
 # Platform for executing tools
-Platform = "x86"
-# Load VS DevEnv (x86 since that's where inf2cat is)
+Platform = { source = "${CARGO_MAKE_RUST_TARGET_TRIPLE}", default_value = "unsupported", mapping = { "i686-pc-windows-msvc" = "x86", "x86_64-pc-windows-msvc" = "x64", "aarch64-pc-windows-msvc" = "arm64" } }
+# There is no x64 version of inf2cat, so fall back to x86
+Inf2Cat_Platform = { source = "${Platform}", default_value = "${Platform}", mapping = { "x64" = "x86" } }
+# Load VS DevEnv
 Wdk_WindowsSdkVerBinPath = { script = ['call "%VC_BUILD_DIR%" %Platform%', 'echo %WindowsSdkVerBinPath%\%Platform%'], depends_on = ["VC_BUILD_DIR", "Platform"] }
 Wdk_WindowsSdkVerToolPath = { script = ['call "%VC_BUILD_DIR%" %Platform%', 'echo %WindowsSdkDir%\Tools\%WindowsSDKVersion%\%Platform%'], depends_on = ["VC_BUILD_DIR", "Platform"] }
+Wdk_WindowsSdkVerInf2CatPath = { script = ['call "%VC_BUILD_DIR%" %Inf2Cat_Platform%', 'echo %WindowsSdkVerBinPath%\%Inf2Cat_Platform%'], depends_on = ["VC_BUILD_DIR", "Inf2Cat_Platform"] }
 
 [env.development]
 BUILD_RELEASE = ""
@@ -84,7 +87,7 @@ script='''
 dependencies = ["stampinf"]
 cwd = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}"
 script='''
-"%Wdk_WindowsSdkVerBinPath%\inf2cat.exe" /driver:dist\%CARGO_MAKE_CRATE_NAME%\ /os:10_x64
+"%Wdk_WindowsSdkVerInf2CatPath%\inf2cat.exe" /driver:dist\%CARGO_MAKE_CRATE_NAME%\ /os:10_x64
 '''
 
 [tasks.dist]

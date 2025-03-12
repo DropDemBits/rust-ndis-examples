@@ -54,8 +54,8 @@ pub fn emit_build_flags(config: Config) {
             "/SECTION:INIT,DRE",
         ];
 
-    for flag in link_flags {
-        println!("cargo:rustc-cdylib-link-arg={flag}");
-    }
+        for flag in link_flags {
+            println!("cargo:rustc-cdylib-link-arg={flag}");
+        }
     }
 }

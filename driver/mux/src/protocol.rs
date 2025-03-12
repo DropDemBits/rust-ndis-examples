@@ -219,7 +219,7 @@ pub(crate) extern "C" fn pt_bind_adapter(
         let adapt = {
             let adapt = adapt.into_shared();
             // Note: we have to leak a ref since it's owned by NDIS
-            core::mem::forget(wdf_kmdf::clone!(adapt));
+            core::mem::forget(wdf_kmdf::clone!(ref adapt));
             adapt
         };
 

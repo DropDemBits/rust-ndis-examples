@@ -5,7 +5,7 @@ use std::{marker::PhantomData, ptr::NonNull};
 use windows::{
     core::{implement, Error, IUnknown, Interface, Result, GUID, HRESULT},
     Win32::{
-        Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_NOTIMPL, E_POINTER, HINSTANCE},
+        Foundation::{CLASS_E_NOAGGREGATION, E_NOTIMPL, E_POINTER, HINSTANCE, HMODULE},
         System::{
             Com::{IClassFactory, IClassFactory_Impl},
             LibraryLoader::GetModuleFileNameA,
@@ -13,11 +13,12 @@ use windows::{
         },
     },
 };
+use windows_core::BOOL;
 
 #[implement(IClassFactory)]
 pub struct ComClassFactory<C>(PhantomData<C>)
 where
-    C: Default,
+    C: Default + 'static,
     IUnknown: From<C>;
 
 impl<C> ComClassFactory<C>
@@ -31,14 +32,14 @@ where
 }
 
 #[allow(non_snake_case)] // That's just how the names are defined
-impl<C> IClassFactory_Impl for ComClassFactory<C>
+impl<C> IClassFactory_Impl for ComClassFactory_Impl<C>
 where
-    C: Default,
+    C: Default + 'static,
     IUnknown: From<C>,
 {
     fn CreateInstance(
         &self,
-        p_unk_outer: Option<&IUnknown>,
+        p_unk_outer: windows_core::Ref<'_, IUnknown>,
         riid: *const GUID,
         ppv_object: *mut *mut std::ffi::c_void,
     ) -> Result<()> {
@@ -70,6 +71,24 @@ where
         Err(E_NOTIMPL.into())
     }
 }
+
+#[doc(hidden)]
+pub struct ModuleHandle(HMODULE);
+
+impl ModuleHandle {
+    #[doc(hidden)]
+    pub unsafe fn from_instance(h_instance: HINSTANCE) -> Self {
+        Self(h_instance.into())
+    }
+
+    #[doc(hidden)]
+    pub fn raw_handle(&self) -> HMODULE {
+        self.0
+    }
+}
+
+unsafe impl Sync for ModuleHandle {}
+unsafe impl Send for ModuleHandle {}
 
 #[doc(hidden)]
 pub struct RegistryKeyInfo {
@@ -113,7 +132,7 @@ impl std::fmt::Display for CLSID {
 }
 
 #[doc(hidden)]
-pub fn get_dll_file_path(expect: HINSTANCE) -> String {
+pub fn get_dll_file_path(expect: Option<HMODULE>) -> String {
     const MAX_FILE_PATH_LENGTH: usize = 260;
 
     let mut path = [0u8; MAX_FILE_PATH_LENGTH];
@@ -184,7 +203,7 @@ fn remove_class_key(key_info: &RegistryKeyInfo) -> Result<()> {
 #[macro_export]
 macro_rules! inproc_dll_module {
     (($class_id_first:expr, $class_type_first:ty), $(($class_id:expr, $class_type:ty)),*) => {
-        static _HMODULE: ::std::sync::OnceLock<::windows::Win32::Foundation::HINSTANCE> =
+        static _HMODULE: ::std::sync::OnceLock<$crate::com_helpers::ModuleHandle> =
             ::std::sync::OnceLock::new();
 
         #[no_mangle]
@@ -192,12 +211,15 @@ macro_rules! inproc_dll_module {
             h_instance: ::windows::Win32::Foundation::HINSTANCE,
             fdw_reason: u32,
             _reserved: *mut ::std::ffi::c_void,
-        ) -> ::windows::Win32::Foundation::BOOL {
+        ) -> ::windows::core::BOOL {
             const DLL_PROCESS_ATTACH: u32 = 1;
             if fdw_reason == DLL_PROCESS_ATTACH {
-                _ = _HMODULE.set(h_instance);
+                // SAFETY: We trust that `h_instance` is a non-null and valid module handle
+                let h_module = unsafe { $crate::com_helpers::ModuleHandle::from_instance(h_instance) };
 
-                unsafe { _ = ::windows::Win32::System::LibraryLoader::DisableThreadLibraryCalls(h_instance); }
+                unsafe { _ = ::windows::Win32::System::LibraryLoader::DisableThreadLibraryCalls(h_module.raw_handle()); }
+
+                _ = _HMODULE.set(h_module);
             }
             true.into()
         }
@@ -247,7 +269,7 @@ macro_rules! inproc_dll_module {
         fn relevant_registry_keys() -> ::std::vec::Vec<$crate::com_helpers::RegistryKeyInfo> {
             use $crate::com_helpers::RegistryKeyInfo;
             let file_path = $crate::com_helpers::get_dll_file_path(
-                *_HMODULE.get().expect("Dll should have finished attaching"),
+                Some(_HMODULE.get().expect("Dll should have finished attaching").raw_handle()),
             );
 
             ::std::vec![

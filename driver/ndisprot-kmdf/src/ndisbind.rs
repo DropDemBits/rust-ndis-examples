@@ -518,7 +518,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     oc_sig: 0x030EE030,
                     driver: wdf_kmdf::clone!(ref driver),
 
-                    inner <- SpinPinMutex::new(OpenContextInner {
+                    inner <- SpinPinMutex::new::<Error>(OpenContextInner {
                         flags,
                         state,
                         file_object: None,
@@ -542,7 +542,7 @@ pub(crate) unsafe extern "C" fn bind_adapter(
                     recv_nbl_pool: NblPool(ScopeGuard::into_inner(recv_nbl_pool)),
                     read_queue,
                     pended_read_count: AtomicU32::new(0),
-                    recv_queue <- SpinPinMutex::new(recv_queue::RecvQueue::new()),
+                    recv_queue <- SpinPinMutex::new::<Error>(recv_queue::RecvQueue::new()),
 
                     status_indication_queue,
 

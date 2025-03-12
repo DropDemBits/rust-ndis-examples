@@ -1,5 +1,7 @@
 #![no_std]
 #![allow(non_upper_case_globals, non_snake_case, dead_code)]
+#![feature(generic_arg_infer)]
+#![recursion_limit = "256"]
 
 extern crate alloc;
 

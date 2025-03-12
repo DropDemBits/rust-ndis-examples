@@ -28,24 +28,30 @@ macro_rules! impl_context_space {
         // Safety: We statically assert that $ty has the correct alignment,
         // and we use `core::mem::size_of` on $ty to get the right size.
         unsafe impl $crate::context_space::IntoContextSpace for $ty {
-            const CONTEXT_INFO: &'static $crate::context_space::ContextInfo =
-                &$crate::context_space::ContextInfo {
-                    // Size of `ContextInfo` is known to be small
-                    Size: ::core::mem::size_of::<$crate::context_space::ContextInfo>() as u32,
-                    // Safety: We always concatenate a nul at the end
-                    ContextName: $crate::context_space::__macro_internals::cstr!(stringify!($ty))
+            const CONTEXT_INFO: &'static $crate::context_space::ContextInfo = {
+                static INFO: $crate::context_space::ContextInfo =
+                    $crate::context_space::ContextInfo {
+                        // Size of `ContextInfo` is known to be small
+                        Size: ::core::mem::size_of::<$crate::context_space::ContextInfo>() as u32,
+                        // Safety: We always concatenate a nul at the end
+                        ContextName: $crate::context_space::__macro_internals::cstr!(stringify!(
+                            $ty
+                        ))
                         .as_ptr(),
-                    ContextSize: ::core::mem::size_of::<$ty>(),
-                    // Set to null because this appears to only be used to
-                    // work around having multiple definitions of the same
-                    // context type info in the same translation unit.
-                    //
-                    // We also don't use `UniqueType` as as consts can't
-                    // refer to statics, which would be required for
-                    // `UniqueType` to point to the same context info.
-                    UniqueType: ::core::ptr::null(),
-                    EvtDriverGetUniqueContextType: None,
-                };
+                        ContextSize: ::core::mem::size_of::<$ty>(),
+                        // Set to null because this appears to only be used to
+                        // work around having multiple definitions of the same
+                        // context type info in the same translation unit.
+                        //
+                        // We also don't use `UniqueType` as as consts can't
+                        // refer to statics, which would be required for
+                        // `UniqueType` to point to the same context info.
+                        UniqueType: &INFO,
+                        EvtDriverGetUniqueContextType: None,
+                    };
+
+                &INFO
+            };
         }
 
         // Alignment of context type should be smaller than or equal to the arch's defined alignment

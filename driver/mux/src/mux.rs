@@ -53,14 +53,14 @@ pub(super) fn driver_entry(
         |_| {
             Ok(pinned_init::try_pin_init! {
                 Mux {
-                    AdapterList <- WaitMutex::new(Vec::new()),
+                    AdapterList <- WaitMutex::new::<Error>(Vec::new()),
                     NextVElanNumber: AtomicU32::new(0),
 
                     ProtHandle: NdisHandle::empty(),
                     DriverHandle: NdisHandle::empty(),
 
                     MiniportCount: AtomicI32::new(0),
-                    ControlDevice <- WaitMutex::new(None),
+                    ControlDevice <- WaitMutex::new::<Error>(None),
                 }? Error
             })
         },
@@ -262,7 +262,9 @@ fn pt_register_device() -> Result<(), Error> {
             // Create the wrapper WDF device
             // This CDO is at the top of the driver stack, so we don't need to
             // pass in the attached device or the underlying PDO
-            let out_cdo = MiniportDevice::create(driver.as_ref(), out_cdo, None, None, |_| Ok(()))?;
+            let out_cdo = MiniportDevice::create(driver.as_ref(), out_cdo, None, None, |_| {
+                Ok::<_, Error>(())
+            })?;
 
             *cdo = Some(crate::ControlDeviceObject {
                 cdo: out_cdo,

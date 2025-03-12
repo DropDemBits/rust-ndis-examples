@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(non_snake_case)] // Cut down on the warnings for now
 #![feature(allocator_api, let_chains)]
+#![recursion_limit = "256"]
 
 extern crate alloc;
 
@@ -127,7 +128,7 @@ fn driver_entry(driver_object: DriverObject, registry_path: NtUnicodeStr<'_>) ->
                     ndis_protocol_handle: ProtocolHandle(AtomicCell::new(core::ptr::null_mut())),
                     eth_type: NPROT_ETH_TYPE,
                     cancel_id_gen,
-                    open_list <- SpinPinMutex::new(Vec::new()),
+                    open_list <- SpinPinMutex::new::<Error>(Vec::new()),
                     binds_complete <- KeEvent::new(EventType::Notification, false),
                 }? Error
             })
@@ -797,7 +798,7 @@ unsafe extern "C" fn ndisprot_evt_device_file_create(
 
     let status = unsafe {
         file_object.init_context_space(pinned_init::try_init!(FileObjectContext {
-            open_context <- SpinMutex::new(None),
+            open_context <- SpinMutex::new::<Error>(None),
         }? Error))
     };
 
