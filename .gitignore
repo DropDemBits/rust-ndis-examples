@@ -3,3 +3,6 @@ dist/
 DriverCertificate.cer
 kdnet-key.txt
 notes/.obsidian
+
+# Local env var specs
+/.env

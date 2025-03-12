@@ -1,6 +1,10 @@
-[env]
-VC_BUILD_DIR="C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat"
+env_files = [
+  # Should have
+  # VC_BUILD_DIR="<path to vc build vars>"
+ "../../.env/vc_build_dir.env"  
+]
 
+[env]
 DRIVER_VERSION="*"
 CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 TARGET_ARCH = { source = "${CARGO_MAKE_RUST_TARGET_TRIPLE}", default_value = "unsupported", mapping = { "i686-pc-windows-msvc" = "x86", "x86_64-pc-windows-msvc" = "amd64", "aarch64-pc-windows-msvc" = "arm64" } }
